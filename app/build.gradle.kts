@@ -60,12 +60,15 @@ abstract class CopyRenamedApks : DefaultTask() {
 
 val name = "legado"
 
-// CI 传 -PappVersion 注入统一版本号 (release.yml/test.yml), 本地构建按当前时间生成
+// CI 传 -PappVersion 注入统一版本号 (android-arm64.yml), 本地构建按当前时间生成
 val version = providers.gradleProperty("appVersion").orNull ?: "3.${releaseTime()}"
 
 // 共存构建 (CI 传 -PcoexistBuild=true): 包名后缀与 APK 文件名后缀同源,
 // 与原包名版本可同时安装, 且 releaseA 字样是应用内更新识别渠道变体的依据 (AppReleaseInfo)
 val coexistBuild = providers.gradleProperty("coexistBuild").orNull == "true"
+
+// -Parm64Only=true: 只出 arm64-v8a 单 ABI 包 (CI 用); 不带参数保持 arm64-v8a + armeabi-v7a
+val arm64Only = providers.gradleProperty("arm64Only").orNull == "true"
 val gitCommits = providers.exec {
     commandLine("git", "rev-list", "HEAD", "--count")
 }.standardOutput.asText.get().trim().toInt()
@@ -161,10 +164,15 @@ android {
         abi {
             isEnable = true
             reset()
-            // 只保留 arm 系 ABI (arm64-v8a + armeabi-v7a); x86/x86_64 不再出包。
-            // universal 仍出, 且只含已编译 ABI
-            include("armeabi-v7a", "arm64-v8a")
-            isUniversalApk = true
+            // x86/x86_64 不出包; -Parm64Only 时只出 arm64-v8a, 且关掉 universal
+            // (单 ABI 时 universal 与拆分 APK 内容完全一致, 纯冗余)
+            if (arm64Only) {
+                include("arm64-v8a")
+                isUniversalApk = false
+            } else {
+                include("armeabi-v7a", "arm64-v8a")
+                isUniversalApk = true
+            }
         }
     }
 

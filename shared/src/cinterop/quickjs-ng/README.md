@@ -11,7 +11,7 @@
 >    缺陷、且 wrapper 层无法规避时才允许，改完必须登记到本文末尾「已知本地改动」的
 >    B 类小节，写清上游版本、症状、复现方式。
 >
-> ⚠️ **同步工作流不会替你重放任何补丁。** `.github/workflows/sync-quickjs-ng.yml` 只有
+> ⚠️ **同步工作流不会替你重放任何补丁。** `.github/workflows/sync-quickjs-ng.yml.bak` 只有
 > `Apply upstream files`（直接 `cp` 覆盖），没有 apply-patch 步骤，也没有 `patches/` 目录。
 > 所以 `mode=sync` 会把本地改动**静默冲掉**，`mode=verify` 会因为存在差异直接 exit 1 ——
 > 每次升级都必须照着 B 类小节的记录手工重新打一遍，并在 PR 里勾掉那一项。
@@ -33,7 +33,7 @@
 > 0.15.1，与真 v0.15.1 相差约 29 KB）。**当前 pin 正是这种情况**：它是 v0.16.2 之后的 master
 > 快照，宏值却仍写 `0/16/2`。一切以上表 commit sha 为准，**按宏值去"还原"等于降级**。
 
-升级时**必须同时更新**本表格与 `.github/workflows/sync-quickjs-ng.yml` 里 `ref` input 的默认值。
+升级时**必须同时更新**本表格与 `.github/workflows/sync-quickjs-ng.yml.bak` 里 `ref` input 的默认值。
 
 升级坐标记录方式：同步 tag 时也记 tag 指向的 commit sha（唯一能精确复现的坐标）。
 
@@ -81,6 +81,9 @@ quickjs.c  libregexp.c  libunicode.c  dtoa.c
 ## 升级流程
 
 ### 1. 跑同步工作流
+
+> ⚠️ **该工作流当前已禁用**（`.github/workflows/sync-quickjs-ng.yml` 已改名 `.yml.bak`）。
+> 要跑它需先把文件改回 `.yml`；不想恢复工作流就用下方本地等价操作。
 
 GitHub → Actions → **Sync quickjs-ng** → Run workflow：
 
@@ -148,8 +151,10 @@ commit sha 记下来，这是唯一能精确复现的坐标），并更新「已
 
 ## 纯净度校验
 
-`.github/workflows/sync-quickjs-ng.yml` 的 `mode: verify` 只比对不修改，用于确认
+`.github/workflows/sync-quickjs-ng.yml.bak` 的 `mode: verify` 只比对不修改，用于确认
 没有人绕过流程偷改源码。建议在怀疑构建行为异常时先跑一次 verify。
+
+> ⚠️ 该工作流当前已禁用（`.yml.bak`），需改名回 `.yml` 才能运行。
 
 ## 已知本地改动
 

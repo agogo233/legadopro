@@ -1,0 +1,101 @@
+name: Android arm64 Build
+
+# 独立的 arm64-v8a 单 ABI 编译流水线: 不写 Release、不发 Telegram、不上蓝奏,
+# 也不 workflow_call 其他流水线 (旧 test/release/ios/_desktop/_publish 均已禁用为 .yml.bak,
+# 本文件必须自包含)。
+on:
+  push:
+    branches:
+      - '**'
+    # 文档/资源类变更不触发构建
+    paths-ignore:
+      - '**.md'
+      - '**/assets/**'
+      - '**/ISSUE_TEMPLATE/**'
+      - '**/modules/web/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - '**/assets/**'
+      - '**/ISSUE_TEMPLATE/**'
+      - '**/modules/web/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 只读产物, 不写 Release/tag
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      product: app
+      GRADLE_ARGS: --build-cache --parallel --daemon --warning-mode all
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Gradle build-cache 共享
+        # 按 (OS, 分支) 共享 build-cache, 减少重复编译 shared 等公共模块
+        uses: actions/cache@v5
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: gradle-buildcache-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            gradle-buildcache-${{ runner.os }}-
+
+      - name: Release Apk Sign
+        # 沿用仓库内公开的测试签名密钥 (与 test.yml.bak 同一做法): 密钥提交在仓库里且口令
+        # 明文硬编码, 任何人 clone 即可签出「看起来官方」的包。仅用于 CI 测试包,
+        # 不得与正式签名 (RELEASE_KEY_STORE secret) 混用。
+        run: |
+          echo "给apk增加签名"
+          cp $GITHUB_WORKSPACE/.github/workflows/legado.jks $GITHUB_WORKSPACE/app/legado.jks
+          sed '$a\RELEASE_STORE_FILE=./legado.jks'          $GITHUB_WORKSPACE/gradle.properties -i
+          sed '$a\RELEASE_KEY_ALIAS=legado'                 $GITHUB_WORKSPACE/gradle.properties -i
+          sed '$a\RELEASE_STORE_PASSWORD=gedoor_legado'     $GITHUB_WORKSPACE/gradle.properties -i
+          sed '$a\RELEASE_KEY_PASSWORD=gedoor_legado'       $GITHUB_WORKSPACE/gradle.properties -i
+
+      - name: Build Release (arm64-v8a)
+        run: |
+          VERSION=$(date -d "8 hour" -u +3.%y.%m%d%H%M)
+          echo "开始${{ env.product }} arm64-v8a 构建, 版本 $VERSION"
+          chmod +x gradlew
+          ./gradlew assemble${{ env.product }}release -PappVersion=$VERSION -Parm64Only=true $GRADLE_ARGS
+          echo "收集APK"
+          mkdir -p apk/
+          # 只收 appRelease 变体目录: baselineprofile 插件还会为 appNonMinifiedRelease /
+          # appBenchmarkRelease 注册 copy 任务, 宽 find 会把它们扫进来导致下方 count 误判
+          find app/build/outputs/renamed-apks/appRelease -name "*.apk" -exec mv {} apk/ \;
+
+      - name: Verify single arm64 APK
+        # 恰好 1 个产物: arm64Only 未生效会出 3 个 (arm64 + armv7 + universal), 当场拦住
+        run: |
+          count=$(find apk/ -name "*.apk" | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly 1 APK (arm64-v8a only), got $count - arm64Only filter not applied?"
+            find apk/ -name "*.apk" -ls
+            exit 1
+          fi
+          ls -lh apk/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.product }}.apk
+          path: apk/*.apk
+          if-no-files-found: error
