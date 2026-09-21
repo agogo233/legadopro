@@ -52,7 +52,7 @@ abstract class CopyRenamedApks : DefaultTask() {
             val abi = artifact.filters.firstOrNull {
                 it.filterType == FilterConfiguration.FilterType.ABI
             }?.identifier
-            val outputName = "${abiShortNames[abi] ?: "all"}${releaseSuffix.get()}.apk"
+            val outputName = "legadopro${releaseSuffix.get()}.apk"
             File(artifact.outputFile).copyTo(output.resolve(outputName), overwrite = true)
         }
     }
