@@ -26,6 +26,7 @@ import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
@@ -54,13 +55,13 @@ import io.legado.app.ui.compose.component.pullToRefresh
 import io.legado.app.ui.compose.component.rememberPullToRefreshState
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.platform.rememberPainter
+import io.legado.app.ui.root.LocalSharedCoverBinding
+import io.legado.app.ui.root.rememberSharedCoverSourceBinding
 import io.legado.app.ui.compose.platform.rememberString
-import io.legado.app.ui.compose.platform.transitionStatusBarPadding
+import io.legado.app.ui.compose.platform.platformStatusBarPadding
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.compose.theme.LocalEInk
-import io.legado.app.ui.root.ContainerTransformCard
-import io.legado.app.ui.root.ContainerTransformIdentity
 import io.legado.app.utils.toTimeAgo
 import kotlinx.coroutines.delay
 import legado.shared.generated.resources.Res
@@ -108,6 +109,53 @@ private const val VIDEO_HEIGHT_SCALE = 0.75f
 
 /** 布局三档: 与原 createAdapter 的 List/Grid/Video tier 一一对应 */
 enum class ShelfTier { LIST, GRID, VIDEO }
+
+/**
+ * 条目层给封面的尺寸约束档位。封面组件按 "哪个维度被约束" 反算另一个维度 (见
+ * `SharedCoverContent` 内部 `coverSizeModifier`), 所以容器约束与传给封面的 modifier 必须
+ * 成对出现: 列表档钉高、给 [androidx.compose.foundation.layout.fillMaxHeight]; 网格/视频档
+ * 钉宽、给 [androidx.compose.foundation.layout.fillMaxWidth]。
+ */
+enum class ShelfCoverSlot { LIST, GRID, VIDEO }
+
+/**
+ * 封面容器: 同时决定容器自身约束与下发给封面的 modifier, 两者由同一处给出。
+ *
+ * 拆开写就会出现"容器钉高、封面却拿到 fillMaxWidth"的错配: 宽高两维都被钉死且比例与容器宽
+ * 不一致时, 封面的 `aspectRatio` 会静默放弃比例按宽度测量, 封面撑满整行。
+ *
+ * @param coverHeightDp 列表档封面高度 (网格/视频档高度由宽度算出, 此值不用)
+ * @param cover 封面渲染回调, 收到与 [slot] 配套的尺寸 modifier 与比例标志
+ */
+@Composable
+internal fun ShelfCoverBox(
+    slot: ShelfCoverSlot,
+    coverHeightDp: Int = 0,
+    listIsVideo: Boolean = false,
+    contentAlignment: Alignment = Alignment.TopStart,
+    cover: @Composable (Modifier, isVideoCover: Boolean) -> Unit,
+) {
+    val boxModifier: Modifier = when (slot) {
+        // 列表档: 高度由 bookshelfCoverHeight 决定, 宽度按封面比例反算
+        ShelfCoverSlot.LIST -> Modifier.height(coverHeightDp.dp)
+        // 网格档: 宽度填满格子 (左右各 12dp 内边距, 对照原 XML iv_cover match_parent + 12dp margin)
+        ShelfCoverSlot.GRID -> Modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, end = 12.dp)
+        // 视频档: 宽度填满格子
+        ShelfCoverSlot.VIDEO -> Modifier.fillMaxWidth()
+    }
+    val coverModifier: Modifier = when (slot) {
+        ShelfCoverSlot.LIST -> Modifier.fillMaxHeight()
+        ShelfCoverSlot.GRID, ShelfCoverSlot.VIDEO -> Modifier.fillMaxWidth()
+    }
+    // 比例标志对照原 bindExploreCard / bindGridCard / bindVideoCard 与各 GroupViewHolder:
+    // 列表档书籍随 listIsVideo (分组列表档恒 NOVEL, 对照原版 GroupViewHolder 不设 coverRatio), 网格档恒 NOVEL, 视频档恒 VIDEO
+    val isVideoCover = when (slot) {
+        ShelfCoverSlot.LIST -> listIsVideo
+        ShelfCoverSlot.GRID -> false
+        ShelfCoverSlot.VIDEO -> true
+    }
+    Box(boxModifier, contentAlignment = contentAlignment) { cover(coverModifier, isVideoCover) }
+}
 
 data class ShelfLayoutSpec(
     val tier: ShelfTier,
@@ -186,8 +234,16 @@ private fun shelfGridCells(spec: ShelfLayoutSpec): GridCells =
     if (spec.fixedWidth) GridCells.Adaptive(spec.gridWidthDp.dp)
     else rememberResponsiveColumns(spec.cols)
 
-/** 计算封面高度 (对照 app 端 shelfCoverHeightDp, 视频模式按 0.75 收窄) */
-private fun shelfCoverHeightDp(isVideoStyle: Boolean): Int {
+/**
+ * 列表档封面高度: 读全局配置 `bookshelfCoverHeight`, 视频样式按 0.75 收窄。
+ *
+ * 收窄的理由 (对照原版 `applyCoverHeight` 注释): 16:9 视频封面横宽, 列表里容易挤到别的列,
+ * 按 3/4 倍高度收一下, 视觉上宽度仍与 3:4 小说封面同量级。
+ *
+ * 本函数是列表档封面高度的唯一来源: 书架/发现页/搜索列表/阅读记录四处条目共用, 不得在
+ * 条目层内联同一公式 (内联副本会随配置项或收窄系数变化而各自漂移)。
+ */
+internal fun shelfCoverHeightDp(isVideoStyle: Boolean): Int {
     val base = AppConfigProviders.get().bookshelfCoverHeight
     return if (isVideoStyle) (base * VIDEO_HEIGHT_SCALE).toInt() else base
 }
@@ -229,8 +285,8 @@ fun ShelfBooksContent(
     // 引擎正在执行目录更新的 bookUrl 集合 (对照 app 端 MainViewModel.onUpTocBooks)：启动自动
     // 更新链路不登记 refreshingUrls，条目转圈判据需合并本集合；下拉指示器仍只用 refreshingUrls
     engineUpdatingUrls: Set<String> = emptySet(),
-    onBookClick: (Book) -> Unit,
-    onBookLongClick: (Book) -> Unit,
+    onBookClick: (Book, String?) -> Unit,
+    onBookLongClick: (Book, String?) -> Unit,
     showLastUpdateTime: Boolean,
     showKindIntro: Boolean,
     // isVideoCover: 是否用 VIDEO(16:9) 封面比例。对照原版 ShelfCover ratio 选取:
@@ -297,29 +353,27 @@ fun ShelfBooksContent(
                 state = scroll.list,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 8.dp),
-                fastScrollEnabled = appConfig.showBookshelfFastScroller,
             ) {
                 items(items, key = ::shelfItemKey, contentType = ::shelfItemType) { item ->
                     val itemModifier = if (eInk) Modifier else Modifier.animateItem()
                     when (item) {
-                        // 书籍条目外包一层 Box: itemModifier(animateItem) 留在 Box 上, 容器变换锚点的
-                        // sharedBounds 走另一条 modifier 链, 避开两者同链在 LazyGrid 下的未验证行为;
-                        // 锚点本身要 BoxScope 才能 matchParentSize 铺满条目已测尺寸. 分组不是书,
-                        // 没有对应二级页, 故不挂锚点
-                        is Book -> ContainerTransformCard(
-                            identity = ContainerTransformIdentity(item.bookUrl, item.origin),
-                            modifier = itemModifier,
-                        ) {
-                            ShelfListItem(
-                                // 逐项窄化: 非刷新项恒拿 emptySet 单例, 集合变化时可跳过重组
-                                item, spec.isVideoList, coverReloadTick,
-                                if (item.bookUrl in refreshingUrlsSet) refreshingUrlsSet else emptySet(),
-                                showLastUpdateTime, showKindIntro,
-                                onClick = { onBookClick(item) },
-                                onLongClick = { onBookLongClick(item) },
-                                coverSlot = bookCoverSlot,
-                                lastUpdateTextSlot = { ShelfLastUpdateText(item.latestChapterTime, timeTickState) },
-                            )
+                        // 书籍条目外包一层 Box: itemModifier(animateItem) 留在 Box 上, 分组不是书
+                        is Book -> Box(modifier = itemModifier) {
+                            // 共享配对身份按条目下发: 被点的封面 = 出发端 (页转场 token 自签, 点击时交给导航),
+                            // 同屏重复封面 (同书/同 URL) 也不会互相抢正身
+                            val binding = rememberSharedCoverSourceBinding(item.bookUrl)
+                            CompositionLocalProvider(LocalSharedCoverBinding provides binding) {
+                                ShelfListItem(
+                                    // 逐项窄化: 非刷新项恒拿 emptySet 单例, 集合变化时可跳过重组
+                                    item, spec.isVideoList, coverReloadTick,
+                                    if (item.bookUrl in refreshingUrlsSet) refreshingUrlsSet else emptySet(),
+                                    showLastUpdateTime, showKindIntro,
+                                    onClick = { onBookClick(item, binding.pageToken) },
+                                    onLongClick = { onBookLongClick(item, binding.pageToken) },
+                                    coverSlot = bookCoverSlot,
+                                    lastUpdateTextSlot = { ShelfLastUpdateText(item.latestChapterTime, timeTickState) },
+                                )
+                            }
                         }
 
                         is BookGroup -> GroupListItem(
@@ -338,24 +392,24 @@ fun ShelfBooksContent(
                 state = scroll.grid,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 8.dp),
-                fastScrollEnabled = appConfig.showBookshelfFastScroller,
             ) {
                 items(items, key = ::shelfItemKey, contentType = ::shelfItemType) { item ->
                     val itemModifier = if (eInk) Modifier else Modifier.animateItem()
                     when (item) {
-                        // 外层 Box 同 LIST 分支: 隔开 animateItem 与锚点的 modifier 链
-                        is Book -> ContainerTransformCard(
-                            identity = ContainerTransformIdentity(item.bookUrl, item.origin),
-                            modifier = itemModifier,
-                        ) {
-                            ShelfGridItem(
-                                // 逐项窄化: 同 LIST 分支, 避免刷新集合每次变化重组全部可见项
-                                item, coverReloadTick,
-                                if (item.bookUrl in refreshingUrlsSet) refreshingUrlsSet else emptySet(),
-                                onClick = { onBookClick(item) },
-                                onLongClick = { onBookLongClick(item) },
-                                coverSlot = bookCoverSlot,
-                            )
+                        // 外层 Box 同 LIST 分支: 让 animateItem 留在 Box 上
+                        is Book -> Box(modifier = itemModifier) {
+                            // 共享配对身份按条目下发 (同上)
+                            val binding = rememberSharedCoverSourceBinding(item.bookUrl)
+                            CompositionLocalProvider(LocalSharedCoverBinding provides binding) {
+                                ShelfGridItem(
+                                    // 逐项窄化: 同 LIST 分支, 避免刷新集合每次变化重组全部可见项
+                                    item, coverReloadTick,
+                                    if (item.bookUrl in refreshingUrlsSet) refreshingUrlsSet else emptySet(),
+                                    onClick = { onBookClick(item, binding.pageToken) },
+                                    onLongClick = { onBookLongClick(item, binding.pageToken) },
+                                    coverSlot = bookCoverSlot,
+                                )
+                            }
                         }
 
                         is BookGroup -> GroupGridItem(
@@ -374,22 +428,22 @@ fun ShelfBooksContent(
                 state = scroll.grid,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 8.dp),
-                fastScrollEnabled = appConfig.showBookshelfFastScroller,
             ) {
                 items(items, key = ::shelfItemKey, contentType = ::shelfItemType) { item ->
                     val itemModifier = if (eInk) Modifier else Modifier.animateItem()
                     when (item) {
-                        // 外层 Box 同 LIST 分支: 隔开 animateItem 与锚点的 modifier 链
-                        is Book -> ContainerTransformCard(
-                            identity = ContainerTransformIdentity(item.bookUrl, item.origin),
-                            modifier = itemModifier,
-                        ) {
-                            ShelfVideoItem(
-                                item, coverReloadTick,
-                                onClick = { onBookClick(item) },
-                                onLongClick = { onBookLongClick(item) },
-                                coverSlot = bookCoverSlot,
-                            )
+                        // 外层 Box 同 LIST 分支: 让 animateItem 留在 Box 上
+                        is Book -> Box(modifier = itemModifier) {
+                            // 共享配对身份按条目下发 (同上)
+                            val binding = rememberSharedCoverSourceBinding(item.bookUrl)
+                            CompositionLocalProvider(LocalSharedCoverBinding provides binding) {
+                                ShelfVideoItem(
+                                    item, coverReloadTick,
+                                    onClick = { onBookClick(item, binding.pageToken) },
+                                    onLongClick = { onBookLongClick(item, binding.pageToken) },
+                                    coverSlot = bookCoverSlot,
+                                )
+                            }
                         }
 
                         is BookGroup -> GroupVideoItem(
@@ -427,7 +481,7 @@ fun ShelfBooksContent(
 fun BookshelfTopBar(content: @Composable RowScope.() -> Unit) {
     val colors = AppTheme.colors
     val eInk = LocalEInk.current
-    Box(Modifier.fillMaxWidth().then(if (eInk) Modifier else Modifier.transitionStatusBarPadding())) {
+    Box(Modifier.fillMaxWidth().then(if (eInk) Modifier else Modifier.platformStatusBarPadding())) {
         Row(
             // 56dp 对照原 TitleBar/Toolbar minHeight=actionBarSize
             Modifier.fillMaxWidth().heightIn(min = 56.dp),
@@ -600,8 +654,8 @@ fun ShelfListItem(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(8.dp),
     ) {
-        Box(Modifier.height(coverHeight.dp)) {
-            coverSlot(book, Modifier.fillMaxHeight(), isVideoStyle, coverReloadTick)
+        ShelfCoverBox(ShelfCoverSlot.LIST, coverHeightDp = coverHeight, listIsVideo = isVideoStyle) { m, isVideoCover ->
+            coverSlot(book, m, isVideoCover, coverReloadTick)
         }
         Column(
             Modifier
@@ -728,12 +782,8 @@ fun ShelfGridItem(
         Column(Modifier.fillMaxWidth()) {
             // 封面 Box: 宽度填满 (减 12dp 左右内边距), 对照原 XML iv_cover match_parent + 12dp margin
             // 无 cover URL 时仍渲染封面 Box (走占位), 对齐原 View 版无 path 也显示默认封面
-            Box(
-                Modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, end = 12.dp),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                // 对照原 bindGridCard: ivCover.coverRatio = NOVEL (恒)
-                coverSlot(book, Modifier.fillMaxWidth(), false, coverReloadTick)
+            ShelfCoverBox(ShelfCoverSlot.GRID, contentAlignment = Alignment.TopCenter) { m, isVideoCover ->
+                coverSlot(book, m, isVideoCover, coverReloadTick)
             }
             Text(
                 text = book.name,
@@ -786,9 +836,8 @@ fun ShelfVideoItem(
             .padding(8.dp),
     ) {
         // 无 cover URL 时仍渲染封面 Box (走占位), 对齐原 View 版无 path 也显示默认封面
-        Box(Modifier.fillMaxWidth()) {
-            // 对照原 bindVideoCard: ivCover.coverRatio = VIDEO (恒)
-            coverSlot(book, Modifier.fillMaxWidth(), true, coverReloadTick)
+        ShelfCoverBox(ShelfCoverSlot.VIDEO) { m, isVideoCover ->
+            coverSlot(book, m, isVideoCover, coverReloadTick)
         }
         Text(
             text = book.name,
@@ -839,10 +888,8 @@ fun GroupListItem(
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.height(coverHeight.dp)) {
-            // 对照原 style2 BooksAdapterList.GroupViewHolder: applyCoverHeight(isVideoStyle) 收窄高度,
-            // 但不设 coverRatio (保持默认 NOVEL); 故 isVideoCover 恒 false
-            coverSlot(group, Modifier.fillMaxHeight(), false, coverReloadTick)
+        ShelfCoverBox(ShelfCoverSlot.LIST, coverHeightDp = coverHeight) { m, isVideoCover ->
+            coverSlot(group, m, isVideoCover, coverReloadTick)
         }
         Text(
             text = group.groupName,
@@ -870,11 +917,8 @@ fun GroupGridItem(
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
-        Box(
-            Modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, end = 12.dp),
-        ) {
-            // 对照原 style2 BooksAdapterGrid.GroupViewHolder: 不设 coverRatio (保持默认 NOVEL)
-            coverSlot(group, Modifier.fillMaxWidth(), false, coverReloadTick)
+        ShelfCoverBox(ShelfCoverSlot.GRID) { m, isVideoCover ->
+            coverSlot(group, m, isVideoCover, coverReloadTick)
         }
         Text(
             text = group.groupName,
@@ -904,9 +948,8 @@ fun GroupVideoItem(
             .padding(8.dp),
     ) {
         // 无 cover URL 时仍渲染封面 Box (走占位), 对齐 app 端无 path 也显示默认封面
-        Box(Modifier.fillMaxWidth()) {
-            // 对照原 style2 BooksAdapterVideo.GroupViewHolder: ivCover.coverRatio = VIDEO
-            coverSlot(group, Modifier.fillMaxWidth(), true, coverReloadTick)
+        ShelfCoverBox(ShelfCoverSlot.VIDEO) { m, isVideoCover ->
+            coverSlot(group, m, isVideoCover, coverReloadTick)
         }
         Text(
             text = group.groupName,

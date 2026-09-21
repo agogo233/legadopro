@@ -86,26 +86,23 @@ val quickjsNativeDir =
     file("${rootProject.projectDir}/modules/quickjs/build/libs/jvm/native/$quickjsPlatformId")
 val headlessNativeResDir = layout.buildDirectory.dir("generated/quickjs-native")
 
-val copyQuickjsNativeToHeadlessResources by tasks.registering(Copy::class) {
+val copyQuickjsNativeToHeadlessResources = tasks.register<Copy>("copyQuickjsNativeToHeadlessResources") {
     // 先触发 native 库构建，再从当前平台独占目录复制；避免捎带其他平台的陈旧库。
     dependsOn(project(":modules:quickjs").tasks.named("buildJvmNativeLib"))
-    from(quickjsNativeDir)
+    val nativeDir = quickjsNativeDir
+    val expectedLib = when {
+        OperatingSystem.current().isWindows -> "legado_quickjs.dll"
+        OperatingSystem.current().isMacOsX -> "liblegado_quickjs.dylib"
+        else -> "liblegado_quickjs.so"
+    }
+    from(nativeDir)
     include("*.dll", "*.so", "*.dylib")
     into(headlessNativeResDir)
-    inputs.dir(quickjsNativeDir).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir(nativeDir).withPathSensitivity(PathSensitivity.RELATIVE)
     doFirst {
-        val expected = when {
-            OperatingSystem.current().isWindows -> "legado_quickjs.dll"
-            OperatingSystem.current().isMacOsX -> "liblegado_quickjs.dylib"
-            else -> "liblegado_quickjs.so"
-        }
-        if (!quickjsNativeDir.resolve(expected).isFile) {
+        if (!nativeDir.resolve(expectedLib).isFile) {
             throw GradleException(
-                "QuickJS native library is missing: ${
-                    quickjsNativeDir.resolve(
-                        expected
-                    )
-                }"
+                "QuickJS native library is missing: ${nativeDir.resolve(expectedLib)}"
             )
         }
     }
@@ -130,7 +127,7 @@ tasks.named("processResources") {
 // (本仓库 Gradle 8.14.5 下脚本平铺在 build/scripts/, 拷进 bin/ 即标准布局)。
 val headlessBundleDir = layout.buildDirectory.dir("headless-bundle")
 
-val bundleLib by tasks.registering(Sync::class) {
+val bundleLib = tasks.register<Sync>("bundleLib") {
     dependsOn(tasks.named("jar"))
     from(tasks.named("jar"))
     from(configurations.named("runtimeClasspath"))
@@ -140,7 +137,7 @@ val bundleLib by tasks.registering(Sync::class) {
     into(headlessBundleDir.map { it.dir("lib") })
 }
 
-val bundleBin by tasks.registering(Copy::class) {
+val bundleBin = tasks.register<Copy>("bundleBin") {
     dependsOn(tasks.named("startScripts"))
     from(layout.buildDirectory.dir("scripts"))
     into(headlessBundleDir.map { it.dir("bin") })

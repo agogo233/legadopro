@@ -37,9 +37,11 @@ import io.legado.app.help.config.ReadConfigProviders
 import io.legado.app.help.config.ReadTipConfigShared
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.coroutine.registerJvmDebugState
+import io.legado.app.help.file.desktopResolveStoredRef
 import io.legado.app.help.image.decodeBytesSampled
 import io.legado.app.help.image.registerJvmBookImageLoader
 import io.legado.app.help.image.registerReaderImageResolver
+import io.legado.app.help.storage.BackupShared
 import io.legado.app.help.toast.DesktopTrayNotifier
 import io.legado.app.help.tts.TtsEngineProvider
 import io.legado.app.model.fileBook.BitmapProviders
@@ -82,6 +84,7 @@ import io.legado.app.ui.root.ScreenModelStore
 import io.legado.desktop.audio.DesktopAppUserModelId
 import io.legado.desktop.audio.registerDesktopAudioPlayProviders
 import io.legado.desktop.audio.registerDesktopSystemMediaControl
+import io.legado.desktop.config.probeSystemNightMode
 import io.legado.desktop.config.registerDesktopSystemNightModeDetector
 import io.legado.desktop.help.DesktopCrashHandler
 import io.legado.desktop.help.DesktopUrlProtocol
@@ -105,11 +108,14 @@ import io.legado.desktop.ui.DesktopPlatformCapabilities
 import io.legado.desktop.ui.DesktopPlatformServices
 import io.legado.desktop.ui.DesktopTitleBar
 import io.legado.desktop.ui.DesktopToastHost
+import io.legado.desktop.ui.DesktopMediaRuntimeHost
 import io.legado.desktop.ui.DesktopToasts
 import io.legado.desktop.ui.DesktopWindowChrome
 import io.legado.desktop.ui.DesktopWindowChromeNative
 import io.legado.desktop.ui.DesktopWindowHandle
+import io.legado.desktop.ui.FileDropHintOverlay
 import io.legado.desktop.ui.browser.DesktopWebViewSlot
+import io.legado.desktop.ui.onFilesDroppedToWindow
 import io.legado.desktop.ui.platform.DesktopMangaReaderPlatform
 import io.legado.desktop.ui.platform.DesktopReaderPlatformProvider
 import io.legado.desktop.ui.platform.MediampVideoPlayPlatformProvider
@@ -122,7 +128,6 @@ import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import org.openani.mediamp.mpv.MPVHandle
-import org.openani.mediamp.mpv.MpvMediampPlayer
 import java.awt.Desktop
 import java.io.File
 import javax.swing.SwingUtilities
@@ -174,13 +179,6 @@ fun main(args: Array<String>) {
     // 全局崩溃日志 (对照 app 端 CrashHandler): 必须紧跟 initDesktopRuntimeEnvironment ——
     // 落盘目录依赖它设的 legado.portable.root, 提前装会把便携模式的日志写到系统缓存目录去。
     DesktopCrashHandler.install()
-    // 视频: mediamp mpv natives 后台预解包 (独立协程, 早于窗口创建): 首次创建播放器时
-    // 同步解包 ~20MB DLL + System.load 会硬卡顿, 启动期后台完成解包+加载,
-    // 之后打开视频零等待 (prepareLibraries 幂等, 内部有锁, 与首次播放时的同步路径互斥安全)
-    Coroutine.async {
-        runCatching { MpvMediampPlayer.prepareLibraries() }
-            .onFailure { AppLog.put("mediamp mpv natives 预解包失败: ${it.message}", it) }
-    }
     // mpv 日志接入 AppLog: 播放失败时 mediamp 只给出 mpv_error 码 (如 -13
     // MPV_ERROR_LOADING_FAILED), 拿不到 mpv 自己那行原因 (HTTP 状态 / Failed to recognize
     // file format / 解码器缺失)。sink 汇总 mpv 事件、JNI 层与 mediamp Kotlin 三处日志,
@@ -194,21 +192,29 @@ fun main(args: Array<String>) {
     // 避免新进程把启动参数转发给正在退出的旧进程后自杀 (表现为“应用直接消失”)
     val effectiveArgs = waitForOldProcessIfRestart(args)
     startupArgs = effectiveArgs
-    // 单实例守卫: 已有实例存活时把 args 转发过去 + 前置其窗口, 本进程 exitProcess(0) 不返回
-    // (对照 app 端 AssociationActivity singleTask)。必须在 handleDeepLinkArgs 与任何
-    // provider/数据库初始化之前, 否则二次启动进程会先碰同一个 SQLite 库再退出。
-    SingleInstanceGuard.ensureSingleInstance(effectiveArgs)
-    // legado:// deep link 启动参数处理 (对照 app 端 AssociationActivity intent-filter):
-    // 系统级 URL protocol 注册: Windows/Linux 运行时幂等自注册 ([DesktopUrlProtocol]),
-    // macOS 打包期 Info.plist CFBundleURLTypes (见 build.gradle.kts
-    // nativeDistributions.macOS.infoPlist), 详见 handleDeepLinkArgs KDoc
-    DesktopUrlProtocol.ensureRegisteredAsync()
-    handleDeepLinkArgs(args)
-    // 文件关联 (双击 .epub/.txt/.pdf/.cbz): 系统冷启动时把文件路径当 argv 送进来
-    // (打包期注册见 build.gradle.kts nativeDistributions.fileAssociation)
-    offerAssociationFiles(
-        effectiveArgs.filter { !LegadoDeepLink.isDeepLink(it) && File(it).isFile }
-    )
+    // 单实例守卫: 已有实例存活时把 args 转发过去 + 前置其窗口, 那个线程 exitProcess(0) 不返回
+    // (对照 app 端 AssociationActivity singleTask)。本函数不再同步等完整套探活+bind+写 lock
+    // (实测 110~166ms), 而是交给守卫线程, 主线程继续做与数据无关的初始化;
+    // 判定收口点在 runDesktopApp 的 application 块开头 (awaitPrimaryDecision) ——
+    // 它必须在任何配置/数据库初始化之前, 否则二次启动进程会先碰同一个 SQLite 库再退出。
+    SingleInstanceGuard.startAsync(effectiveArgs)
+    // 启动期原生依赖预热 (与 AWT/Swing 初始化赛跑, 两者都不写配置值也不碰数据库, 故可以抢在
+    // 单实例判定之前):
+    //   1) JNA —— 阶段0 构 DesktopAppConfigAccessor 时 isNightTheme 会走 JNA 读注册表,
+    //      实测那一段 81~86ms, 而只加载类不真调用是没用的 (得真跑一次 probeSystemNightMode);
+    //   2) AWT 字体环境 —— 首次枚举系统字体只在主线程发生时会压在闪屏构造与首帧排版前面。
+    DesktopCore.warmUpNativeDependencies()
+    Thread({
+        runCatching { probeSystemNightMode() }
+            .onFailure { AppLog.put("系统深色模式预热失败 (不影响功能, 阶段0 会再读一次)", it) }
+    }, "jna-warm").apply {
+        isDaemon = true
+        start()
+    }
+    // legado:// deep link 与文件关联的启动参数**不在这里消费**: 本进程可能是二次实例,
+    // 守卫线程会把同一份 args 转发给首实例, 而两边都会各自入队 —— 早于单实例判定消费会让
+    // 同一次双击被导入两次 (旧代码就摆在判定之前)。两者现在跟在 runDesktopApp 的
+    // SingleInstanceGuard.awaitPrimaryDecision() 之后 (那里才是"本进程就是首实例"的确切点)。
     // macOS: legado:// 经 Apple Event (OpenURIHandler) 送达而非 argv, 注册 handler 承接;
     // Windows/Linux 的 Desktop.Action.APP_OPEN_URI isSupported=false, 静默跳过
     runCatching {
@@ -235,27 +241,11 @@ fun main(args: Array<String>) {
 }
 
 /**
- * 解析启动参数中的 legado://`/`yuedu:// deep link, 经 [LegadoDeepLinkHandler] 记录,
- * 待 [DeepLinkImportHost] 在窗口内消费弹导入对话框。
- *
- * # 各 OS 系统级 URL protocol 注册 (让浏览器点 `legado://` 链接能唤起本应用)
- *
- * - **Windows**: 运行时注册 `HKCU\Software\Classes\<scheme>` (空字符串值 `URL Protocol` +
- *   `shell\open\command` 默认值 `"<exe>" "%1"`), 见 [DesktopUrlProtocol];
- *   jpackage MSI / 便携 zip 产物启动时自动完成, per-user 无需管理员权限。
- * - **Linux**: 运行时写 `~/.local/share/applications/legado.desktop`
- *   (`MimeType=x-scheme-handler/legado;x-scheme-handler/yuedu;` + `Exec="<launcher>" %u`)
- *   并 `xdg-mime default` 设为默认 handler, 见 [DesktopUrlProtocol]。
- * - **macOS**: 打包期把 `CFBundleURLTypes` (CFBundleURLSchemes=[legado,yuedu]) 注入
- *   app bundle Info.plist (desktop/build.gradle.kts nativeDistributions.macOS.infoPlist);
- *   运行时回调走 Apple Event, 由 main() 里的 Desktop.setOpenURIHandler 承接 (非 argv)。
- */
-/**
  * 重启场景: 新进程启动参数里带 `--legado-restart-wait=<pid>` 时, 等到旧进程退出再继续。
  *
  * 旧进程 [io.legado.desktop.help.DesktopRegexErrorHandler.restartApp] 会先拉起本进程再
  * `exitProcess(0)`; 单实例锁 (instance.lock) 由旧进程的 shutdown hook 在退出时释放, 故新进程
- * 必须先等旧进程死掉, 否则 [SingleInstanceGuard.ensureSingleInstance] 会把参数转发给正在退出的
+ * 必须先等旧进程死掉, 否则 [SingleInstanceGuard.startAsync] 的探活会把参数转发给正在退出的
  * 旧进程后自杀。最多等 [RESTART_WAIT_TIMEOUT_MS], 超时后继续 (残留进程按陈旧 lock 接管)。
  */
 private fun waitForOldProcessIfRestart(args: Array<String>): Array<String> {
@@ -274,10 +264,29 @@ private fun waitForOldProcessIfRestart(args: Array<String>): Array<String> {
 
 private const val RESTART_WAIT_TIMEOUT_MS = 30_000L
 
+/**
+ * 解析启动参数中的 legado://`/`yuedu:// deep link, 经 [LegadoDeepLinkHandler] 记录,
+ * 待 [DeepLinkImportHost] 在窗口内消费弹导入对话框。
+ *
+ * # 各 OS 系统级 URL protocol 注册 (让浏览器点 `legado://` 链接能唤起本应用)
+ *
+ * - **Windows**: 运行时注册 `HKCU\Software\Classes\<scheme>` (空字符串值 `URL Protocol` +
+ *   `shell\open\command` 默认值 `"<exe>" "%1"`), 见 [DesktopUrlProtocol];
+ *   jpackage MSI / 便携 zip 产物启动时自动完成, per-user 无需管理员权限。
+ * - **Linux**: 运行时写 `~/.local/share/applications/legado.desktop`
+ *   (`MimeType=x-scheme-handler/legado;x-scheme-handler/yuedu;` + `Exec="<launcher>" %u`)
+ *   并 `xdg-mime default` 设为默认 handler, 见 [DesktopUrlProtocol]。
+ * - **macOS**: 打包期把 `CFBundleURLTypes` (CFBundleURLSchemes=[legado,yuedu]) 注入
+ *   app bundle Info.plist (desktop/build.gradle.kts nativeDistributions.macOS.infoPlist);
+ *   运行时回调走 Apple Event, 由 main() 里的 Desktop.setOpenURIHandler 承接 (非 argv)。
+ */
 private fun handleDeepLinkArgs(args: Array<String>) {
-    val url = args.firstOrNull { LegadoDeepLink.isDeepLink(it) } ?: return
-    if (!LegadoDeepLinkHandler.handle(url)) {
-        AppLog.put("deep link 解析失败 (缺 src 参数): $url", tag = TAG)
+    // 一次启动/转发可能携带多个 legado:// (LegadoDeepLinkHandler 内部有队列), 旧实现只取首个
+    args.filter { LegadoDeepLink.isDeepLink(it) }.forEach { url ->
+        if (!LegadoDeepLinkHandler.handle(url)) {
+            // 文案不写死"缺 src 参数": parse 对未知 host/路径同样返回 null
+            AppLog.put("deep link 解析失败 (缺 src 参数或 scheme/路径非法): $url", tag = TAG)
+        }
     }
 }
 
@@ -294,6 +303,55 @@ internal val pendingAssociationFiles = MutableStateFlow<List<String>>(emptyList(
 internal fun offerAssociationFiles(paths: List<String>) {
     if (paths.isEmpty()) return
     pendingAssociationFiles.update { it + paths }
+}
+
+/**
+ * 投递"从启动参数里挑出来的关联文件地址" (argv 冷启动与单实例转发两条链共用本判据)。
+ *
+ * 上一版两个调用点 (冷启动 argv 与单实例转发) 各自内联 `File(it).isFile`, 于是 Linux 的
+ * .desktop `Exec="%u"` 与部分文件管理器交来的 `file:///…` URI 被整条滤掉 (裸路径判存在,
+ * URI 形态永远不存在), 表现为"双击视频选 legado 后什么也不会发生"。
+ */
+internal fun offerAssociationArgs(args: List<String>) {
+    offerAssociationFiles(args.filter { isAssociationArg(it) })
+}
+
+/**
+ * 外部文件拖放进主窗口的投递入口 (见 ui/DesktopFileDrop.kt)。
+ *
+ * 不新写一条分发链: 拖放载荷 (Compose 给的是 `file:///…` URI 串) 走与 argv 冷启动 / 单实例
+ * 转发 / macOS Apple Event 完全相同的两个口 —— 入口筛子 [isAssociationArg] + 队列
+ * [offerAssociationFiles], 最终由同一个 LaunchedEffect 交给 [FileAssociationDispatch] 分发,
+ * 所以"拖进来"与"双击打开"对视频/书/JSON/不支持的分流一模一样。
+ *
+ * 被筛子滤掉的 (拖的是目录 / 文件已不在) 必须出声: 静默丢弃的表现就是"拖进去什么也没发生"。
+ * 多个文件全部投递 (一次拖 N 个 = 按顺序分发 N 次, 同双击 N 次)。
+ */
+internal fun offerDroppedFiles(files: List<String>) {
+    if (files.isEmpty()) return
+    val accepted = files.filter { isAssociationArg(it) }
+    offerAssociationFiles(accepted)
+    val rejected = if (accepted.size == files.size) return else files - accepted.toSet()
+    val name = rejected.first().trimEnd('/', '\\')
+        .substringAfterLast('/').substringAfterLast('\\')
+    DesktopToasts.show(
+        if (rejected.size == 1) "不支持的文件: $name" else "不支持的文件 (${rejected.size} 项)",
+        true
+    )
+    AppLog.put("拖放入口筛掉 ${rejected.size} 项: $rejected", tag = TAG)
+}
+
+/**
+ * 参数是否能交给 [FileAssociationDispatch] 处理: 排除 deep link, 其余按两种形态判存在性 ——
+ * 裸绝对路径 (Windows 双击 / macOS Apple Event) 与 file URI。
+ * URI → 本地文件复用 shared 的 [desktopResolveStoredRef] (自带百分号解码与 Windows 盘符
+ * 前导斜杠处理), 不在桌面端再写一份解析; 解析异常时按形态放行, 由分发链自行报错。
+ * 真正的"是不是视频 / 是不是书"判定在分发链里做 (shared 已定稿), 这里只做入口筛子。
+ */
+private fun isAssociationArg(arg: String): Boolean {
+    if (LegadoDeepLink.isDeepLink(arg)) return false
+    if (!arg.startsWith("file:", ignoreCase = true)) return File(arg).isFile
+    return runCatching { desktopResolveStoredRef(arg).isFile }.getOrDefault(true)
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
@@ -314,12 +372,44 @@ private fun runDesktopApp() = application {
     // BookStorage/AppDb/BookHelp/ReadBookPlatform/CoverStorage。
     // remember: 只在首组合执行一次 (原实现非 remember 的注册函数本就幂等, 收敛后行为等价);
     // 返回值 desktopReadBookConfig 供阶段2 LocalReadConfigProviders 注入 (与全局同实例)。
-    val desktopReadBookConfig = remember {
+    // 闪屏必须在「偏好+主题可读」的第一时间弹出, 所以它的构造提到阶段1 拆分之前。
+    // 实测拆分前 show() 落在 +0.96s (同 runtime 起一个纯 AWT 窗口只 298ms), 那之前屏幕
+    // 无任何反馈, 用户报的“启动卡顿/双击没反应”很大程度是这段空白。
+    val splashScreen = remember { DesktopSplashScreen(DesktopThemeStoreProvider()) }
+    // 返回值: _1 = 首屏要注入的 ReadBookConfig (与全局同实例), _2 = 闪屏计划驻留时长
+    val (desktopReadBookConfig, splashDuration) = remember {
         registerDesktopSystemNightModeDetector()
-        val config = DesktopCore.registerCoreProviders()
+        // 单实例判定收口点 (见 SingleInstanceGuard.startAsync): 主线程已经把 AWT/Swing 初始化
+        // 吃完, 守卫那 110~166ms 在其期间并行跑完了, 所以这个等待实测接近 0;
+        // 再往下就是 java.util.prefs 与 Room 数据库, 必须知道"本进程是不是首实例"。
+        SingleInstanceGuard.awaitPrimaryDecision()
+        // 启动参数 (deep link / 关联文件) 必须在单实例判定之后消费: 本进程若是二次实例,
+        // 守卫线程已把同一份 args 转发给首实例, 两边都入队就会重复导入同一次双击
+        handleDeepLinkArgs(startupArgs)
+        offerAssociationArgs(startupArgs.toList())
+        // 系统级 URL protocol 注册 (Windows 写 HKCU\Software\Classes\<scheme> / Linux 写 xdg-mime,
+        // macOS 靠打包期 Info.plist): 异步且不阻塞启动; 放到判定之后是为了不让二次启动去做这个写入
+        DesktopUrlProtocol.ensureRegisteredAsync()
+        // 阶段0 (日志/字符串/AndroidId/Toast/进度/更新回调/config+语言): 闪屏所需最小集
+        val early = DesktopCore.registerEarlyProviders()
+        val duration = splashScreen.show()
+        // 预热 CMP 字符串资源表: 首次取串要走 runBlocking + 资源表初始化, 实测 178~289ms。
+        // 放后台线程而不是主线程: 同步预热虽然落在"闪屏可见期", 但占的是主线程, 直接拖后首帧。
+        // 无主线程回跳风险已查依赖源码确认: JvmResourceReader.read() 仅 classloader 流读取,
+        // getString 路径里没有 withContext(Main), 不会构成"后台持 lazy 锁等 EDT + EDT 等锁"。
+        // 起在 applyDesktopLanguagePref (阶段0 已跑完) 之后: 预热与最终语言一致, 不会白跑一份错 locale。
+        Thread({
+            runCatching { jvmGetString("app_name") }
+                .onFailure { AppLog.put("预热 app_name 失败", it) }
+        }, "string-res-warm").apply {
+            isDaemon = true
+            start()
+        }
+        // 阶段1 余下重注册 (HTTP/JS/Room/存储/封面)
+        DesktopCore.registerRestProviders()
         // Compose UI 类型的 JVM 图片加载器 (SingletonImageLoader + BookImageLoaders, 依赖 ImageBitmap, 仅桌面 GUI 需要)
         registerJvmBookImageLoader()
-        config
+        early to duration
     }
     // ===== 以下为阶段1 的 UI 绑定注册 (依赖 AWT/Compose/JNA, 留在 :desktop) =====
     // Windows: 设置进程级 AppUserModelID + 保证开始菜单快捷方式身份注册 (SMTC 媒体卡
@@ -334,8 +424,8 @@ private fun runDesktopApp() = application {
     // (DesktopToasts → DesktopToastHost), 不再只依赖托盘气泡 (Windows 通知设置
     // 会静默拦截 TrayIcon.displayMessage, 曾表现为 toast 无反应)
     // (Toaster/NotificationProgress provider 本体注册在上方 DesktopCore.registerCoreProviders)
-    DesktopTrayNotifier.uiSender = { msg ->
-        DesktopToasts.show(msg, false)
+    DesktopTrayNotifier.uiSender = { msg, isLong ->
+        DesktopToasts.show(msg, isLong)
         true
     }
     // 注册桌面端 PlatformCapabilities (供 shared LegadoApp 经 PlatformCapabilityProviders.get() 取能力)
@@ -353,13 +443,17 @@ private fun runDesktopApp() = application {
     // 朗读引擎 (Windows SAPI / Linux espeak / macOS say): DesktopSystemTtsEngine 依赖 JNA
     // (WindowsSapiTtsBackend) 留在 :desktop 注册; HttpTTS 播放器工厂 (DesktopHttpTtsPlayer,
     // 纯 JVM) 已随上方 DesktopCore.registerCoreProviders 注册, headless 亦具备该能力
+    val performExit = {
+        BackupShared.autoBack()
+        exitApplication()
+    }
     val desktopTtsEngine = remember { DesktopSystemTtsEngine() }
     TtsEngineProvider.register(desktopTtsEngine)
     // 系统托盘: 音频/朗读活跃时给播放控制菜单 (最小化后仍可控), 同时承载 toast/进度气泡
     DisposableEffect(Unit) {
         DesktopMediaTray.install(
             windowProvider = { windowHandle.window },
-            exitAction = ::exitApplication,
+            exitAction = performExit,
         )
         // 朗读控制器绑定: 托盘按 controller.state 增删朗读菜单项, 空闲时自动隐藏
         DesktopMediaTray.readAloud = ReadAloudTrayBinding(
@@ -393,11 +487,8 @@ private fun runDesktopApp() = application {
     VideoPlayPlatformProviders.register(MediampVideoPlayPlatformProvider(windowHandle))
 
     // ==================== 阶段2: 显示窗口 ====================
-    // 启动闪屏 (AWT JWindow, 无边框, 在主窗口创建前显示)
-    val themeStoreProviderSplash = remember { DesktopThemeStoreProvider() }
-    val splashScreen =
-        remember { DesktopSplashScreen(themeStoreProviderSplash) }
-    val splashDuration = remember { splashScreen.show() }
+    // 启动闪屏已在阶段0 后、阶段1 重注册前显示 (见上方 splashScreen / desktopReadBookConfig 块):
+    // 目的是把“第一次有反馈”的时间从实测 +0.96s 提前到偏好就绪即弹出。
     val appName = rememberString("app_name")
     // 窗口状态记忆: 读"上次是否最大化" + 普通状态下的位置尺寸 (恢复规则用户拍板 2026-08-18):
     // - 上次最大化 → 完全不读 W/H/XY, 以 CMP 默认 800x600 创建再最大化, 于是"向下还原"
@@ -453,7 +544,7 @@ private fun runDesktopApp() = application {
         }
     ) {
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = performExit,
         visible = windowVisible,
         // 按键由 shared AppKeyRouter 统一分发 (全屏 Esc 退全屏 → 统一返回链 → F5 刷新 →
         // 快捷键栈捕获/冒泡两阶段), desktop Window 不再做任何业务判断。
@@ -489,6 +580,9 @@ private fun runDesktopApp() = application {
         },
         alwaysOnTop = DesktopWindowChrome.alwaysOnTop,
     ) {
+        // 计数打点: 上一版文案叫“首次组合”但它在组合体内, 每次重组都触发, 会把重组误读成首帧
+        // (实测启动期共 4 次进入, 其中一次本段 1068ms, 比首帧本身还贵)。改成带序号, 能分清第几次。
+        val composeRound = remember { java.util.concurrent.atomic.AtomicInteger() }
         // 单实例守卫绑定主窗口: 二次启动转发到达时前置本窗口 (取消最小化 + toFront + 请求焦点);
         // DisposableEffect 保证窗口销毁后解绑, 不让守卫持有已 dispose 的 AWT Window
         // 同步注入 AWT 窗口句柄到 DesktopWindowHandle, 供 DesktopWindowController 切换全屏;
@@ -512,33 +606,33 @@ private fun runDesktopApp() = application {
                         window.extendedState or javax.swing.JFrame.MAXIMIZED_BOTH
                 }
             }
-            windowVisible = true
-            // 闪屏关闭时机: 主窗口可见即关, 最迟 splashDuration 关闭 (取先到者)
-            if (splashDuration > 0) {
-                var splashClosed = false
-                fun closeSplash() {
-                    if (!splashClosed) {
-                        splashClosed = true
-                        SwingUtilities.invokeLater { splashScreen.close() }
-                    }
-                }
-                // 兜底定时器: 主窗口首帧渲染过慢/异常时不至于无限挂着
+            // 闪屏 ↔ 主窗口交接 (对照原版 app WelcomeActivity: 闪屏期间屏幕上不存在主界面,
+            // 到点 finish 才 startMainActivity)。两条规则:
+            // 1) 不早退: 主窗口未就绪时闪屏一直顶着 (旧版按定时器到点就关, 中间是一片无反馈空白)。
+            //    设定时长比主窗口就绪耗时时, 闪屏就多驻留一会儿 —— 这是刻意的。
+            // 2) 不同框: 撤闪屏与放行主窗口排在同一次交接里, 且先撤后显。旧版是
+            //    "windowVisible=true → 等 componentShown → 才关闪屏", 中间那一帧主界面会从
+            //    半屏置顶闪屏的四周先露出来, 就是用户报的"启动界面没消失主界面就出来了"。
+            // 窗口本体、内容组合与首帧绘制在闪屏期间已照常完成 (CMP 1.11.1: pack 使窗口
+            // displayable 时已 renderImmediately 画过首帧), 所以晚点放行不会多等一次渲染。
+            val revealDelay = if (splashDuration > 0) {
+                (splashDuration - splashScreen.elapsedSinceShow()).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            val reveal: () -> Unit = {
+                if (splashDuration > 0) splashScreen.close()
+                windowVisible = true
+            }
+            if (revealDelay > 0L) {
                 Coroutine.async {
-                    val remain = splashDuration - 200  // 留 200ms 让主窗口首帧渲染
-                    if (remain > 0) kotlinx.coroutines.delay(remain)
-                    closeSplash()
+                    kotlinx.coroutines.delay(revealDelay)
+                    SwingUtilities.invokeLater(reveal)
                 }
-                // 主窗口可见即关 (取先到者): AWT componentShown 在窗口显示时触发
-                if (window.isVisible) {
-                    closeSplash()
-                } else {
-                    window.addComponentListener(object : java.awt.event.ComponentAdapter() {
-                        override fun componentShown(e: java.awt.event.ComponentEvent) {
-                            closeSplash()
-                            window.removeComponentListener(this)
-                        }
-                    })
-                }
+            } else {
+                // reveal 内含 splashScreen.close(), 该函数合同要求必须在 EDT 调用
+                // (同段其它 AWT 调用都显式 invokeLater); 幂等所以重复调度无害
+                SwingUtilities.invokeLater(reveal)
             }
             windowHandle.window = window
             SingleInstanceGuard.bindWindow(window)
@@ -650,73 +744,90 @@ private fun runDesktopApp() = application {
             // fontScale (iOS 跟系统 Dynamic Type, 桌面/鸿蒙恒 1) —— 语义对照原版 getFontScale
             AppFontScaleScope {
                 AppTheme {
-
-                    // 书源 JS 弹窗事件桥宿主: 订阅 FlowBus(SOURCE_UI_REQUEST) 弹 Compose Dialog
-                    // (四端同一份, 实现见 shared/sharedUiMain 的 SourceUiEventBridgeHost)
-                    SourceUiEventBridgeHost()
-                    // 桌面端命令式对话框宿主: PlatformCapabilities 的同步方法经 DesktopDialogs 推请求
-                    DesktopDialogHost()
-                    // 桌面端 Toast 宿主: JS java.toast / Toaster 链路统一收口到窗口内 UI toast
-                    // (Popup 呈现: 独立合成层不被 LegadoApp 覆盖, 相对主窗口底部定位)
-                    DesktopToastHost()
-                    // 阅读页长按文字选择对话框宿主 (对照 app 端 MainActivity.readerSelection 分支)
-                    desktopReaderProvider.TextSelectionHost()
-                    // 阅读页图片长按菜单宿主 (四端同一份自绘浮动菜单, 见 shared ReaderImageActionMenu)
-                    ReaderImageActionMenu.Host()
-                    // 阅读页查词对话框宿主 (四端同一份, 见 shared ReaderDictWord)
-                    ReaderDictWord.Host()
-                    // legado:// deep link 导入对话框宿主: 消费 main(args)/OpenURIHandler 经
-                    // LegadoDeepLinkHandler 记录的待导入请求 (对照 app 端 AssociationActivity 分发)
-                    DeepLinkImportHost()
-                    // 窗口控制栏三分支: macOS 原生红绿灯 / Windows 自研 native 控制条
-                    // (legado_wndchrome, 客户区顶到窗口顶 + 鼠标穿透 layered 子窗口自绘整条,
-                    //  拖拽/双击最大化/贴靠/Snap Layouts 由 WM_NCHITTEST 返回值换取) /
-                    // Linux 自绘全功能控制栏 (DesktopTitleBar)。
-                    // 全屏时 Esc 优先退出全屏 (用户拍板 2026-08): 由 shared AppKeyRouter 的
-                    // fullscreenEsc 策略 (上方 DisposableEffect(window) 注册) 在统一返回链前处理
-                    if (Platform.isMac()) {
-                        // macOS: 纯系统标题栏 (原生红绿灯), 深浅色/设置走设置页 (原版观感)
-                        LegadoApp(
-                            navigator = navigator,
-                            screenModelStore = screenModelStore,
-                        )
-                    } else {
-                        // Windows: 控制条整条由 native (legado_wndchrome) 画在鼠标穿透的 layered
-                        //   子窗口里, 命中测试全在 native WndProc —— Compose 侧只留等高空位 +
-                        //   DesktopNativeChromeHost 推主题色/标题/图标并承接按键回调。
-                        // Linux: 保持自绘全功能控制栏 (DesktopTitleBar) 不动。
-                        if (Platform.isWindows()) {
-                            DesktopNativeChromeHost(
-                                appName = appName,
-                                window = window,
-                                themeStore = themeStoreProvider,
-                                navigator = navigator,
-                            )
-                        }
-                        Column(Modifier.fillMaxSize()) {
-                            if (!DesktopWindowChrome.fullscreen) {
-                                if (Platform.isWindows()) {
-                                    // native 控制条的占位: 必须显式涂同色底, 见 ChromeStripSpacer
-                                    ChromeStripSpacer()
-                                } else {
-                                    DesktopTitleBar(
-                                        appName = appName,
-                                        icon = iconPainter,
-                                        window = window,
-                                        windowState = windowState,
-                                        themeStore = themeStoreProvider,
-                                        navigator = navigator,
-                                        onCloseRequest = ::exitApplication,
-                                    )
-                                }
-                            }
-                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                    // 外部文件拖放接收入口: 整个客户区都是拖放热区 (实现与选型依据见 ui/DesktopFileDrop.kt)
+                    // fileDropHint = 拖放高亮的瞬时 UI 态: 只被 onFilesDroppedToWindow 写、
+                    // FileDropHintOverlay 读, 不进业务状态 (ScreenModel/UiState 一律不碰)。
+                    val fileDropHint = remember { mutableStateOf(false) }
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .onFilesDroppedToWindow(fileDropHint)
+                    ) {
+                        // 书源 JS 弹窗事件桥宿主: 订阅 FlowBus(SOURCE_UI_REQUEST) 弹 Compose Dialog
+                        // (四端同一份, 实现见 shared/sharedUiMain 的 SourceUiEventBridgeHost)
+                        SourceUiEventBridgeHost()
+                        // 桌面端命令式对话框宿主: PlatformCapabilities 的同步方法经 DesktopDialogs 推请求
+                        DesktopDialogHost()
+                        // legado:// deep link 导入对话框宿主: 消费 main(args)/OpenURIHandler 经
+                        // LegadoDeepLinkHandler 记录的待导入请求 (对照 app 端 AssociationActivity 分发)
+                        DeepLinkImportHost()
+                        // 窗口控制栏三分支: macOS 原生红绿灯 / Windows 自研 native 控制条
+                        // (legado_wndchrome, 客户区顶到窗口顶 + 鼠标穿透 layered 子窗口自绘整条,
+                        //  拖拽/双击最大化/贴靠/Snap Layouts 由 WM_NCHITTEST 返回值换取) /
+                        // Linux 自绘全功能控制栏 (DesktopTitleBar)。
+                        // 全屏时 Esc 优先退出全屏 (用户拍板 2026-08): 由 shared AppKeyRouter 的
+                        // fullscreenEsc 策略 (上方 DisposableEffect(window) 注册) 在统一返回链前处理
+                        if (Platform.isMac()) {
+                            // macOS: 纯系统标题栏 (原生红绿灯), 深浅色/设置走设置页 (原版观感)
+                            Box(Modifier.fillMaxSize()) {
                                 LegadoApp(
                                     navigator = navigator,
                                     screenModelStore = screenModelStore,
                                 )
+                                desktopReaderProvider.TextSelectionHost()
+                                ReaderImageActionMenu.Host()
+                                ReaderDictWord.Host()
+                            }
+                        } else {
+                            // Windows: 控制条整条由 native (legado_wndchrome) 画在鼠标穿透的 layered
+                            //   子窗口里, 命中测试全在 native WndProc —— Compose 侧只留等高空位 +
+                            //   DesktopNativeChromeHost 推主题色/标题/图标并承接按键回调。
+                            // Linux: 保持自绘全功能控制栏 (DesktopTitleBar) 不动。
+                            if (Platform.isWindows()) {
+                                DesktopNativeChromeHost(
+                                    appName = appName,
+                                    window = window,
+                                    themeStore = themeStoreProvider,
+                                    navigator = navigator,
+                                )
+                            }
+                            Column(Modifier.fillMaxSize()) {
+                                if (!DesktopWindowChrome.fullscreen) {
+                                    if (Platform.isWindows()) {
+                                        // native 控制条的占位: 必须显式涂同色底, 见 ChromeStripSpacer
+                                        ChromeStripSpacer()
+                                    } else {
+                                        DesktopTitleBar(
+                                            appName = appName,
+                                            icon = iconPainter,
+                                            window = window,
+                                            windowState = windowState,
+                                            themeStore = themeStoreProvider,
+                                            navigator = navigator,
+                                            onCloseRequest = performExit,
+                                        )
+                                    }
+                                }
+                                Box(Modifier.weight(1f).fillMaxWidth()) {
+                                    LegadoApp(
+                                        navigator = navigator,
+                                        screenModelStore = screenModelStore,
+                                    )
+                                    // 阅读页浮动菜单宿主放与页面同一可用区, 坐标系与页面完全对齐, 无需手动补偿控制条高度
+                                    desktopReaderProvider.TextSelectionHost()
+                                    ReaderImageActionMenu.Host()
+                                    ReaderDictWord.Host()
+                                }
                             }
                         }
+                        // 拖放反馈遮罩: 文件被拖进窗口期间盖在页面之上的一层 (落下/拖出即撤销);
+                        // 放 Toast 宿主之前 = 高亮不会压住 Toast 文案 (如"不支持的文件")
+                        FileDropHintOverlay(fileDropHint)
+                        // 桌面端 Toast 宿主: 顶层 Overlay 渲染 (居底 48dp, 独立层不被页面覆盖, 天然穿透点击)
+                        DesktopToastHost()
+                        // 媒体播放组件按需下载弹框宿主 (视频页与桌面音频共用一套 mpv natives, 两处都由
+                        // DesktopMediaRuntime 推同一个状态; 挂最后 = Z 序高于 Toast, 进度不会被气泡遮住)
+                        DesktopMediaRuntimeHost()
                     }
                 }
             }
@@ -767,9 +878,15 @@ private suspend fun registerSecondaryProviders() {
         // 注: TTS 引擎 + HttpTTS 播放器工厂已提前到阶段1同步注册 (无依赖, 消除开窗即朗读的竞态)
         // 压缩文件解压 provider (原 10b 后半, DesktopArchiveCodec 依赖 junrar/commons-compress)
         registerDesktopArchiveProvider()
+        // 系统 TTS 引擎后台预热 (推迟至阶段3窗口显示后, 避免首屏前唤醒 COM/子进程)
+        (TtsEngineProvider.get() as? DesktopSystemTtsEngine)?.warmUpAsync()
 
         // ===== 尾部启动任务 (原 15/16 步, 逐行等价逻辑在 DesktopCore.startupBackgroundTasks) =====
         DesktopCore.startupBackgroundTasks()
+        // 注: 原先这里还有一发 `MpvMediampPlayer.prepareLibraries()` 预解包 (上一轮从 main() 推迟过来的)。
+        // 已删除: 用户拍板把 mpv 运行时从发布 classpath 摘掉、改"视频与本地音频首次播放时按需下载",
+        // 摘掉后无参 prepareLibraries() 会因找不到清单资源报 IllegalStateException, 启动期只会多出噪声日志。
+        // 媒体运行时的准备改由播放平台层 (MediampVideoPlayPlatformProvider / DesktopAudioPlayer) 触发。
     }
 }
 
@@ -801,7 +918,16 @@ private fun initDesktopRuntimeEnvironment() {
         val exeDir = resDirFile.parentFile?.parentFile ?: resDirFile.parentFile
         File(exeDir, "data")
     } else {
-        AppLog.put(jvmGetString("desktop_install_mode_not_portable", InstallType.TYPE), tag = TAG)
+        // 刻意不调 jvmGetString: 本函数在 main() 第一行路径上, 取一次 CMP 字符串会把整套资源系统
+        // 同步初始化 —— 实测 (-Xlog:class+load) MainKt 类在 0.075s, 而 DesktopCore 要到 0.536s
+        // 才首次出现, 中间 461ms 全耗在这一句日志上; 而 CI 打便携包不传 -Plegado.installType
+        // (_desktop.yml 只传 -PappVersion), 等于每个便携用户白付 0.46 秒换一条提示。
+        // 日志改 ASCII 字面量, 不进资源系统; 真正需要字符串的地方 (闪屏之后) 再预热。
+        AppLog.put(
+            "install mode = ${InstallType.TYPE} (not portable); " +
+                "data root falls back to portable.txt detection or system location",
+            tag = TAG,
+        )
         null
     }
 

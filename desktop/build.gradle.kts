@@ -1,7 +1,11 @@
+import io.legado.buildlogic.NativeJarStripper
+import io.legado.buildlogic.NativePlatformOs
+import io.legado.buildlogic.NativeToolchainValueSource
 import org.gradle.internal.os.OperatingSystem
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import java.time.LocalDate
 import java.util.Properties
+import java.util.zip.ZipFile
 
 plugins {
     id("legado.jvm.application")
@@ -66,11 +70,14 @@ val installType = (project.findProperty("legado.installType") as String?)
     ?: "dev"
 
 val installTypeDir = file("build/generated/installType/kotlin/io/legado/desktop/")
-val generateInstallType by tasks.registering {
+val generateInstallType = tasks.register("generateInstallType") {
     outputs.dir(installTypeDir)
+    // 配置缓存约束: doLast 不得引用脚本级对象或 Project, 同 generateMediaRuntimeConfig
+    val type = installType
     doLast {
-        installTypeDir.mkdirs()
-        file("${installTypeDir.path}/InstallType.kt").writeText(
+        val outputDir = outputs.files.singleFile
+        outputDir.mkdirs()
+        outputDir.resolve("InstallType.kt").writeText(
             """package io.legado.desktop
 
 /**
@@ -83,7 +90,7 @@ val generateInstallType by tasks.registering {
  * - DEV: 数据存项目工作目录 (开发期)
  */
 object InstallType {
-    const val TYPE: String = "$installType"
+    const val TYPE: String = "$type"
     val IS_PORTABLE: Boolean = TYPE == "portable"
     val IS_INSTALLED: Boolean = TYPE == "installed"
     val IS_DEV: Boolean = TYPE == "dev"
@@ -96,6 +103,7 @@ object InstallType {
 sourceSets {
     main {
         kotlin.srcDir("build/generated/installType/kotlin")
+        kotlin.srcDir("build/generated/mediaRuntime/kotlin")
         // 直接挂载 app 端 drawable-nodpi 为桌面资源目录 (闪屏书本图标等),
         // 与 app 端共用同一份图片文件, 避免复制相同资源
         resources.srcDir("../app/src/main/res/drawable-nodpi")
@@ -103,6 +111,70 @@ sourceSets {
 }
 
 tasks.named("compileKotlin").configure { dependsOn(generateInstallType) }
+
+// ============================================================
+// 媒体播放组件 (mpv/FFmpeg native) 按需下载参数生成
+// ============================================================
+// 背景: 这套 native 实测 jar 21.0MiB (37 个 dll, 解压 52.7MiB), 是安装包最大单项。用户裁决不随包
+// 发布, 改成首次播视频/本地音频时从镜像下载 (见 desktop/media/DesktopMediaRuntime)。
+// 版本单一来源 = libs.versions.toml 的 mediamp; 各平台工件的 SHA-1 按版本预置在此 —— 升 mediamp
+// 版本必须同时补新版本的五个校验值, 否则配置期直接报错 (比运行期下载失败早发现)。
+private val mediaRuntimeSha1ByRelease: Map<String, Map<String, String>> = mapOf(
+    // 值来源: Maven Central 上各平台 <artifact>-<version>.jar.sha1 (2026-09-15 实测与阿里镜像一致)
+    "0.3.0" to mapOf(
+        "windows-x64" to "77ba37f9ef80537dafbcdf3009802e839464943c",
+        "windows-arm64" to "684ebeac4a8a85d97e965ae7928e84f2198e0726",
+        "linux-x64" to "8e221ff2bb7b58957dbfd3b257e705539f078612",
+        "macos-x64" to "78ce63a55e433a1dc041d56d72f90829270c7380",
+        "macos-arm64" to "7ceb34bd7269baaf64dc1f304a9ef1a4ee5add2b",
+    ),
+)
+
+val mediaRuntimeVersion = libs.versions.mediamp.get()
+val mediaRuntimeSha1 = mediaRuntimeSha1ByRelease[mediaRuntimeVersion]
+    ?: error(
+        "libs.versions.toml mediamp=$mediaRuntimeVersion 在 desktop/build.gradle.kts 的 " +
+            "mediaRuntimeSha1ByRelease 里没有校验值: 补上该版本五个平台的 jar SHA-1 再打包 " +
+            "(来源: https://repo1.maven.org/maven2/org/openani/mediamp/<artifact>/<version>/...jar.sha1)"
+    )
+
+val mediaRuntimeDir = file("build/generated/mediaRuntime/kotlin/io/legado/desktop/media/")
+val generateMediaRuntimeConfig = tasks.register("generateMediaRuntimeConfig") {
+    outputs.dir(mediaRuntimeDir)
+    // 配置缓存约束: doLast 不得引用脚本级对象或 Project —— 版本/校验值在配置期捕获为
+    // 可串行化局部量, 输出目录经任务自身 outputs.files 取, 文件用 File.resolve 而非 file()
+    val version = mediaRuntimeVersion
+    val sha1ByPlatform = mediaRuntimeSha1
+    doLast {
+        val outputDir = outputs.files.singleFile
+        outputDir.mkdirs()
+        val entries = sha1ByPlatform.entries.sortedBy { it.key }
+            .joinToString(",\n        ") { "\"${it.key}\" to \"${it.value}\"" }
+        outputDir.resolve("MediaRuntimeConfig.kt").writeText(
+            """package io.legado.desktop.media
+
+/**
+ * 媒体播放组件按需下载参数 (由 :desktop:generateMediaRuntimeConfig 生成, 勿手改)。
+ *
+ * version 来自 libs.versions.toml `mediamp`; sha1ByPlatform 来自 Maven Central 官方 .sha1。
+ */
+object MediaRuntimeConfig {
+    const val VERSION: String = "$version"
+
+    val sha1ByPlatform: Map<String, String> = mapOf(
+        $entries
+    )
+}
+""".trimIndent() + "\n"
+        )
+    }
+}
+
+tasks.named("compileKotlin").configure { dependsOn(generateMediaRuntimeConfig) }
+
+// 媒体运行时 (mpv/ffmpeg native jar) 专用 configuration: **不**从 runtimeClasspath 继承,
+// 故 jpackage 产物与便携包里都不会出现它; 仅手动挂到 :desktop:run 的 classpath 上供开发期用。
+val mediaRuntimeOnly = configurations.create("mediaRuntimeOnly")
 
 dependencies {
     // 引入 shared 模块 jvm target (传递 commonMain + jvmMain 全部 API)
@@ -128,7 +200,7 @@ dependencies {
     implementation(project(":modules:quickjs"))
     // Coil3 图片栈 (封面/ReviewListScreen 直接用 rememberAsyncImagePainter/ImageRequest):
     // shared 对 coil3 是 implementation 不外泄, desktop 显式声明; coil-compose 传递 api 出
-    // coil(SingletonImageLoader)/coil-core(ImageRequest/DiskCache)/coil-compose-core(painter)
+    // coil(SingletonImageLoader)/coil-core(ImageRequest/DiskCache)/coil-compose-core(painter)。
     implementation(libs.coil3.compose)
     // 桌面端音频播放: open-ani/mediamp (mediamp-mpv 后端, 与视频同引擎, mpv=FFmpeg 全格式)。
     // 引擎实例在 DesktopAudioPlayer 惰性创建 (ServiceLoader 解析 mediamp-mpv);
@@ -165,7 +237,11 @@ dependencies {
         // 消除 "implicitly cast to Any" 警告 (旧写法直接把组对象当依赖传, 兜底分支实际是坏的)。
         else -> libs.mediamp.mpv.runtime.asProvider()
     }
-    runtimeOnly(mpvRuntime)
+    // 媒体运行时 (单工件实测 21.0MiB, 37 个 native) **不再进发布 classpath**: 用户裁决改首次播
+    // 视频/本地音频时按需下载 (见 desktop/media/DesktopMediaRuntime)。它同时服务视频与音频
+    // (同一套 mpv natives), 所以文案与门禁都是"媒体播放组件"而不是"视频组件"。
+    // 开发期 :desktop:run 仍挂上它 (mediaRuntimeOnly + 下方 run 任务 classpath), 本地跑代码不必每次先下一遍。
+    mediaRuntimeOnly(mpvRuntime)
     // jna 保留: WindowsFileDialogs (jna-platform) / DesktopAppConfigAccessor / DesktopBattery /
     // DesktopWebViewEngines 直调 Win32; 视频侧 JNA 绑定已随自研渲染器删除。
     implementation(libs.jna)
@@ -211,6 +287,30 @@ dependencies {
 // Compose Desktop 统一配置入口 (mainClass + nativeDistributions)
 // 注: 不使用 Gradle application 插件, 避免与 compose.desktop.application{} 注册的 run task 冲突
 
+// ============================================================
+// release 运行时 classpath 剔除测试库 (2026-09 实测缺陷)
+// ============================================================
+// 链路 (硬证据: ./gradlew :desktop:dependencyInsight --dependency junit --configuration runtimeClasspath):
+//   runtimeClasspath → org.jetbrains.compose.desktop:desktop-jvm-windows-x64 → desktop-jvm
+//     → org.jetbrains.compose.ui:ui-tooling-preview(-desktop)          ← “IDE 预览”用
+//     → org.jetbrains.compose.ui:ui-test(-desktop)
+//     → junit:4.13.2 (+ hamcrest / com.google.truth / guava / kotlinx-coroutines-test 一串传递依赖)
+// 即 ui-tooling-preview 在 desktop 变体里把整套测试库挂在 runtime 方向上, 3.26.09121949 便携版
+// app/ 目录实测含 junit-4.13.2、hamcrest-core、truth-1.0.1、ui-test-desktop、
+// ui-test-junit4-desktop、kotlinx-coroutines-test-jvm。危害除体积与启动期类扫描外, 还有
+// ServiceLoader 污染: coroutines-test 声明的 TestMainDispatcherFactory 与 coroutines-swing 的
+// Swing 工厂同屏竞争 Dispatchers.Main (2026-08-18 已实测过同类覆盖导致 Dispatchers.Main 崩溃),
+// 再叠加本次修的“ProGuard 删了 services 实现类但留着服务文件”, 组合起来就是随机启动故障。
+// 只裁 runtimeClasspath: testRuntimeClasspath 不继承它 (两者是兄弟, 均 extendsFrom
+// implementation/runtimeOnly), 所以 :desktop:test 仍能用 testImplementation 的 junit/ui-test-junit4。
+// 排除根只选 ui-test*: junit/truth/guava 全部从它往下传, 扒掉根即整串消失。
+configurations.named("runtimeClasspath") {
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test")
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test-desktop")
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test-junit4")
+    exclude(group = "org.jetbrains.compose.ui", module = "ui-test-junit4-desktop")
+}
+
 // 桌面端编译目标 Java 21 (JvmApplicationConventionPlugin jvmToolchain(21)), 但 Compose 插件的
 // run/jpackage 任务默认用 Gradle daemon 的 JVM (System.getProperty("java.home")), 不跟工具链走:
 // daemon 是 17 时 :desktop:run 启动即抛 UnsupportedClassVersionError (class file v65)。
@@ -249,6 +349,29 @@ tasks.matching { it.name == "createRuntimeImage" }.configureEach {
     }.onFailure {
         logger.warn("[legado-desktop] jlink --compress 设置失败(插件版本差异), 跳过: ${it.message}")
     }
+
+    // CDS 前置条件: jlink 必须保留 bin/java.exe。
+    // 插件默认 --strip-native-commands=true, 产物 runtime/bin 下根本没有 java.exe
+    // (3.26.09121949 便携版实测: runtime/bin 只剩 *.dll, runtime/lib/server 为空),
+    // 于是旧版 dumpCdsArchive 的 `if (!jreJava.exists()) warn + return` 静默跳过,
+    // -Xshare:auto 全程空转 —— 注释里宣称的“启动期类加载时间降 20~40%”从未落地。
+    // 代价: 产物 runtime 多 3 个 launcher —— 实测 java.exe 50296 + javaw.exe 50296 +
+    // keytool.exe 24696 = 125,288B (0.12MB, 不是此前注释写的"量级 MB", 那数字夸大约 10 倍)。
+    // 刻意不用上方 compressionLevel 的 runCatching 静默降级: 拿不到这个属性 = CDS 又会静默失效,
+    // 必须当场构建失败。
+    run {
+        val getter = javaClass.methods.firstOrNull { it.name.startsWith("getStripNativeCommands") }
+            ?: error(
+                "AbstractJLinkTask.stripNativeCommands 不存在 (插件版本差异): CDS 归档将无法生成, " +
+                    "请同步更新本配置, 不得静默跳过"
+            )
+        @Suppress("UNCHECKED_CAST") // 同 compressionLevel: 运行期擦除后 cast 为 Property<Any>
+        val stripProp = getter.invoke(this) as Property<Any>
+        stripProp.set(false)
+        logger.lifecycle(
+            "[legado-desktop] jlink --strip-native-commands=false 已启用 (为 CDS 归档保留 bin/java)"
+        )
+    }
 }
 
 // KP6: 把 legado_quickjs native 库纳入 jpackage 产物 (便携版 / MSI 安装版)
@@ -272,7 +395,7 @@ val quickjsNativeDir =
     file("${rootProject.projectDir}/modules/quickjs/build/libs/jvm/native/$quickjsPlatformId")
 val composeResourcesDir = file("build/compose-resources")
 
-val copyQuickjsNativeToResources by tasks.registering(Copy::class) {
+val copyQuickjsNativeToResources = tasks.register<Copy>("copyQuickjsNativeToResources") {
     // 先触发 native 库构建 (cmake 编译 legado_quickjs.dll), 再复制到 appResourcesRootDir
     dependsOn(project(":modules:quickjs").tasks.named("buildJvmNativeLib"))
     from(quickjsNativeDir)
@@ -290,232 +413,163 @@ val copyQuickjsNativeToResources by tasks.registering(Copy::class) {
     include("*.dll", "*.so", "*.dylib")
 }
 
-// ===== legado_smtc native 桥 (Windows SMTC, 纯 C + MinGW) =====
-// 背景: SMTC 集成从 JNA 手写 COM vtable 重构为 native C 桥 (官方 interop 路径 +
-// 严格 QI 回调 + timeline 节流), 见 desktop/src/main/cpp/smtc/smtc_bridge.c。
-// 构建/打包/加载链路照 quickjs buildJvmNativeLib 同模式 (cmake + MinGW 探测)。
-val smtcNativeDir = layout.buildDirectory.dir("libs/smtc/native").get().asFile
-val smtcNativeBuildDir = layout.buildDirectory.dir("intermediates/cmake-smtc").get().asFile
-val smtcCppDir = file("src/main/cpp/smtc")
+// ===== 桌面 native 桥 (Windows SMTC 媒体键 / 窗口控制条, 纯 C + MinGW) =====
+// 两个桥都是纯 Win32 代码 (直引 windows.h), 非 Windows 平台无法编译, 任务整体 onlyIf 跳过,
+// 避免 macOS/Linux 打包时白跑一次必失败的构建。
+// 构建/打包/加载链路照 modules/quickjs buildJvmNativeLib 同模式 (cmake + MinGW 探测)。
+//
+// 配置缓存约束: 工具链探测经 build-logic 的 NativeToolchainValueSource (ExecOperations 执行并
+// 计入指纹), 任务动作里只用本文件内定义的可序列化类型, 不引用脚本级实例 —— 引用脚本对象会让
+// 整次构建在存储缓存阶段以 BUILD FAILED 收尾 (官方 config_cache:requirements:disallowed_types)。
+val desktopNativeCppRoot = file("src/main/cpp")
+
+/** local.properties 的 sdk.dir: cmake 兜底搜索根 (PATH 上无 cmake 时用 SDK 自带那份)。 */
+private val localSdkDir: String? = run {
+    val propsFile = rootProject.file("local.properties")
+    if (!propsFile.exists()) return@run null
+    Properties().apply { propsFile.inputStream().use { load(it) } }.getProperty("sdk.dir")
+}
 
 /**
- * native C 桥的公用 cmake 构建 (smtc / wndchrome 共用)。
- * 工具链: 有 nmake 走 MSVC 默认生成器, 否则退 MinGW Makefiles;
- * 全程失败只 warn 不 fail —— native 缺失只影响对应功能, 不该阻断 Kotlin 编译。
+ * 桌面 native 桥的工具链探测 (与 modules/quickjs 同源): 外部进程经 ExecOperations 执行,
+ * 结果由配置缓存计入指纹, 缓存复用时自动重查。
  */
-fun runCmakeNativeBuild(
+val desktopNativeToolchain = providers.of(NativeToolchainValueSource::class.java) {
+    val p = parameters
+    p.windowsHost.set(OperatingSystem.current().isWindows)
+    p.cmakeProp.set(providers.gradleProperty("legado.cmake.path"))
+    p.mingwProp.set(providers.gradleProperty("legado.mingw.path"))
+    p.sdkDir.set(localSdkDir)
+    p.userHome.set(System.getProperty("user.home"))
+    p.envCc.set(System.getenv("CC"))
+    p.envCxx.set(System.getenv("CXX"))
+    p.javaHome.set(System.getProperty("java.home"))
+}
+
+/**
+ * 注册一个 cmake native 桥任务 (smtc / wndchrome 共用)。
+ *
+ * 失败策略与原实现逐字一致: cmake 缺失或构建失败只 warn 不 fail —— native 缺失只影响对应功能,
+ * 不该阻断 Kotlin 编译; 但构建失败时必须清掉产物, 否则 task 仍被记为成功, 下次 UP-TO-DATE
+ * 会拿旧 dll 骗人 (踩过: 应用运行时 dll 被锁 → 链接失败 → 下次构建跳过 → 用的还是旧库)。
+ */
+private fun registerNativeBridgeTask(
+    taskName: String,
     tag: String,
     cppDir: File,
-    outDir: File,
-    buildDir: File,
-    logger: org.gradle.api.logging.Logger,
-) {
-    val cmakeCmd = findCmakeExecutable()
-    if (cmakeCmd == null) {
-        logger.warn("[$tag] cmake not found, skipping native build.")
-        return
-    }
-    // CMake 缓存绑定源码目录, 项目迁移后残留的旧缓存会让 configure 直接报错退出;
-    // 与 modules/quickjs buildJvmNativeLib 同款检测, 源目录变了就清缓存重建
-    val cmakeCache = File(buildDir, "CMakeCache.txt")
-    if (cmakeCache.exists()) {
-        val homePrefix = "CMAKE_HOME_DIRECTORY:INTERNAL="
-        val cachedHome = cmakeCache.readLines()
-            .find { it.startsWith(homePrefix) }
-            ?.substring(homePrefix.length)
-        if (cachedHome != null) {
-            val cachedPath = File(cachedHome).canonicalPath
-            val currentPath = cppDir.canonicalPath
-            val sameSource = if (OperatingSystem.current().isWindows) {
-                cachedPath.equals(currentPath, ignoreCase = true)
-            } else {
-                cachedPath == currentPath
-            }
-            if (!sameSource) {
-                logger.lifecycle("[$tag] CMake source changed; resetting stale cache.")
-                buildDir.deleteRecursively()
-            }
-        }
-    }
-    outDir.mkdirs()
-    buildDir.mkdirs()
-
-    var useMinGW = false
-    var mingwBinDir: String? = null
-    if (OperatingSystem.current().isWindows) {
-        val hasNmake = runCatching {
-            val p = ProcessBuilder("nmake", "/?").start()
-            p.waitFor()
-            p.exitValue() == 0
-        }.getOrDefault(false)
-        if (!hasNmake) {
-            mingwBinDir = findMingwBinDir()
-            if (mingwBinDir != null) {
-                useMinGW = true
-                logger.lifecycle("[$tag] Using MinGW Makefiles: $mingwBinDir")
-            } else {
-                logger.warn("[$tag] No nmake/MSVC or MinGW found; cmake may fail.")
-            }
-        }
-    }
-
-    // MinGW 时把工具链目录前置到 PATH (cmake 需要在 PATH 上找到 gcc/make)
-    fun ProcessBuilder.withToolchainPath(): ProcessBuilder = apply {
-        if (useMinGW && mingwBinDir != null) {
-            environment()["PATH"] =
-                mingwBinDir + File.pathSeparator + (environment()["PATH"] ?: "")
-        }
-        redirectErrorStream(true)
-    }
-
-    val configureCmd = mutableListOf(cmakeCmd)
-    if (useMinGW) {
-        configureCmd += listOf("-G", "MinGW Makefiles")
-    }
-    configureCmd += listOf(
-        "-S", cppDir.absolutePath,
-        "-B", buildDir.absolutePath,
-        "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + outDir.absolutePath,
-        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=" + outDir.absolutePath,
-    )
-    logger.lifecycle("[$tag] cmake configure: ${configureCmd.joinToString(" ")}")
-    runCatching {
-        val cfg = ProcessBuilder(configureCmd).withToolchainPath().start()
-        cfg.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
-        cfg.waitFor()
-        if (cfg.exitValue() != 0) return@runCatching
-        val build = ProcessBuilder(
-            listOf(cmakeCmd, "--build", buildDir.absolutePath, "--config", "Release")
-        ).withToolchainPath().start()
-        build.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
-        build.waitFor()
-        if (build.exitValue() != 0) {
-            logger.warn("[$tag] cmake build failed (exit=${build.exitValue()}).")
-            // 失败时清掉产物: 否则 task 仍被记为成功, 下次 UP-TO-DATE 会拿旧 dll 骗人
-            // (踩过: 应用运行时 dll 被锁 → 链接失败 → 下次构建跳过 → 用的还是旧库)
-            outDir.listFiles()?.forEach { it.delete() }
-        }
-    }.onFailure {
-        logger.warn("[$tag] native build failed: ${it.message}")
-    }
-}
-
-val buildSmtcNative by tasks.registering {
+    libFileName: String,
+): TaskProvider<Task> = tasks.register(taskName) {
     group = "native"
-    description = "Build legado_smtc native library (SMTC bridge) for desktop JVM"
-    // SMTC 桥是纯 Win32 代码 (smtc_bridge.c 直引 windows.h), 非 Windows 平台无法编译,
-    // onlyIf 跳过避免 macOS/Linux 打包时白跑一次必失败的构建
+    description = "Build $libFileName native library for desktop JVM"
     onlyIf { OperatingSystem.current().isWindows }
-    inputs.dir(smtcCppDir)
-    outputs.file(File(smtcNativeDir, "legado_smtc.dll"))
+    val sourceDir = cppDir
+    val libraryName = libFileName
+    val outputDir = layout.buildDirectory.dir("libs/$tag/native").get().asFile
+    val buildDir = layout.buildDirectory.dir("intermediates/cmake-$tag").get().asFile
+    val toolchainProvider = desktopNativeToolchain
+    inputs.dir(sourceDir)
+    inputs.property("toolchainFingerprint") {
+        toolchainProvider.get().toNativeToolchain().fingerprintProperty()
+    }
+    outputs.file(outputDir.resolve(libraryName))
     doFirst {
-        runCmakeNativeBuild("legado-smtc", smtcCppDir, smtcNativeDir, smtcNativeBuildDir, logger)
-    }
-}
-
-fun findCmakeExecutable(): String? {
-    project.findProperty("legado.cmake.path")?.let {
-        if (File(it.toString()).exists()) return it.toString()
-    }
-    val cmakeOk = runCatching {
-        val p = ProcessBuilder("cmake", "--version").start()
-        p.waitFor()
-        p.exitValue() == 0
-    }.getOrDefault(false)
-    if (cmakeOk) return "cmake"
-    runCatching {
-        val props = Properties().apply {
-            val f = rootProject.file("local.properties")
-            if (f.exists()) f.inputStream().use { load(it) }
+        val toolchain = toolchainProvider.get().toNativeToolchain()
+        val cmake = toolchain.cmake
+        if (cmake == null) {
+            logger.warn("[$tag] cmake not found, skipping native build.")
+            return@doFirst
         }
-        val sdkDir = props.getProperty("sdk.dir") ?: return null
-        val cmakeBase = File(sdkDir, "cmake")
-        if (cmakeBase.exists()) {
-            for (dir in cmakeBase.listFiles()!!.sortedByDescending { it.name }) {
-                val exe = File(dir, "bin/cmake.exe")
-                if (exe.exists()) return exe.absolutePath
-            }
-        }
-        null
-    }
-    return null
-}
-
-fun findMingwBinDir(): String? {
-    project.findProperty("legado.mingw.path")?.let {
-        if (File(it.toString(), "gcc.exe").exists()) return it.toString()
-    }
-    val gccOk = runCatching {
-        val p = ProcessBuilder("gcc", "--version").start()
-        p.waitFor()
-        p.exitValue() == 0
-    }.getOrDefault(false)
-    if (gccOk) {
-        runCatching {
-            val p = ProcessBuilder("where", "gcc").start()
-            val out =
-                p.inputStream.bufferedReader().readText().trim().lineSequence().firstOrNull() ?: ""
-            if (out.isNotEmpty() && File(out).exists()) return File(out).parent
-        }
-    }
-    runCatching {
-        val wingetBase =
-            File(System.getProperty("user.home"), "AppData/Local/Microsoft/WinGet/Packages")
-        if (wingetBase.exists()) {
-            for (pkg in wingetBase.listFiles()!!
-                .filter { it.name.lowercase().contains("llvm-mingw") }
-                .sortedByDescending { it.name }) {
-                for (sub in pkg.listFiles()!!.filter { it.isDirectory }) {
-                    val bin = File(sub, "bin")
-                    if (File(bin, "gcc.exe").exists()) return bin.absolutePath
+        // CMake 缓存绑定源码目录, 项目迁移后残留的旧缓存会让 configure 直接报错退出;
+        // 与 modules/quickjs buildJvmNativeLib 同款检测, 源目录变了就清缓存重建
+        val cmakeCache = buildDir.resolve("CMakeCache.txt")
+        if (cmakeCache.exists()) {
+            val homePrefix = "CMAKE_HOME_DIRECTORY:INTERNAL="
+            val cachedHome = cmakeCache.readLines()
+                .find { it.startsWith(homePrefix) }
+                ?.substring(homePrefix.length)
+            if (cachedHome != null) {
+                val cachedPath = File(cachedHome).canonicalPath
+                val currentPath = sourceDir.canonicalPath
+                val sameSource = if (OperatingSystem.current().isWindows) {
+                    cachedPath.equals(currentPath, ignoreCase = true)
+                } else {
+                    cachedPath == currentPath
+                }
+                if (!sameSource) {
+                    logger.lifecycle("[$tag] CMake source changed; resetting stale cache.")
+                    buildDir.deleteRecursively()
                 }
             }
         }
-        null
+        outputDir.mkdirs()
+        buildDir.mkdirs()
+        if (toolchain.mingwBin != null) {
+            logger.lifecycle("[$tag] Using MinGW Makefiles: ${toolchain.mingwBin}")
+        } else if (OperatingSystem.current().isWindows && !toolchain.hasNmake) {
+            logger.warn("[$tag] No nmake/MSVC or MinGW found; cmake may fail.")
+        }
+
+        // MinGW 时把工具链目录前置到 PATH (cmake 需要在 PATH 上找到 gcc/make)
+        fun ProcessBuilder.withToolchainPath(): ProcessBuilder = apply {
+            toolchain.applyToolchainPath(environment())
+            redirectErrorStream(true)
+        }
+
+        val configureCmd = toolchain.configureCommand().toMutableList()
+        configureCmd += listOf(
+            "-S", sourceDir.absolutePath,
+            "-B", buildDir.absolutePath,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + outputDir.absolutePath,
+            "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=" + outputDir.absolutePath,
+        )
+        logger.lifecycle("[$tag] cmake configure: ${configureCmd.joinToString(" ")}")
+        runCatching {
+            val cfg = ProcessBuilder(configureCmd).withToolchainPath().start()
+            cfg.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            cfg.waitFor()
+            if (cfg.exitValue() != 0) return@runCatching
+            val build = ProcessBuilder(
+                listOf(cmake, "--build", buildDir.absolutePath, "--config", "Release")
+            ).withToolchainPath().start()
+            build.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            build.waitFor()
+            if (build.exitValue() != 0) {
+                logger.warn("[$tag] cmake build failed (exit=${build.exitValue()}).")
+                outputDir.listFiles()?.forEach { it.delete() }
+            }
+        }.onFailure {
+            logger.warn("[$tag] native build failed: ${it.message}")
+        }
     }
-    return null
 }
 
-val copySmtcNativeToResources by tasks.registering(Copy::class) {
+val buildSmtcNative = registerNativeBridgeTask(
+    taskName = "buildSmtcNative",
+    tag = "smtc",
+    cppDir = File(desktopNativeCppRoot, "smtc"),
+    libFileName = "legado_smtc.dll",
+)
+
+val copySmtcNativeToResources = tasks.register<Copy>("copySmtcNativeToResources") {
     dependsOn(buildSmtcNative)
     onlyIf { OperatingSystem.current().isWindows }
-    from(smtcNativeDir)
+    from(layout.buildDirectory.dir("libs/smtc/native"))
     into(file("${composeResourcesDir.path}/windows"))
     include("*.dll")
 }
 
-// ===== legado_wndchrome native 桥 (Windows 窗口控制条, 纯 C) =====
-// 去 JBR CustomTitleBar 依赖: 双层 WndProc 子类化 (JFrame + skiko Canvas) + WM_NCCALCSIZE 把客户区
-// 顶到窗口顶端 + 一个鼠标穿透的 layered 子窗口画整条控制条 (含自绘三键)。
-// 契约见 src/main/cpp/wndchrome/wndchrome.h, 调研见 build/research/win32-titlebar/SYNTHESIS.md。
-// Windows 专属 (纯 Win32 API), 其他平台整条 task 跳过。
-val wndchromeNativeDir = layout.buildDirectory.dir("libs/wndchrome/native").get().asFile
-val wndchromeNativeBuildDir =
-    layout.buildDirectory.dir("intermediates/cmake-wndchrome").get().asFile
-val wndchromeCppDir = file("src/main/cpp/wndchrome")
+val buildWndChromeNative = registerNativeBridgeTask(
+    taskName = "buildWndChromeNative",
+    tag = "wndchrome",
+    cppDir = File(desktopNativeCppRoot, "wndchrome"),
+    libFileName = "legado_wndchrome.dll",
+)
 
-val buildWndChromeNative by tasks.registering {
-    group = "native"
-    description = "Build legado_wndchrome native library (window chrome bridge) for Windows"
-    onlyIf { OperatingSystem.current().isWindows }
-    inputs.dir(wndchromeCppDir)
-    outputs.file(File(wndchromeNativeDir, "legado_wndchrome.dll"))
-    doFirst {
-        runCmakeNativeBuild(
-            "legado-wndchrome",
-            wndchromeCppDir,
-            wndchromeNativeDir,
-            wndchromeNativeBuildDir,
-            logger,
-        )
-    }
-}
-
-val copyWndChromeNativeToResources by tasks.registering(Copy::class) {
+val copyWndChromeNativeToResources = tasks.register<Copy>("copyWndChromeNativeToResources") {
     dependsOn(buildWndChromeNative)
     onlyIf { OperatingSystem.current().isWindows }
-    from(wndchromeNativeDir)
+    from(layout.buildDirectory.dir("libs/wndchrome/native"))
     into(file("${composeResourcesDir.path}/windows"))
     include("*.dll")
 }
@@ -532,6 +586,150 @@ private fun msiSafeVersion(pkgVer: String): String {
     val (major, yy, mm, dd, hh) = m.destructured
     val dayOfYear = LocalDate.of(2000 + yy.toInt(), mm.toInt(), dd.toInt()).dayOfYear
     return "$major.$yy.${(dayOfYear - 1) * 24 + (hh.toIntOrNull() ?: 0)}"
+}
+
+// ============================================================
+// 依赖 jar consumer 规则合并
+// ============================================================
+// 背景 (读 compose-gradle-plugin-1.11.1-sources 的 AbstractProguardTask.execute 实证):
+// 插件生成的 root-config.pro 只 -include jars-config.pro +
+// default-compose-desktop-rules.pro + DSL 的 configurationFiles, 全程不读依赖 jar 里的
+// META-INF/proguard/*.pro (consumer rules 是 AGP/R8 机制, 独立 ProGuard 无此功能;
+// 插件源码里自己还留着 "todo: also consider pulling coroutines rules from coroutines artifact"),
+// 也不会为 META-INF/services 声明的实现类生成 keep。
+// 3.26.09121949 正式版产物实测出三处硬损伤 (均已用 unzip/javap + 探针在产物上复现):
+// 1) androidx sqlite-bundled 自带的
+//    -keepclasseswithmembers class androidx.sqlite.driver.bundled.** { native <methods>; }
+//    未生效 → nativeThreadSafeMode 等 5 个 native 方法被删 → jar 内 sqliteJni.dll 的
+//    JNI_OnLoad RegisterNatives 抛 NoSuchMethodError → 数据库整体不可用
+//    (同 proguard-rules.pro 的 JNI 小节, 两处一并修);
+// 2) coil-network-okhttp 的 OkHttpNetworkFetcherServiceLoaderTarget 被删而 jar 内
+//    META-INF/services/coil3.util.FetcherServiceLoaderTarget 保留 → Coil 每次取图抛
+//    ServiceConfigurationError 被 EngineInterceptor 吞成 ErrorResult → 封面全空,
+//    且异常不入 lazy 缓存 → 每张未命中缓存的图都要重扫一遍 classpath → 启动卡顿;
+// 3) kxml2 的 org.kxml2.io.KXmlParser / KXmlSerializer 被删 → XmlPullParserFactory 回落
+//    默认实现 → EPUB 导出链路 NPE。
+// 做法: 打包期遍历 :desktop 的 runtimeClasspath, 提取上述两类元数据合成一份 .pro,
+// 经 configurationFiles.from(task) 追加给 ProGuard
+// (ConfigurableFileCollection 接受 TaskProvider 时自带隐式任务依赖, 另加下方显式兜底接线)。
+val dependencyConsumerRulesFile =
+    layout.buildDirectory.file("generated/desktop-proguard/dependency-consumer-rules.pro")
+
+val mergeDependencyProguardRules = tasks.register("mergeDependencyProguardRules") {
+    group = "compose desktop distribution"
+    description =
+        "提取依赖 jar 自带 consumer 规则与 META-INF/services 实现类, 合成 ProGuard 规则文件"
+    // 只捕获 Provider<FileCollection>: Configuration 本身不得被任务动作引用 (配置缓存约束)
+    val runtimeClasspathFiles = configurations.named("runtimeClasspath").map { it.files }
+    val rulesOutFile = dependencyConsumerRulesFile.get().asFile
+    inputs.files(runtimeClasspathFiles)
+    outputs.file(rulesOutFile)
+    doLast {
+        // 只取 ProGuard 通用约定路径 META-INF/proguard/*.pro: 各库另有的
+        // META-INF/com.android.tools/{proguard,r8}/*.pro 是给 AGP/R8 消费的, 可能含 R8 专属语法,
+        // 而实际内容不超出 META-INF/proguard/ 版本 (sqlite/room/coroutines/serialization 均三处同存)
+        val consumerRuleDir = "META-INF/proguard/"
+        val servicesDir = "META-INF/services/"
+        val ruleBlocks = StringBuilder()
+        val serviceClasses = sortedSetOf<String>()
+        val serviceOrigin = mutableMapOf<String, String>()
+        // 排序保证输出确定性 (否则 jar 遍历顺序变化会频繁弄脏下游 ProGuard 任务缓存)
+        for (jar in runtimeClasspathFiles.get().sortedBy { it.name }) {
+            if (!jar.isFile || !jar.name.endsWith(".jar", ignoreCase = true)) continue
+            ZipFile(jar).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    when {
+                        entry.isDirectory -> Unit
+                        entry.name.startsWith(consumerRuleDir) && entry.name.endsWith(".pro") -> {
+                            ruleBlocks.appendLine("# ---- ${jar.name} : ${entry.name} ----")
+                            zip.getInputStream(entry).reader().use { ruleBlocks.append(it.readText()) }
+                            ruleBlocks.appendLine()
+                        }
+                        entry.name.startsWith(servicesDir) &&
+                            entry.name.length > servicesDir.length -> {
+                            val text = zip.getInputStream(entry).bufferedReader().readText()
+                            for (rawLine in text.lines()) {
+                                // services 文件写法两种都存在: 一行一类名 (空白分隔) 与一行多类名
+                                // 逗号分隔 —— kxml2 的
+                                // META-INF/services/org.xmlpull.v1.XmlPullParserFactory 实为
+                                // "org.kxml2.io.KXmlParser,org.kxml2.io.KXmlSerializer" 单行逗号分隔。
+                                // 只按空白拆会把整行当成一个非法类名跳过 → kxml2 照样被删 (JAXP
+                                // XmlPullParserFactory 自己就是按逗号解析的), 故必须一并拆逗号。
+                                for (impl in rawLine.substringBefore('#').trim().split(Regex("[\\s,]+"))) {
+                                    if (impl.isEmpty()) continue
+                                    val looksLikeClassName = impl.contains('.') &&
+                                        impl.all { c ->
+                                            c.isLetterOrDigit() || c == '.' || c == '_' || c == '$'
+                                        }
+                                    if (!looksLikeClassName) continue
+                                    if (serviceClasses.add(impl)) {
+                                        serviceOrigin[impl] = "${jar.name} : ${entry.name}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val out = rulesOutFile
+        out.parentFile.mkdirs()
+        out.bufferedWriter().use { w ->
+            w.appendLine("# 自动生成, 勿手改: 由 :desktop:mergeDependencyProguardRules 生成")
+            w.appendLine("# 来源: :desktop runtimeClasspath 上各依赖 jar 的 META-INF 元数据")
+            w.appendLine()
+            w.appendLine(
+                "# ===== A. 依赖 jar 自带 consumer 规则 (官方 ProGuard 集成不会自动读取) ====="
+            )
+            w.append(ruleBlocks)
+            w.appendLine()
+            w.appendLine(
+                "# ===== B. META-INF/services 声明的实现类 (运行期按类名字符串反射实例化) ====="
+            )
+            for (impl in serviceClasses) {
+                w.appendLine("# ${serviceOrigin[impl]}")
+                w.appendLine("-keep class $impl { *; }")
+            }
+        }
+        logger.lifecycle(
+            "[legado-desktop] 依赖 consumer 规则已合成: 服务实现类 ${serviceClasses.size} 个 → $out"
+        )
+    }
+}
+
+// 显式兜底接线: ProGuard 任务由 compose 插件在 compose.desktop.application{} 求值后才注册,
+// 用惰性 matching 补上依赖 (configurationFiles.from(task) 已携隐式依赖, 此处双保险)。
+tasks.matching { it.name.startsWith("proguard") && it.name.endsWith("Jars") }.configureEach {
+    dependsOn(mergeDependencyProguardRules)
+}
+
+// ============================================================
+// 打包期剔除 jar 内非构建平台的 native
+// ============================================================
+// 实现 (判定口径/已知平台名单/失败策略) 见 build-logic 的 NativeJarStripper: 配置缓存下任务动作
+// 不得引用脚本级对象, 故逻辑不在本文件内。做法是在官方 ProGuard 输出目录上就地重写 jar, 只留
+// 构建平台自己的 native 目录; 下游 createReleaseDistributable / packageRelease* 全部从该目录取件,
+// 一个钩子同时覆盖 MSI / deb / rpm / dmg / 便携 zip 五条链 (CI 矩阵下构建平台即目标平台)。
+
+tasks.matching { it.name == "proguardReleaseJars" }.configureEach {
+    val proguardOutDir = layout.buildDirectory.dir("compose/tmp/main-release/proguard").get().asFile
+    val keepTokens = NativeJarStripper.tokensToKeep(
+        currentNativePlatformOs(),
+        System.getProperty("os.arch").orEmpty()
+            .let { it.contains("aarch64") || it.contains("arm64") },
+    )
+    doLast {
+        NativeJarStripper.strip(proguardOutDir, keepTokens) { logger.lifecycle(it) }
+    }
+}
+
+/** 当前构建平台 (任务动作不得携带 OperatingSystem 实例)。 */
+private fun currentNativePlatformOs(): NativePlatformOs = when {
+    OperatingSystem.current().isWindows -> NativePlatformOs.WINDOWS
+    OperatingSystem.current().isMacOsX -> NativePlatformOs.MACOS
+    else -> NativePlatformOs.LINUX
 }
 
 compose.desktop {
@@ -560,6 +758,9 @@ compose.desktop {
                     // 体积差距来自工具链优化能力差异 + class vs dex 格式差异, 非规则差异。
                     optimize.set(false)
                     configurationFiles.from(file("proguard-rules.pro"))
+                    // 依赖 jar 自带 consumer 规则 + META-INF/services 实现类 keep
+                    // (官方集成不读这两类元数据, 缺口与实测损伤见 mergeDependencyProguardRules 注释)
+                    configurationFiles.from(mergeDependencyProguardRules)
                 }
             }
         }
@@ -575,13 +776,20 @@ compose.desktop {
         // 开发期 :desktop:run 通过 legado.quickjs.lib 指向按 os-arch 分层的 native 输出。
         jvmArgs += listOf(
             "-Xmx768m",                          // 提升堆上限避免大书架 OOM (原 512m 偏小)
-            "-Xms128m",                          // 启动期小初始堆, 按需增长减少启动期内存申请开销
+            "-Xms384m",                          // 启动期堆底提到 384m: 实测 -Xms128m 下启动头 1.1s 内跳 4 次
+                                                // young GC 且堆反复顶在 128M 上限扩张 (G1 扩容+迁移是白送成本)
             "-XX:+UseG1GC",                      // JDK 17 默认即 G1, 显式声明更稳定
             "-XX:MaxGCPauseMillis=200",          // G1 目标停顿
-            "-XX:TieredStopAtLevel=1",           // 仅 C1 编译, 启动期 JIT 时间降 30~50%
-            "-XX:CompileThreshold=10000",        // 提高 JIT 阈值减少冷路径编译
-            "-Xshare:auto",                      // 启用 CDS: 正式版由 dumpCdsArchive task 预生成归档; 失败自动回退
-            "-XX:+UseStringDeduplication",       // G1 字符串去重
+            // -XX:TieredStopAtLevel=1 / -XX:CompileThreshold 已删除 (2026-09 复盘):
+            // TieredStopAtLevel=1 = 只用 C1 编译器, 确实省启动期 JIT 时间, 但代价是后续全部
+            // 代码停在低优化级别 (无 C2 内联/逃逸消除)。Compose Desktop 是常驻交互型进程:
+            // 组合/布局/绘制热点长期跑在 C1 上, 点击后那一帧的重组合+渲染比默认分层编译慢几倍,
+            // 用户感知就是“点了没反应 / 操作卡顿”。启动优化应走 CDS (见 dumpCdsArchive),
+            // 而不是牺牲整个生命周期的吞吐。
+            "-Xshare:auto",                      // 启用 CDS: 正式版由 dumpCdsArchive 预生成归档, 生成失败会让构建直接失败
+            // -XX:+UseStringDeduplication 已删除 (2026-09 启动实测): 字符串去重靠并发标记周期顺带做,
+            // 官方适用场景是堆充裕的大服务; 本包 -Xmx768m 且启动期大量临时字符串 (Compose 资源/文案),
+            // 为了省几十 MB 常驻去重的 CPU/标记开销反而拖慢启动。
             "-Dfile.encoding=UTF-8",             // Windows 默认 GBK, 显式声明 UTF-8 避免资源乱码
             // 反射访问 AWT 原生句柄 (任务栏按钮/DWM 卡片等经 WComponentPeer.getHWnd 拿 HWND):
             // Component.peer 字段在 java.awt (需 opens), getHWnd 在 sun.awt.windows (需 opens),
@@ -638,6 +846,24 @@ compose.desktop {
             fileAssociation("application/epub+zip", "epub", "EPUB Book")
             fileAssociation("application/pdf", "pdf", "PDF Document")
             fileAssociation("application/vnd.comicbook+zip", "cbz", "CBZ Comic")
+            // 视频文件关联 (让"打开方式"能把视频直接交给 legado 开播): 扩展名与 shared
+            // AppPattern.videoFileRegex 逐一对应, 少一个就会出现"系统交给我们、自己不认"。
+            // 交给 Main.kt 的文件关联链 → shared FileAssociationDispatch 在 JSON/书籍正则之前
+            // 先判视频 (VideoDirect) → 直接 push 播放页直投态, 不建书不查书源。
+            // MIME 用各扩展名的规范值: .ts 是 MPEG-TS 传输流 (video/mp2t),
+            // .m3u8 是 HLS 清单 (application/vnd.apple.mpegurl) —— 不是猜的字符串,
+            // Linux 的 .desktop MimeType 与 macOS UTI 换算都按它匹配。
+            // 已知代价: .ts 同时是 TypeScript 源码扩展名, 装上后 Windows 会把它抢给 legado;
+            // 与 videoFileRegex 保持一致优先于避开歧义 (要改就得两边同时改)。
+            // 描述一律 ASCII-only, 同上方 MSI 代码页 1252 硬约束。
+            fileAssociation("video/mp4", "mp4", "MP4 Video")
+            fileAssociation("video/x-matroska", "mkv", "Matroska Video")
+            fileAssociation("video/quicktime", "mov", "QuickTime Video")
+            fileAssociation("video/webm", "webm", "WebM Video")
+            fileAssociation("video/x-flv", "flv", "Flash Video")
+            fileAssociation("video/x-msvideo", "avi", "AVI Video")
+            fileAssociation("video/mp2t", "ts", "MPEG TS Video")
+            fileAssociation("application/vnd.apple.mpegurl", "m3u8", "HLS Playlist")
             // 应用图标 (从 Android ic_launcher 高清图转换生成): Windows ICO, Linux PNG
             // Windows MSI 专属配置
             windows {
@@ -717,6 +943,11 @@ afterEvaluate {
         dependsOn(project(":modules:quickjs").tasks.named("buildJvmNativeLib"))
         dependsOn(buildSmtcNative)
         dependsOn(buildWndChromeNative)
+        // 开发期把媒体运行时挂回 classpath: 它已不在 runtimeClasspath (不进包), 挂上后
+        // DesktopMediaRuntime 走"清单在 classpath → 本地解包"分支, 与改动前行为一致。
+        if (this is JavaExec) {
+            classpath += mediaRuntimeOnly
+        }
         // 开发期 run 注入 debug 标志: 让 shared printStackTraceOnDebug 对齐 Android 的
         // BuildConfig.DEBUG 语义 (仅开发打栈); 打包产物不带该属性 = 静默
         if (this is JavaExec) {
@@ -774,57 +1005,112 @@ afterEvaluate {
 // ============================================================
 // CDS (Class Data Sharing) 归档生成
 // ============================================================
-// 背景: jlink 精简的 JRE 不含默认 CDS 归档 (classes_nocoops.jsa),
+// 背景: jlink 精简的 JRE 不含默认 CDS 归档 (classes.jsa),
 // -Xshare:auto 静默回退到非 CDS 模式 → 每次启动从零加载/解析全部类元数据,
 // 是正式版 (jlink JRE) 比 debug 版 (完整 JDK 自带 CDS) 启动慢的主因之一。
-// 本 task 在 jpackage app image 生成后, 用该 JRE 的 java -Xshare:dump
-// 生成默认 CDS 归档, 写入 runtime/lib/server/ 目录, 打包时随 JRE 一起纳入产物。
+// 本 task 在 jlink 输出目录上跑该 JRE 自己的 java -Xshare:dump 生成默认 CDS 归档。
 // 实测: CDS 归档可减少启动期类加载时间 20~40% (JDK 21 默认归档含 ~15k 核心类)。
-// 归档生成失败只 warn 不 fail (CDS 缺失只影响启动速度, 不影响功能)。
-val dumpCdsArchive by tasks.registering {
+//
+// 【为何写在 jlink 输出目录而不是 app image 里】(2026-09 修正): 插件的 createRuntimeImage
+// 不带 buildType 后缀 (所有 buildType 共用 tmp/main/runtime), createReleaseDistributable 和
+// packageReleaseMsi 的 --runtime-image 全部指向它 (见两份 .args.txt 实测) —— 旧实现把归档
+// 写进已生成的 app/legado/runtime, 只对便携 zip 有效, MSI 那条链永远拿不到。现写回 jlink 输出,
+// 两条链共享。
+//
+// 【为何失败必须响】: 旧实现只 logger.warn 不 fail, 而 jlink 默认 --strip-native-commands=true
+// 把 bin/java.exe 整个剔掉 (3.26.09121949 便携版实测: runtime/bin 下无任何 *.exe),
+// 于是本任务每次都走 `!exists() → 跳过` 分支 —— 产物里一个 .jsa 都没有, -Xshare:auto 静默空转,
+// 注释里宣称的 20~40% 启动提速从未落地。静默失效就是缺陷被长期掩埋的根因, 故现在:
+// 启动器缺失 / 退出码非 0 / 归档未落地, 均当场抛 GradleException。
+// 【归档目录跟平台走, 不是写死的 lib/server】(2026-09-14 实测纠正):
+// Windows 上 HotSpot 的默认归档落在 runtime/bin/server/ (与 jvm.dll 同级),
+// Linux/macOS 才是 runtime/lib/server/。用错路径会让本任务在 Windows 上
+// 误判“dump 成功但归档不存在”而抛异常, 反而把构建卡住。
+// 本机实测: java -Xshare:dump 产出 runtime/bin/server/{classes.jsa, classes_nocoops.jsa},
+// 且 -Xlog:cds 确认“Opened archive ...”; java -version 中位耗时 218ms → 193ms (-Xshare:auto)。
+val cdsRuntimeImageDir = layout.buildDirectory.dir("compose/tmp/main/runtime").get().asFile
+
+val dumpCdsArchive = tasks.register("dumpCdsArchive") {
     group = "compose desktop distribution"
-    description = "Generate default CDS archive for jlink JRE to speed up startup"
-    // 依赖 app image 生成 (产物路径: build/compose/binaries/main-release/app/legado/)
-    // createReleaseDistributable 是 release 链的 app image 生成 task
-    dependsOn("createReleaseDistributable")
-    // 输出标记: CDS 归档在 runtime/lib/server/ 下, 由 jpackage 随 JRE 打包
-    outputs.file(file("build/compose/binaries/main-release/app/legado/runtime/lib/server/classes_nocoops.jsa"))
+    description = "为 jlink JRE 生成默认 CDS 归档 (启动期类加载加速, 便携版与 MSI 共享)"
+    // 依赖 jlink 输出 (插件的公共 task, 不带 buildType 后缀)
+    dependsOn("createRuntimeImage")
+
+    val runtimeImageDir = cdsRuntimeImageDir
+    val isWindowsHost = OperatingSystem.current().isWindows
+    val serverDir = runtimeImageDir.resolve(
+        if (isWindowsHost) "bin/server" else "lib/server",
+    )
+    val baseArchive = File(serverDir, "classes.jsa")
+    val nocoopsArchive = File(serverDir, "classes_nocoops.jsa")
+    // 刻意不把归档声明成本 task 的 outputs: 它们落在 createRuntimeImage 的 @OutputDirectory
+    // (jlink 输出目录) 里面, 两个 task 输出重叠会被 Gradle 判为互相弄脏, 结果是每次构建都
+    // 重跑一遗 jlink。改为 upToDateWhen(false) 让 dump 每次都跑 (单次 ~1s, 比丢归档便宜)。
+    outputs.upToDateWhen { false }
+
     doLast {
-        val jreJava = file("build/compose/binaries/main-release/app/legado/runtime/bin/java")
-        if (!jreJava.exists()) {
-            logger.warn("[legado-desktop] CDS dump: JRE java not found at $jreJava, skipping")
-            return@doLast
-        }
-        // java -Xshare:dump 在 JRE 安装目录的 lib/server/ 下生成 classes_nocoops.jsa
-        // JDK 21+: 默认就生成 nocoops 变体 (--version 显示 "Archive" 行确认)
-        runCatching {
-            val pb = ProcessBuilder(
-                jreJava.absolutePath,
-                "-Xshare:dump",
+    val javaExe = runtimeImageDir.resolve(
+        if (isWindowsHost) "bin/java.exe" else "bin/java",
+    )
+        if (!javaExe.isFile) {
+            throw GradleException(
+                "CDS dump 失败: jlink 输出 $runtimeImageDir 里没有启动器 $javaExe —— "
+                        + "需在 createRuntimeImage 里保持 --strip-native-commands=false (见该 task 注释)"
             )
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            proc.inputStream.bufferedReader().forEachLine { logger.lifecycle("[cds-dump] $it") }
-            val exit = proc.waitFor()
-            if (exit != 0) {
-                logger.warn("[legado-desktop] CDS dump exited with code $exit (non-fatal)")
-            } else {
-                logger.lifecycle("[legado-desktop] CDS archive generated successfully")
-            }
-        }.onFailure {
-            logger.warn("[legado-desktop] CDS dump failed (non-fatal): ${it.message}")
         }
+        // 只 dump 压缩指针那一份归档: jpackage cfg 里 -Xmx768m 恒走压缩指针, JVM 只映射
+        // classes.jsa, classes_nocoops.jsa 运行时永不加载 —— 旧实现跑两遍 dump, 每次白往包里
+        // 塞 12,386,304B (3.26.09150109 便携包实测含该文件)。下方 nocoops 的清理分支负责把
+        // 旧构建留在复用 jlink 输出目录里的归档删掉, 否则只停 dump 不减体积。
+        val pb = ProcessBuilder(listOf(javaExe.absolutePath, "-Xshare:dump"))
+        pb.directory(runtimeImageDir)
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val output = proc.inputStream.bufferedReader().use { it.readText() }
+        val exit = proc.waitFor()
+        output.lines().filter { it.isNotBlank() }
+            .forEach { logger.lifecycle("[cds-dump] $it") }
+        if (exit != 0) {
+            throw GradleException("CDS dump 失败 (exit=$exit):\n$output")
+        }
+        // 冗余归档必须真删: createRuntimeImage 的产物目录被 Gradle 判定 up-to-date 时不会清空,
+        // 只停掉第二遍 dump 会让上一次构建留下的 classes_nocoops.jsa 继续进包。
+        if (nocoopsArchive.isFile && !nocoopsArchive.delete()) {
+            throw GradleException("冗余 CDS 归档删除失败: $nocoopsArchive")
+        }
+        if (!baseArchive.isFile) {
+            throw GradleException(
+                "CDS dump 退出码为 0 但未产出 $baseArchive —— -Xshare:auto 会继续空转, 拒绝静默放行"
+            )
+        }
+        logger.lifecycle(
+            "[legado-desktop] CDS 归档已生成: ${baseArchive.name} (${baseArchive.length() / 1024} KB)"
+        )
     }
 }
 
-// 确保打包 task 在 CDS 归档生成之后执行
+// 确保 “复制 jlink 输出”的下游 task (app image 与各类安装包) 都在 CDS 归档生成之后才跑,
+// 否则 jpackage 会先把没有 .jsa 的 runtime 复制走。
 tasks.matching {
     it.name in listOf(
+        "createDistributable", "createReleaseDistributable",
+    ) || it.name in listOf(
         "packageReleaseMsi", "packageReleaseExe",
         "packageReleaseDeb", "packageReleaseRpm", "packageReleaseDmg",
     )
 }.configureEach {
     dependsOn(dumpCdsArchive)
+}
+
+// Compose 的 deb/rpm 打包 task 不依赖 app image (jpackage 能自 --input 直接构建), 而
+// QuickJS native 经 appResourcesRootDir 只落进 app/legado/, CI 校验步骤也是查这棵树。
+// Windows 有 packagePortableZip 的 dependsOn 顺带拉起 app image, macOS 的 dmg 由 jpackage
+// 自身要求 app image, 只剩 Linux 两端没人拉 → 按各自 buildType 显式补上。
+tasks.matching { it.name in listOf("packageDeb", "packageRpm") }.configureEach {
+    dependsOn("createDistributable")
+}
+tasks.matching { it.name in listOf("packageReleaseDeb", "packageReleaseRpm") }.configureEach {
+    dependsOn("createReleaseDistributable")
 }
 
 // ============================================================
@@ -837,12 +1123,14 @@ tasks.matching {
 // (DesktopAppPaths), 不依赖编译期 -Plegado.installType (CI 与 MSI 共享同一 app image)。
 
 // data/ 目录占位 (空目录无法直接打 zip, 用 README 占位)
-val portableDataPlaceholderDir = file("build/generated/portable-data-placeholder/")
-val generatePortableDataPlaceholder by tasks.registering {
-    outputs.dir(portableDataPlaceholderDir)
+val portableDataPlaceholderDir =
+    layout.buildDirectory.dir("generated/portable-data-placeholder").get().asFile
+val generatePortableDataPlaceholder = tasks.register("generatePortableDataPlaceholder") {
+    val outputDir = portableDataPlaceholderDir
+    outputs.dir(outputDir)
     doLast {
-        portableDataPlaceholderDir.mkdirs()
-        file("${portableDataPlaceholderDir.path}/README.txt").writeText(
+        outputDir.mkdirs()
+        outputDir.resolve("README.txt").writeText(
             "便携版数据目录\n应用运行时数据 (数据库/书源/缓存) 存放于此\n"
         )
     }
@@ -850,18 +1138,19 @@ val generatePortableDataPlaceholder by tasks.registering {
 
 // 便携标记文件: 运行时 DesktopAppPaths 检测到程序目录存在 portable.txt 即启用便携模式
 // (数据存 exe 同级 data/); MSI/DEB/DMG 安装版无此文件, 走系统数据目录
-val portableMarkerDir = file("build/generated/portable-marker/")
-val generatePortableMarker by tasks.registering {
-    outputs.dir(portableMarkerDir)
+val portableMarkerDir = layout.buildDirectory.dir("generated/portable-marker").get().asFile
+val generatePortableMarker = tasks.register("generatePortableMarker") {
+    val outputDir = portableMarkerDir
+    outputs.dir(outputDir)
     doLast {
-        portableMarkerDir.mkdirs()
-        file("${portableMarkerDir.path}/portable.txt").writeText(
+        outputDir.mkdirs()
+        outputDir.resolve("portable.txt").writeText(
             "便携版标记文件: 应用检测到本文件后数据存放于同目录 data/ 下; 删除本文件则改用系统数据目录\n"
         )
     }
 }
 
-val packagePortableZip by tasks.registering(Zip::class) {
+val packagePortableZip = tasks.register<Zip>("packagePortableZip") {
     description = "Windows 便携版 zip 打包: jpackage app image + data/ 占位 → zip"
     group = "compose desktop distribution"
 
@@ -880,13 +1169,15 @@ val packagePortableZip by tasks.registering(Zip::class) {
     // app image 输出路径 (compose desktop createReleaseDistributable 产物, 路径:
     // build/compose/binaries/{buildType}/app/{packageName}/; 官方 DSL 启用 release buildType 后
     // 目录名带 classifier 后缀 main-release, 2026-08-18 实测)
-    val appImageDir = file("build/compose/binaries/main-release/app/legado")
+    val appImageDir = layout.buildDirectory.dir("compose/binaries/main-release/app/legado")
+        .get().asFile
 
     // 路径不存在时给清晰错误 (避免 Zip task 静默跳过)
+    val appImage = appImageDir
     doFirst {
-        if (!appImageDir.exists()) {
+        if (!appImage.exists()) {
             throw GradleException(
-                "App image directory not found: $appImageDir\n" +
+                "App image directory not found: $appImage\n" +
                     "Ensure createReleaseDistributable task ran successfully on Windows."
             )
         }

@@ -19,8 +19,6 @@ import legado.shared.generated.resources.book_tree_uri_t
 import legado.shared.generated.resources.check_source_config
 import legado.shared.generated.resources.clear_cache
 import legado.shared.generated.resources.clear_cache_summary
-import legado.shared.generated.resources.clear_cover_cache
-import legado.shared.generated.resources.clear_cover_cache_summary
 import legado.shared.generated.resources.clear_webview_data
 import legado.shared.generated.resources.clear_webview_data_summary
 import legado.shared.generated.resources.click_book_open_read
@@ -41,9 +39,7 @@ import legado.shared.generated.resources.media_button_on_exit_title
 import legado.shared.generated.resources.pre_download
 import legado.shared.generated.resources.pref_cronet_summary
 import legado.shared.generated.resources.ps_auto_refresh
-import legado.shared.generated.resources.ps_container_transform_anim
 import legado.shared.generated.resources.pt_auto_refresh
-import legado.shared.generated.resources.pt_container_transform_anim
 import legado.shared.generated.resources.publish_lyric
 import legado.shared.generated.resources.publish_lyric_summary
 import legado.shared.generated.resources.read_aloud_by_media_button_summary
@@ -98,8 +94,6 @@ fun OtherConfigScreen(
     onPreDownloadNum: () -> Unit,
     onWebPort: () -> Unit,
     onCleanCache: () -> Unit,
-    /** "清除封面缓存" (封面持久区专用入口, 与 [onCleanCache] 分开是刻意的: 后者不该抹掉书架封面) */
-    onCleanCoverCache: () -> Unit = {},
     onClearWebViewData: () -> Unit,
     onShrinkDatabase: () -> Unit,
     onThreadCount: () -> Unit,
@@ -136,8 +130,6 @@ fun OtherConfigScreen(
     val titleHomePage = stringResource(Res.string.default_home_page)
     val titleAutoRefresh = stringResource(Res.string.pt_auto_refresh)
     val summaryAutoRefresh = stringResource(Res.string.ps_auto_refresh)
-    val titleContainerTransformAnim = stringResource(Res.string.pt_container_transform_anim)
-    val summaryContainerTransformAnim = stringResource(Res.string.ps_container_transform_anim)
     val titleDevFeat = stringResource(Res.string.click_book_open_read)
     val summaryDevFeat = stringResource(Res.string.click_book_open_read_summary)
     val titleLocalPassword = stringResource(Res.string.set_local_password)
@@ -173,8 +165,6 @@ fun OtherConfigScreen(
     val titleWebPort = stringResource(Res.string.web_port_title)
     val titleCleanCache = stringResource(Res.string.clear_cache)
     val summaryCleanCache = stringResource(Res.string.clear_cache_summary)
-    val titleCleanCoverCache = stringResource(Res.string.clear_cover_cache)
-    val summaryCleanCoverCache = stringResource(Res.string.clear_cover_cache_summary)
     val titleClearWebView = stringResource(Res.string.clear_webview_data)
     val summaryClearWebView = stringResource(Res.string.clear_webview_data_summary)
     val titleShrinkDatabase = stringResource(Res.string.shrink_database)
@@ -215,12 +205,6 @@ fun OtherConfigScreen(
                 title = titleAutoRefresh,
                 summary = summaryAutoRefresh,
                 defaultValue = false,
-            )
-            switchPreference(
-                prefKey = PreferKey.containerTransformAnim,
-                title = titleContainerTransformAnim,
-                summary = summaryContainerTransformAnim,
-                defaultValue = true,
             )
             switchPreference(
                 prefKey = PreferKey.devFeat,
@@ -359,11 +343,6 @@ fun OtherConfigScreen(
                 title = titleCleanCache,
                 summary = summaryCleanCache,
                 onClick = onCleanCache,
-            )
-            preference(
-                title = titleCleanCoverCache,
-                summary = summaryCleanCoverCache,
-                onClick = onCleanCoverCache,
             )
             preference(
                 title = titleClearWebView,

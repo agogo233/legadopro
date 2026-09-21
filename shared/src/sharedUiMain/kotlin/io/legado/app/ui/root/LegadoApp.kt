@@ -1,6 +1,6 @@
 package io.legado.app.ui.root
 
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -39,10 +39,8 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.dp
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookSource
@@ -72,12 +70,10 @@ import io.legado.app.ui.compose.component.AppBottomSheetDialog
 import io.legado.app.ui.compose.component.AppSelectorDialog
 import io.legado.app.ui.compose.platform.LocalEventBusProvider
 import io.legado.app.ui.compose.platform.LocalThemeStoreProvider
-import io.legado.app.ui.compose.platform.LocalTransitionFrozenStatusBarHeightPx
 import io.legado.app.ui.compose.platform.PlatformBackHandler
+import io.legado.app.ui.compose.platform.dismissTopLayer
 import io.legado.app.ui.compose.platform.handleBackKey
 import io.legado.app.ui.compose.platform.performBack
-import io.legado.app.ui.compose.platform.rememberVisibleStatusBarHeightPx
-import io.legado.app.ui.compose.preference.rememberPrefState
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.LocalEInk
 import io.legado.app.ui.config.BookshelfLayoutConfigDialog
@@ -89,8 +85,10 @@ import io.legado.app.ui.config.MODE_EDIT_PREFS
 import io.legado.app.ui.config.ThemeCustomizeDialog
 import io.legado.app.ui.config.ThemeListDialog
 import io.legado.app.ui.route.ReviewListOverlayDialogContent
+import io.legado.app.ui.video.VideoDirect
 import io.legado.app.ui.widget.dialog.PhotoViewOverlayDialog
 import io.legado.app.ui.widget.dialog.decodePhotoOverlayPayload
+import io.legado.app.ui.widget.dialog.photoOverlayTextColor
 import io.legado.app.ui.widget.keyboard.KeyboardAssistsConfigOverlayContent
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flowOn
@@ -123,183 +121,67 @@ fun LegadoApp(
         SideEffect { AppNavigatorProviders.register(navigator) }
 
         val entries by navigator.backStack.collectAsState()
-        // 卡片矩形登记表: 整个应用一份 —— 列表卡片在布局阶段写, 本层在导航事件那次组合读
-        // (见 ContainerTransformScope.kt), 下方经 LocalBookCardRects 下发给列表
-        val cardRects = remember { BookCardRectRegistry() }
-        // eInk 上提到状态机之前: 下方容器变换段判定要用它 (背景图读取处仍是同一份值)
+        // 大图共享元素状态 (整个应用一份): 源封面与全屏查看器按它推导各自的 visible
+        val photoShared = remember { PhotoSharedState() }
+        // eInk 上提到状态机之前: 下方共享元素转场总闸要用它 (背景图读取处仍是同一份值)
         val eInk = LocalEInk.current
-        // 容器变换开关 (「其他设置」): 经 rememberPrefState 跟随偏好变更即时生效,
-        // 关闭时容器段回落普通页转场
-        val containerTransformAnim =
-            rememberPrefState(PreferKey.containerTransformAnim) { it.getBoolean(PreferKey.containerTransformAnim, true) }
-        val transition = remember { Animatable(1f) }
-        // 方向/出栈页/动画标志在组合阶段维护: LaunchedEffect 滞后一帧, 动画参数若等
-        // effect 定, 首帧会先按"无动画终态"渲染 (前进: 旧页瞬间消失露底; 返回: 目标页
-        // 硬切), 正是切换闪烁的来源。组合阶段先定方向, 首帧即渲染动画起始位
-        var navigatingForward by remember { mutableStateOf(true) }
-        var animating by remember { mutableStateOf(false) }
-        // 返回导航时缓存即将消失的页面 (pop 单个 / popTo 多个), 用于滑出动画;
-        // 动画结束后由 effect 清空复位
-        var outgoingEntries by remember { mutableStateOf<List<RouteEntry>>(emptyList()) }
-        // 单段前进 (pop 紧接 push, 如详情页→目录→选章节→阅读页; replace 换页同理):
-        // 滑出的是出栈页 (目录) 而非栈内倒数第二页, 中间页 (详情) 全程不露脸。
-        // 用户拍板 2026-08: 不要原版那种"目录滑出→详情闪一下→阅读页滑入"的三段转场
-        var forwardOverOutgoing by remember { mutableStateOf(false) }
-        // 打断 Push 倒放标志: 当进场动画中途用户按返回时置 true, 动画沿原进场轨迹反向
-        // 倒放回 0f (新页退回屏幕右侧, 旧页退回屏幕居中), 到达 0f 后释放出栈页并复位。
-        // 首帧与进场帧位移严格连续, 无角色切换突变, 零闪烁。
-        var reversingPush by remember { mutableStateOf(false) }
-        // 上次已消化(动画播完)的栈, 由下方动画 effect 更新, 组合阶段据此检测新导航
-        val lastSettled = remember { mutableStateOf(entries) }
-        // 上一帧的栈: push 动画中 pop 回 push 前栈时 entries == lastSettled, 仅凭栈差
-        // 无法发现刚离栈的页面, 需与上一帧对比才能把被打断的新页挂为出栈页续播
-        val previousEntries = remember { mutableStateOf(entries) }
-        // 本次导航分类: 只从"两份栈快照的差"纯推导, 不把自身上一次的结论 (animating /
-        // navigatingForward) 当输入。lastSettled 直到动画播完才更新, 整段动画期间每次重组
-        // 都会重跑本段; 结论若自反, pop+push 配对 (目录链路/replace) 会在"单段前进"与
-        // "返回"之间每帧翻转, 出栈页在 openExit(原地淡出) 与 closeExit(向右滑出) 两套系统
-        // 动画间逐帧跳变 —— 肉眼即"目录页闪来闪去"。判据: 有出栈页残留且栈顶是新页 = 单段前进
-        // 返回动画未播完时又来一次纯返回: 先把在飞那段当作已完成 (它的出栈页已滑出大半),
-        // 否则 lastSettled 还停在两段之前, dropped 会把上一段的出栈页一并算进来 —— 它排在
-        // displayEntries 最上层, 随后 snapTo(0f) 让它盖回满屏重播一遍滑出 (发现页第二次
-        // 返回时先变成详情页的来源)。限定"本次导航自身是纯 pop": 单段前进 (pop 紧接 push)
-        // 必须保留旧段出栈页, 清掉会让中间页露脸。
-        if (entries != previousEntries.value && animating && !navigatingForward &&
-            !reversingPush && outgoingEntries.isNotEmpty() &&
-            entries.size < previousEntries.value.size &&
-            entries.all { e -> previousEntries.value.any { it.id == e.id } }
-        ) {
-            lastSettled.value = previousEntries.value
-            outgoingEntries = emptyList()
-        }
-        if (entries != lastSettled.value) {
-            val forward = entries.size > lastSettled.value.size
-            val sameSize = entries.size == lastSettled.value.size
-            // 已离栈的页面 (pop 单个 / popTo 多个 / replace 被换掉的那页)
-            val dropped = lastSettled.value.filterNot { e -> entries.any { it.id == e.id } }
-            val singleSegmentForward = dropped.isNotEmpty() && (forward || sameSize)
-            // 检测是否处于 Push 进场动画中途被打断返回
-            val isInterruptingPush = animating && navigatingForward && !forwardOverOutgoing &&
-                transition.value > 0f && transition.value < 1f && !forward
-
-            if (isInterruptingPush) {
-                reversingPush = true
-                navigatingForward = false
-                forwardOverOutgoing = false
-                outgoingEntries = dropped
-                animating = true
-            } else {
-                reversingPush = false
-                navigatingForward = forward || sameSize
-                forwardOverOutgoing = singleSegmentForward
-                // 纯前进无出栈页; 返回与单段前进都保留出栈页滑出 (popTo 多页一并滑出, 消除中间页瞬消)
-                outgoingEntries = if (forward && !singleSegmentForward) emptyList() else dropped
-                animating = true
-            }
-        } else if (transition.value > 0f && transition.value < 1f &&
-            previousEntries.value != entries
-        ) {
-            // 打开动画途中关闭页面 (push 动画中 pop 回 push 前的栈): entries 与 lastSettled
-            // 相等, 但上一帧 push 进来的页刚被 pop 离栈 —— 挂为出栈页并启动反向倒放
-            val flickedBack = previousEntries.value.filterNot { e -> entries.any { it.id == e.id } }
-            if (flickedBack.isNotEmpty()) {
-                reversingPush = true
-                outgoingEntries = flickedBack
-                navigatingForward = false
-                forwardOverOutgoing = false
-                animating = true
-            }
-        }
-        previousEntries.value = entries
-        // 出栈页保留在栈内滑出, 动画结束后由 effect 清空复位。
-        // 单段前进时出栈页要插在栈顶之下: 新页在上才是前进转场的 z 序, 排到栈尾会让不透明
-        // 的旧页盖住新页滑入 (中段两层 alpha 之和 <1 还透出根背景, 观感是"发白的交叉淡入")
-        val displayEntries = when {
-            forwardOverOutgoing -> entries.dropLast(1) + outgoingEntries + entries.takeLast(1)
-            reversingPush || !navigatingForward -> entries + outgoingEntries
-            else -> entries
+        // 页面转场状态机: 唯一可变状态 = 当前段 + 进度, 其余全是当场算出的派生量。
+        // "是否在转场中"由段的两端与进度当场算出, 不存独立标志 —— 独立标志可能停在与动画事实
+        // 矛盾的值上 (动画结束与完成回调调度之间存在窗口), 按错误的态渲染会整屏空白
+        // (见 [RouteTransitionState])。
+        val routeTransition = remember { RouteTransitionState(entries) }
+        // 本段 (纯推导, 组合期即可用): 首帧就按本段起点位渲染, 不必等 effect 的 snapTo 到位
+        val activeSegment = routeTransition.resolve(entries) ?: routeTransition.segment
+        // 本段渲染进度是否逐帧取真实进度 (false = 固定起点位 0f)。进度值的逐帧读取只允许发生在
+        // graphicsLayer 块内 (图层阶段读, 只更新图层属性); 组合期读 Animatable 会把整棵页面树
+        // 订阅到动画帧上, 逐帧重组
+        val renderLive = routeTransition.rendersLiveProgress(entries)
+        // 转场中 (供状态栏高度冻结 / 页面圆角消费): 由段两端当场算, 只在导航与落定时变化
+        val animating = routeTransition.animating(entries)
+        // 本段参与渲染的页面 (含正在离场的): 离场页留在组合里播完滑出, 否则返回时会先空一格
+        val displayEntries = activeSegment.displayEntries
+        // 页转场共享对的飞行阶段: 落位页还在页面栈内 = 前进飞行中。
+        // 只从“当前栈”取 (出栈页已不在 entries, 它的 token 自然退出发前进集合 → 出发端恢复绘制,
+        // 回程飞行由出发端的 enter 驱动); 端点只读自己手上这个 token 的阶段。
+        // 必须经可追踪的 compositionLocalOf 下发: 封面在 LazyGrid 的独立重组域里, static local
+        // 不会让它们重组 (读到过期值 → 方向变成“看谁先组合”的赌博)。
+        // 结构相等 (data class + Set) 保证未变化时不下发重组。
+        val sharedPageFlights = remember(entries) {
+            SharedPageFlights(entries.mapNotNullTo(mutableSetOf()) { it.sharedToken })
         }
         val currentEntry = entries.lastOrNull()
         val currentRoute = currentEntry?.route
-        // 容器变换只允许一个来源 entry: popTo 多页时取视觉最上那页
-        val containerSource = if (navigatingForward && !forwardOverOutgoing) {
-            entries.getOrNull(entries.lastIndex - 1)
-        } else {
-            outgoingEntries.lastOrNull()
-        }
         // 转场动画平台 spec: 随导航事件读取 (Android 端每次动态读系统动画时长缩放, 即时生效)
         val transitionSpec = remember(entries, capabilities) { capabilities.routeTransitionSpec }
-        // 容器变换段: 列表页 ↔ 书籍页 构成页对 (见 ContainerTransform.kt) 且列表页里该书卡片
-        // 矩形已登记时启用。eInk、用户关闭容器变换动画开关、系统动画关闭 (时长归零) 时整段跳过。
-        val containerBookUrl = if (
-            eInk || !containerTransformAnim.value ||
-            transitionSpec.pushDurationMillis <= 0 || transitionSpec.popDurationMillis <= 0
-        ) {
-            null
-        } else {
-            containerTransformBookUrl(containerSource?.route, currentEntry?.route)
-        }
-        // 两端分派: 书籍页那侧画容器裁剪, 列表页那侧提供起手矩形 (方向无关)。
-        // 必须钉到具体 entry 而非只比 bookUrl: popTo 回书架时 [详情页, 阅读页] 两页 bookUrl 相同,
-        // 按 bookUrl 匹配会让两页同时画裁剪
-        val sourceIsBookPage = containerSource?.route?.containerBookUrl() != null
-        val containerPageId = if (sourceIsBookPage) containerSource.id else currentEntry?.id
-        val containerListPageId = if (sourceIsBookPage) currentEntry?.id else containerSource?.id
-        val containerBookRoute =
-            if (sourceIsBookPage) containerSource.route else currentEntry?.route
-        val containerBookOrigin = containerBookRoute?.containerBookOrigin()
-        // 起手矩形 (列表页自身坐标系, 与书籍页页坐标系同原点同尺寸):
-        // 取不到 (书被滚出视口而条目已回收 / 从无该书的列表进入) 就整段不做容器变换, 回落普通
-        // 页转场 —— 否则页级位移被归零, 观感是"什么动画都没有"。
-        // 按导航事件 remember: 段内只读一次 —— 段内卡片可能被 LazyGrid 回收, 逐帧读会拿到
-        // 已消失的值。登记表是普通 map (非快照), 读它不注册依赖, 滚列表不会重组本层
-        val containerStartBounds = remember(
-            entries,
-            outgoingEntries,
-            containerBookUrl,
-            containerBookOrigin,
-        ) {
-            containerBookUrl?.let {
-                cardRects.boundsOf(containerListPageId, containerBookOrigin, it)
-            }
-        }
-        val containerSegment = containerStartBounds != null
-        // 容器变换段归零页级位移/缩放/压暗/页圆角: 页面本体保持全屏不动, 形变全由裁剪窗口表达
-        // (页跟着滑会让裁剪窗口与内容反向错动)。
-        // 两侧的页级淡入淡出全关: 书籍页侧的内容淡入改由下方按**容器开合度**驱动 (见
-        // ContainerContentFadeOpenness) —— 转场曲线前重, 按段进度淡会让页面在形变才走一小段时
-        // 就已不透明 (返回时则早早透明), 两个方向都只看得见一小截形变;
-        // 列表页侧本来就不能淡 —— 它是容器生长时的底层参系, 淡了就成了"两页互淡"。
-        // 时长与曲线字段只在平台给了容器专用值时才换 (两个方向同值, 打断倒放的剩余时长换算同口径)
-        val effectiveSpec = if (containerSegment && animating) {
-            val containerDuration = transitionSpec.containerTransformDurationMillis
-            val containerEasing = transitionSpec.containerTransformEasing
-            transitionSpec.copy(
-                newPageSlideFraction = 0f,
-                oldPageShiftFraction = 0f,
-                targetPageSlideFraction = 0f,
-                outgoingSlideFraction = 0f,
-                newPageScaleFrom = 1f,
-                targetPageScaleFrom = 1f,
-                underPageDimAlpha = 0f,
-                pageCornerRadiusPx = 0f,
-                newPageFadeIn = false,
-                oldPageFadeOut = false,
-                targetPageFadeIn = false,
-                outgoingFadeOut = false,
-                pushDurationMillis = containerDuration ?: transitionSpec.pushDurationMillis,
-                popDurationMillis = containerDuration ?: transitionSpec.popDurationMillis,
-                pushEasing = containerEasing ?: transitionSpec.pushEasing,
-                popEasing = containerEasing ?: transitionSpec.popEasing,
-            )
-        } else {
-            transitionSpec
-        }
+        // 共享元素转场总闸: 只由 eInk 与系统动画时长决定 (原先还有一个「容器变换动画」开关,
+        // 该机制已被删除、效果常开; 多出来的开关只会多一条"关了就没动画"的旁路)。
+        // 整段旁路时共享元素端点不挂修饰符, 卡片进页/大图都走普通页转场
+        val sharedTransitionEnabled = !eInk &&
+            transitionSpec.pushDurationMillis > 0 && transitionSpec.popDurationMillis > 0
+        // 页面转场动画平台 spec: 保持项目原本的页面级转场 (新页滑入/旧页移位等),
+        // 封面在 SharedTransitionLayout 的全局 Overlay 中独立跨页面平滑飞行
+        val effectiveSpec = transitionSpec
         // 转场采样器: 变换全由 spec 参数推导, 消费动画层曲线进度 (与 tween(spec.easing) 匹配)。
-        // 按结构相等重建, 只在"普通段 ↔ 容器段"切换时换一次; 采样器无状态 (动画状态在 transition),
-        // 重建无副作用
+        // 采样器无状态 (动画状态在 transition), 重建无副作用
         val transitionSampler = remember(effectiveSpec) { RouteTransitionSampler(effectiveSpec) }
 
+        // 页转场共享对的飞行参数与本次页面转场同源: 前进取 push, 返回与倒放取 pop —— 页面动画在
+        // 倒放段按 pop 时长从当前位置退回起点位, 飞行若仍取 push 时长会先到位、再被仍在位移的
+        // 页面拖一下 (见 [SharedPageFlightSpec])
+        val flightIsPush = activeSegment.forward && !activeSegment.reversing
+        val pageFlightSpec = remember(flightIsPush, effectiveSpec) {
+            if (flightIsPush) {
+                SharedPageFlightSpec(
+                    effectiveSpec.pushDurationMillis,
+                    effectiveSpec.pushEasing.toComposeEasing(),
+                )
+            } else {
+                SharedPageFlightSpec(
+                    effectiveSpec.popDurationMillis,
+                    effectiveSpec.popEasing.toComposeEasing(),
+                )
+            }
+        }
         // 应用当前路由对应的窗口策略。只在策略真变了才下发: 桌面端 setFullscreen 会调
         // AWT GraphicsDevice.setFullScreenWindow, 每次重组都下发等于持续折腾窗口本体
         // 阅读页系统栏跟随 hideStatusBar/hideNavigationBar 配置 (对照原版 upSystemUiVisibility),
@@ -333,13 +215,6 @@ fun LegadoApp(
                     .onFailure { AppLog.put("应用窗口策略失败", it) }
             }
         }
-        // 转场动画期间冻结状态栏可见高度, 供页面顶栏 transitionStatusBarPadding /
-        // 滚动内容区 transitionStatusBarHeight 消费: 系统栏显隐动画与页面转场并行播放
-        // (进入阅读页立即隐藏状态栏, 对齐原版独立窗口进入即隐藏的观感), 内容区不跟随
-        // insets 逐帧重排; 动画结束解除冻结 (push 方向旧页已销毁, pop 方向系统栏动画
-        // 已播完, 实时值即可见高度, 无跳变)
-        val visibleStatusBarHeightPx = rememberVisibleStatusBarHeightPx()
-        val frozenStatusBarHeightPx = if (animating) visibleStatusBarHeightPx else null
         // 阅读页隐藏状态栏/导航栏开关在对话框里切换后重应用系统栏策略 (原版 SharedPreference
         // 监听 → upSystemUiVisibility); 用 rememberUpdatedState 取最新路由
         val currentRouteState = rememberUpdatedState(currentRoute)
@@ -411,9 +286,16 @@ fun LegadoApp(
         var rootFocusOwner by remember { mutableStateOf("none") } // none|root|descendant
         LaunchedEffect(Unit) { runCatching { rootFocusRequester.requestFocus() } }
         CompositionLocalProvider(
-            LocalTransitionFrozenStatusBarHeightPx provides frozenStatusBarHeightPx,
-            LocalBookCardRects provides cardRects,
+            LocalPhotoSharedState provides photoShared,
+            LocalSharedTransitionEnabled provides sharedTransitionEnabled,
+            LocalSharedPageFlights provides sharedPageFlights,
+            LocalSharedPageFlightSpec provides pageFlightSpec,
         ) {
+        // 官方共享转场作用域: 页栈与 Overlay 栈都必须在它之内 —— 共享元素的起止位全靠
+        // 本作用域根的 lookahead 坐标换算, 跳窗口在 compose-ui 里直接抛
+        // "layouts are not part of the same hierarchy", 故大图查看器不能再走独立 Dialog 窗口
+        SharedTransitionLayout(Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalSharedTransitionScope provides this) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -449,56 +331,48 @@ fun LegadoApp(
                 // 返回键按下即 onPause → saveRead 落库的即时性: 落库不再等 300ms pop 动画
                 // 播完后的 retain → onCleared, 退出阅读回书架立即可见最新进度
                 screenModelStore.notifyPreRemoved(entries)
-                if (reversingPush) {
-                    // 打断 Push 倒放模式: 从当前 progress 平滑回退至 0f
-                    val currentProgress = transition.value
-                    val remainingDuration =
-                        (transitionSampler.popDurationMillis * currentProgress).toInt()
-                            .coerceAtLeast(1)
-                    transition.animateTo(
-                        0f,
-                        tween(
-                            durationMillis = remainingDuration,
-                            easing = effectiveSpec.popEasing.toComposeEasing(),
+                // 本段 (纯推导): 组合期已用同一函数算出渲染用的段, 此处取到的就是本帧真实段。
+                // resolve 返回非空即表示还有未落定的段要播 (已静止时它返回 null)。
+                val next = routeTransition.resolve(entries)
+                if (next != null) {
+                    routeTransition.applySegment(next)
+                    if (next.reversing) {
+                        // 倒放: 保持本段起止栈不变, 从当前位置平滑退回起点位 (0f)。
+                        // 必须先把当前进度读出来再动 Animatable —— 先 snapTo 会把剩余路程归零,
+                        // 倒放就变成瞬移
+                        val remaining = routeTransition.progress.value
+                        routeTransition.progress.animateTo(
+                            0f,
+                            tween(
+                                durationMillis =
+                                    (transitionSampler.popDurationMillis * remaining)
+                                        .toInt().coerceAtLeast(1),
+                                easing = effectiveSpec.popEasing.toComposeEasing(),
+                            ),
                         )
-                    )
-                    // 倒放完毕: 出栈新页已完全退回屏幕右侧, 释放出栈页并将 transition 归位至 1f
-                    outgoingEntries = emptyList()
-                    transition.snapTo(1f)
-                    lastSettled.value = entries
-                    reversingPush = false
-                    animating = false
-                } else if (entries != lastSettled.value) {
-                    // 正常前进或正常返回 (含单段前进)
-                    transition.snapTo(0f)
-                    transition.animateTo(
-                        1f,
-                        tween(
-                            durationMillis = if (navigatingForward) {
-                                transitionSampler.pushDurationMillis
-                            } else {
-                                transitionSampler.popDurationMillis
-                            },
-                            easing = if (navigatingForward) {
-                                effectiveSpec.pushEasing.toComposeEasing()
-                            } else {
-                                effectiveSpec.popEasing.toComposeEasing()
-                            },
+                    } else {
+                        // 正常段: 从本段起点位跑到终位。动画中途被新导航打断时, 新段从其起点位起播,
+                        // 打断瞬间页面先落到上一段终点位再播新段
+                        routeTransition.progress.snapTo(0f)
+                        routeTransition.progress.animateTo(
+                            1f,
+                            tween(
+                                durationMillis = if (next.forward) {
+                                    transitionSampler.pushDurationMillis
+                                } else {
+                                    transitionSampler.popDurationMillis
+                                },
+                                easing = if (next.forward) {
+                                    effectiveSpec.pushEasing.toComposeEasing()
+                                } else {
+                                    effectiveSpec.popEasing.toComposeEasing()
+                                },
+                            ),
                         )
-                    )
-                    lastSettled.value = entries
-                    outgoingEntries = emptyList()
-                    forwardOverOutgoing = false
-                    animating = false
-                } else if (transition.value != 1f) {
-                    // 动画中途导航被打断且栈规模不变 (如快速 push+pop): 复位动画,
-                    // 否则页面会停在动画中间位; 同时清理滑出页/待播方向 (状态污染修复:
-                    // 不清会残留已销毁页面, 后续返回时滑出幽灵页)
-                    transition.snapTo(1f)
-                    animating = false
-                    forwardOverOutgoing = false
-                    reversingPush = false
-                    outgoingEntries = emptyList()
+                    }
+                    // 跑完才落定: 协程被取消时不执行, 但那时页面栈已变, 新 effect 会重算段继续播,
+                    // 不会停在半路无人接管
+                    routeTransition.settle(entries)
                 }
                 // ScreenModel 生命周期与栈绑定 (清理已出栈的 ScreenModel)
                 screenModelStore.retain(entries)
@@ -508,22 +382,6 @@ fun LegadoApp(
                 }
                 retainedEntryIds = currentIds
             }
-            // 动画角色: top=动画后留存的栈顶页, slide=前进时的旧页或返回时的出栈页们;
-            val topEntry = entries.lastOrNull()
-            // 滑出的旧页: 纯前进 = 栈内倒数第二; 返回 / 单段前进 / 倒放 = 出栈页
-            val slidingIds = remember(
-                entries,
-                outgoingEntries,
-                navigatingForward,
-                forwardOverOutgoing,
-                reversingPush
-            ) {
-                if (navigatingForward && !forwardOverOutgoing) {
-                    entries.getOrNull(entries.lastIndex - 1)?.let { setOf(it.id) } ?: emptySet()
-                } else {
-                    outgoingEntries.mapTo(mutableSetOf()) { it.id }
-                }
-            }
             // 每个 entry 用 key(entry.id) 固定组合身份: 前进/返回/单段前进时 displayEntries
             // 顺序会变化 (出栈页被插进新栈), 无 key 时
             // Compose 按组合位置匹配, 页面 remember 状态 (LazyGridState/remember(route)/
@@ -531,111 +389,37 @@ fun LegadoApp(
             // 存活, 对齐原版单例 Activity 复用语义 (返回页面不重建)
             displayEntries.forEach { entry ->
                 key(entry.id) {
-                // 栈顶即本段的目标页 (前进=滑入的新页, 返回=露出的目标页);
-                // 目录链路单段前进时栈顶就是阅读页, 详情页不参与本段 (落进下方隐藏分支)
-                val isTarget = entry.id == topEntry?.id
-                val isSliding = entry.id in slidingIds
-                    val isContainerCandidate = entry.route.containerBookUrl() != null
-                    // 本页容器变换的起手矩形: 只有本段的书籍候选页且正在动画时给值, null = 不做容器变换。
-                // 静止态必须归零 —— 否则屏幕上永久留着一张快照
-                    val containerRect = if (isContainerCandidate) {
-                        containerStartBounds?.takeIf {
-                            animating && entry.id == containerPageId
-                        }
-                    } else {
-                        null
-                }
-                // 容器开合度 0..1 (0=卡片位置与尺寸, 1=全屏)。只在 draw 阶段调用:
-                // 对 transition 的读取落在绘制阶段, 逐帧只重绘不重组
-                val containerOpenness: () -> Float = {
-                    val p = transition.value
-                    // 首帧 (组合先于 effect 的 snapTo) 按起始位: 与下方 idleFrame 同口径
-                    val raw = if (!transition.isRunning && p == 1f) 0f else p
-                    // 前进与打断倒放: 页随 progress 长大 (倒放时 progress 回降即收小);
-                    // 返回: progress 0→1 是收小过程, 取补
-                    if (navigatingForward || reversingPush) raw else 1f - raw
-                }
-                // 页参系: 页内卡片锚点按它登记矩形 (见 ContainerTransformScope.kt)。
-                // 按 entry 身份 remember: 组合身份已由外层 key(entry.id) 固定, 与页面同寿
-                val pageAnchor = remember { RoutePageAnchorScope(entry.id) }
+                // 本页在本段的角色; null = 不参与本段 (移出屏幕, 不绘制也不参与命中测试)。
+                // 角色由段描述纯推导 (见 [RouteTransitionSegment.roleOf]): 段内固定不变,
+                // 不会出现"逐帧重算导致角色翻转"的跳变
+                val role = activeSegment.roleOf(entry)
                 // 单帧变换采样 (图层变换与压暗蒙版共用); null = 本段不参与的隐藏页。
-                // 只在 graphicsLayer 块内调用: 对 transition 的读取是图层阶段读, 逐帧只更新
-                // 图层属性, 不触发页面内容重绘
+                // 进度值在本 lambda 内读取: graphicsLayer 块对状态读的失效只作用于本页图层,
+                // 逐帧只更新图层属性, 不触发页面内容重组
                 val sampleTransform: (Float) -> PageTransform? = { width ->
-                    val progress = transition.value
-                    // 动画尚未启动的首帧 (组合先于 effect 的 snapTo): 按起始位渲染,
-                    // 与 snapTo(0) 后的动画首帧位置一致, 避免先闪终态再动画
-                    val idleFrame = animating && !transition.isRunning && progress == 1f
-                    val effectiveProgress = if (idleFrame) 0f else progress
-                    when {
-                        reversingPush -> {
-                            // 打断 Push 倒放: 出栈新页保持 NewPage 角色 (从当前 tx 滑出屏幕右侧)
-                            // 栈顶恢复旧页保持 OldPage 角色 (从当前 -shift·p 滑回屏幕居中)
-                            when {
-                                isSliding && animating -> transitionSampler.sample(
-                                    TransitionRole.NewPage,
-                                    progress, width
-                                )
-
-                                isTarget -> transitionSampler.sample(
-                                    TransitionRole.OldPage,
-                                    progress, width
-                                )
-
-                                else -> null
-                            }
-                        }
-
-                        isTarget -> transitionSampler.sample(
-                            if (navigatingForward) {
-                                TransitionRole.NewPage
-                            } else {
-                                TransitionRole.TargetPage
-                            },
-                            effectiveProgress, width
-                        )
-
-                        // 动画结束后 (animating=false) 的滑出页归入隐藏分支: 原公式
-                        // 该态为半透明离屏 (alpha=1-progress, translationX=-width), 与
-                        // effect 末尾同步移除仅差同帧, 直接隐藏行为更干净且不可见差异
-                        isSliding && animating -> transitionSampler.sample(
-                            if (navigatingForward) {
-                                TransitionRole.OldPage
-                            } else {
-                                TransitionRole.OutgoingPage
-                            },
-                            effectiveProgress, width
-                        )
-
-                        else -> null
+                    if (role == null) {
+                        null
+                    } else {
+                        val progress =
+                            if (renderLive) routeTransition.progress.value else 0f
+                        transitionSampler.sample(role, progress, width)
                     }
                 }
                 // 转场期间的页面圆角形状 (hoist 避免逐帧新建 Shape)
                 val transitionShape = remember(effectiveSpec.pageCornerRadiusPx) {
                     RoundedCornerShape(effectiveSpec.pageCornerRadiusPx)
                 }
-                    // 容器变换: 仅书籍候选页面挂载录制层; 普通路由避免常驻 rememberGraphicsLayer / ContainerSnapshot 开销
-                    val containerDrawModifier = if (isContainerCandidate) {
-                        Modifier.containerTransformDraw(
-                            startBounds = containerRect,
-                            openness = { containerOpenness() },
-                            contentAlpha = {
-                                (containerOpenness() / ContainerContentFadeOpenness)
-                                    .coerceAtMost(1f)
-                            },
-                        )
-                    } else {
-                        Modifier
-                    }
                 Box(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer {
                             val transform = sampleTransform(size.width)
                             if (transform != null) {
-                                // 容器段页图层回恒等: 缩放/平移/淡入全部改由下方快照绘制表达
-                                // (见 containerTransformDraw)。effectiveSpec 已把本段参数全归零,
-                                // 此处取到的就是恒等变换, 无需特例
+                                // 本页参与本段转场: 按采样器给的变换逐帧滑入/滑出/压暗。
+                                // 注: 封面飞行不参与这里的特例 (历史上的"容器变换"已整体下线),
+                                // 共享内容在飞行期间画在 SharedTransitionLayout 自己的覆盖层里,
+                                // 不受本页图层的位移/裁剪影响 (静止期仍照旧受本页 clip 裁切)
+                                // → 页滑动与封面飞行是叠加发生的
                                 alpha = transform.alpha
                                 scaleX = transform.scaleX
                                 scaleY = transform.scaleY
@@ -666,34 +450,17 @@ fun LegadoApp(
                                 RectangleShape
                             }
                         }
-                        // 容器变换: 段内用快照代替实时内容, 从卡片矩形逐帧长到全屏 (仅书籍候选页面挂载)。
-                        // 必须接在 background 之前: 否则 drawContent() 录不到页底色
-                        .then(containerDrawModifier)
                         .background(if (hasBgImage) Color.Transparent else AppTheme.colors.background),
                 ) {
-                    // 页参系上报: 挂在页图层之内 (本 Box 的子节点), 卡片矩形才与上方裁剪窗口同坐标系
-                    // —— 页转场靠 graphicsLayer 平移页面, 若按 compose root 记矩形, 非栈顶页被平移到
-                    // -width 后卡片矩形全是屏外值, 而返回那一段恰好要用它
-                    Box(
-                        Modifier
-                            .matchParentSize()
-                            .onGloballyPositioned { pageAnchor.coords = it }
-                    )
                     // 壁纸层挂在本页底部 (随转场移动, 对齐原版页面背景随页面走的语义): 页面内容
                     // 透明区域透出本层; 无壁纸时恒主题纯色。文件不存在/解码失败仅空白无崩溃
                     if (wallpaper != null) {
                         WallpaperLayer(wallpaper)
                     }
                     saveableStateHolder.SaveableStateProvider(entry.id.value) {
-                        CompositionLocalProvider(
-                            LocalRoutePageAnchor provides pageAnchor,
-                            // 转场进行中标志: 容器段 (containerRect 非空, push/pop 两向) 或
-                            // 普通页转场 (animating 且本页是目标页/滑动页)。视频等平台
-                            // Surface 据此暂停显示, 动画结束自动恢复
-                            LocalPageTransitionActive provides (
-                                containerRect != null || (animating && (isTarget || isSliding))
-                            ),
-                        ) {
+                        // 页转场共享对阶段 + 本页 entry 的共享身份都在这里下发:
+                        // 端点只读自己手上那个 token 的阶段 (compositionLocalOf, 会下发重组)
+                        CompositionLocalProvider(LocalSharedPageFlights provides sharedPageFlights) {
                             RouteContent(entry, navigator, screenModelStore)
                         }
                     }
@@ -721,9 +488,11 @@ fun LegadoApp(
             }
         }
         }
+        } // LocalSharedTransitionScope
+        } // SharedTransitionLayout
 
-        // 系统返回键: Overlay 存在时关闭顶层 Overlay (Android 走 BackHandler;
-        // 桌面端 ESC/Backspace 由上方 handleBackKey → performBack 先 dismissTopOverlay)。
+        // 系统返回键: Overlay 存在时关闭顶层 Overlay (Android 走 BackHandler; 桌面端 ESC/Backspace
+        // 由上方 handleBackKey → performBack, 先关顶层覆盖物层再关 Overlay)。
         // 栈顶 Overlay 挂起 (窗口已隐藏, 如登录对话框被 WebView 路由盖住) 时不拦截返回键,
         // 落到路由层 pop (对照原版 WebViewActivity 在前台时返回键先退出它)。
         // 栈顶 Overlay 不可由返回键关闭 (dismissOnBack=false) 时同样不拦截: 拦截只会
@@ -733,7 +502,10 @@ fun LegadoApp(
                 && overlays.lastOrNull()?.key !in suspendedKeys
                 && navigator.isTopOverlayDismissibleOnBack()
         ) {
-            navigator.dismissTopOverlay()
+            // 先给层内自管退场的机会: 大图查看器等组件用 BackLayerHandler 自己播退场回飞,
+            // 播完再卸载 Overlay (见 PhotoDialogContent)。直接 dismissTopOverlay 会把 280ms
+            // 回飞与蒙版渐变硬切掉, 且与桌面 ESC 走 performBack 的行为不一致。
+            if (!dismissTopLayer()) navigator.dismissTopOverlay()
         }
 
         // 处理初始启动请求
@@ -774,6 +546,28 @@ private fun applyWindowPolicy(policy: WindowPolicy) {
     wc.setKeepScreenOn(policy.keepScreenOn)
     wc.setOrientation(policy.orientation)
     wc.setSystemBars(policy.systemBars)
+}
+
+/**
+ * 外部投递专用 push: 不重复叠“已经就是栈顶”的那一页。
+ *
+ * 为什么需要这一层: iOS 上“文档被本 App 打开”到底走 SwiftUI `onOpenURL` 还是
+ * `AppDelegate.application(_:open:options:)` 无本地依据 (Apple 文档页拓取 404,
+ * 本机无 Xcode), 两条都接是保险做法, 代价是同一次打开可能投递两次 ——
+ * 不拦住就是播放页/导入页叠两层。
+ *
+ * 上一版用“同一 URI 8 秒内只放行一次”抹, 那是兜底不是方案: 它会把“退出后立刻
+ * 再开同一个文件”连“8 秒内重点同一个 legado:// 深链”一起吞掉 (表现为什么也不会发生)。
+ * 栈顶比对是确定性的: 第一条把它推成栈顶 → 第二条同载荷 no-op; 用户真退回再开,
+ * 栈顶已变 → 立即能推 (无冷却期)。只用在文件投递分支 (ImportFile), 不给 OpenRoute
+ * 上闸门 —— 那是应用内直投, 叠层与否由调用方语义定。
+ *
+ * 幂等判据 = 路由对象结构性相等 (`AppRoute` 均为 data class / data object; Book 是全字段
+ * equals 的 data class, 所以“同一本书但字段变了”不会误拦)。
+ */
+private fun AppNavigator.pushIfNeeded(route: AppRoute) {
+    if (backStack.value.lastOrNull()?.route == route) return
+    push(route)
 }
 
 // 启动请求路由分发
@@ -835,9 +629,20 @@ private suspend fun handleLaunchRequest(
             AppRoute.Search(key = request.text, submit = true)
         )
 
-        is LaunchRequest.ImportFile -> navigator.push(AppRoute.ImportBook(request.filePath))
+        // 外部投来的文件: 视频直接进播放页 (不是“书”, 不得先去导入页转一手),
+        // 其余走导入书籍流程
+        is LaunchRequest.ImportFile -> {
+            val direct = VideoDirect.targetFor(request.filePath)
+            if (direct != null) {
+                navigator.pushIfNeeded(AppRoute.VideoPlay(direct))
+            } else {
+                navigator.pushIfNeeded(AppRoute.ImportBook(request.filePath))
+            }
+        }
         // 进程内直投的完整路由 (透明壳深链 / 文件关联 / 直达入口): 载荷即引用, 不查库不反序列化。
-        // asRoot 只在首次组合期 seed 初始路由时有意义 (见 MainActivity.Content), 到这里一律 push
+        // asRoot 只在首次组合期 seed 初始路由时有意义 (见 MainActivity.Content), 到这里一律 push。
+        // 这里**不走去重**: 重复投递的实际入口是各端的 ImportFile / DeepLink (iOS 两条通道都落
+        // 到 ImportFile), 给 OpenRoute 也上闸门会把“反复直投同一本书”的正常导航也抹掉。
         is LaunchRequest.OpenRoute -> navigator.push(request.route)
         is LaunchRequest.SourceUi -> when (request.type) {
             // 统一登录入口: URL 登录桌面端直开登录窗口 (2026-08-07); 深链无源对象,
@@ -1072,19 +877,21 @@ private fun PhotoOverlayDialogContent(overlay: AppOverlay.Dialog, navigator: App
         book = book,
         bookSource = bookSource,
         chapter = chapter,
-        // 书源查询中: 黑色占位 + loading (毫秒级; 点击可关, 防查询慢时无响应)
+        // 发起方页面自签的大图配对 token (没有源封面端点时为 null → 立即显示不飞行)
+        photoToken = overlay.photoToken,
+        // 书源查询中: 查看器自己的暗底 + loading (毫秒级; 点击可关, 防查询慢时无响应)。
+        // 占位不自带底色: 暗度只由查看器一处表达, 两处各写一份会在查询完成时深浅跳变
         placeholder = if (sourceState is PhotoSourceState.Querying) {
             {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.55f))
                         .pointerInput(Unit) {
                             detectTapGestures(onTap = { navigator.dismissOverlay(overlay.key) })
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(stringResource(Res.string.loading), color = Color.White)
+                    Text(stringResource(Res.string.loading), color = photoOverlayTextColor())
                 }
             }
         } else {

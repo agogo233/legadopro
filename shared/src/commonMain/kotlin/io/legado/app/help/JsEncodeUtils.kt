@@ -8,8 +8,8 @@ package io.legado.app.help
  * KMP expect interface：commonMain 仅声明 6 个 abstract 方法（KMP 限制: expect 不允许带方法体）。
  * - 各平台 actual interface 也保持纯 abstract (modality 对齐: expect abstract vs actual abstract)。
  * - 默认实现下沉到各平台的 `JsEncodeUtilsDefaults` interface (jvmAndAndroidMain/iOS/鸿蒙):
- *   - jvmAndAndroidMain: hutool DigestUtil + java.util.Base64 (行为零变化)
- *   - iOS/鸿蒙: krypto MD5/SHA/HMAC + encodeBase64Standard
+ *   - jvmAndAndroidMain: hutool DigestUtil + Base64Lenient (行为零变化)
+ *   - iOS/鸿蒙: krypto MD5/SHA/HMAC + Base64Lenient.encodeToString
  *
  * 调用方多继承 [JsEncodeUtilsDefaults] 注入 default 方法体;
  * jvmAndAndroidTest 中 `object : JsEncodeUtilsDefaults {}` 匿名实现继续可用。

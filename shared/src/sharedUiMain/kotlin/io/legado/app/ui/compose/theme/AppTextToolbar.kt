@@ -40,6 +40,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -63,9 +64,9 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import io.legado.app.ui.compose.component.AppPopup
 import io.legado.app.ui.compose.platform.LocalOverlayTopInset
 import io.legado.app.ui.compose.platform.OverlayInsetGap
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
@@ -359,7 +360,7 @@ internal fun AppTextMenuHost(
     // focusable=false: 不抢文本框焦点/选区, 显隐交由框架回调驱动
     // onDismissRequest 空实现: 鼠标微动会触发系统 dismiss 回调清空选区菜单,
     // 改由框架 (旧通道 hide() / 新通道取消 show 协程) 在选区真正清除时统一隐藏
-    Popup(
+    AppPopup(
         popupPositionProvider = positionProvider,
         onDismissRequest = {},
         properties = PopupProperties(focusable = false, clippingEnabled = false),
@@ -708,10 +709,13 @@ private class TextToolbarPositionProvider(
 @Composable
 fun TextToolbarFindReplaceEffect(action: () -> Unit) {
     val state = LocalAppTextMenuState.current
-    DisposableEffect(state, action) {
-        state?.findReplaceAction = action
+    val currentAction by rememberUpdatedState(action)
+    DisposableEffect(state) {
+        if (state == null) return@DisposableEffect onDispose {}
+        val registeredAction: () -> Unit = { currentAction() }
+        state.findReplaceAction = registeredAction
         onDispose {
-            if (state?.findReplaceAction === action) {
+            if (state.findReplaceAction === registeredAction) {
                 state.findReplaceAction = null
             }
         }

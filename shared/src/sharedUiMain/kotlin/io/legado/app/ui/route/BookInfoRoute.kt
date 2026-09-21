@@ -1,10 +1,12 @@
 package io.legado.app.ui.route
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,16 +47,19 @@ import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppOverlay
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.BookRef
+import io.legado.app.ui.root.LocalSharedCoverBinding
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.RouteResultPayload
 import io.legado.app.ui.root.RouteResults
 import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.root.asBook
+import io.legado.app.ui.root.rememberSharedCoverDestinationBinding
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.ui.widget.dialog.WaitDialog
 import io.legado.app.utils.FlowBus
 import io.legado.app.utils.systemCurrentTimeMillis
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
@@ -83,9 +88,13 @@ fun BookInfoRoute(
     // 显式 copy, 此处直接共享路由快照; 页面改动走 bookDao.update 落库, 快照随 DB 一致)
     val book = route.book.asBook()
 
-    val screenModel = screenModelStore.getOrCreateTyped(entry) { BookInfoScreenModel() }
+    val screenModel = screenModelStore.getOrCreateTyped(entry) { BookInfoScreenModel(book) }
     val state by screenModel.state.collectAsState()
     val scope = rememberCoroutineScope()
+    // 本页封面端点的共享身份: 页转场 token 来自发起方 (被点的卡片) 经导航带过来的 entry.sharedToken,
+    // 大图 token 由本页自签 —— 两者都只在本页唯一, 不依赖封面 URL 与页面栈位置
+    // (entryKey 用 entry.id: 同一位置换页时必须换大图 token, 否则会顶着一张旧配对)
+    val coverBinding = rememberSharedCoverDestinationBinding(entry.id, entry.sharedToken)
 
     // 搜索结果进入的书 (对照 app 端 BaseReadViewModel.upBook 的 isSearchBook)
     val isSearchBook = route.book is BookRef.Search
@@ -102,11 +111,17 @@ fun BookInfoRoute(
     val errorLoadTocLabel = stringResource(Res.string.error_load_toc)
     val needMoreTimeLabel = stringResource(Res.string.need_more_time_load_content)
     val clearCacheSuccessLabel = stringResource(Res.string.clear_cache_success)
+    // 落地加载在首次组合即开工 (对照原版 onActivityCreated → upBook): 不再等页面转场结束 ——
+    // 那个转场标志已随容器变换一并删除, 而详情页首帧数据本就来自路由快照, 早一次查库/回源
+    // 不会让首帧变化 (结果经 StateFlow 到达, 与动画无关)
+    // 一次性守卫放在 ScreenModel.bootStarted (不放在 remember): 从目录页/
+    // 阅读页/编辑页 pop 回本页时本页会再组合一次, 只拿 bookUrl 当 key 会让整段
+    // 落地加载每次返回都重跑 (多打一次回源); 且工作体在 scope 里 launch, 不归本 effect 管,
+    // 重跑就是并发双跑 + 竞写 bookSource, rss 书还会二次执行 url 换位把 bookUrl 写成 "data:"
     LaunchedEffect(book.bookUrl) {
-        screenModel.dispatch(
-            BookInfoUiEvent.ShowBook(book, screenModel.lastedTitleOf(book))
-        )
-        scope.launch(IoDispatcher) {
+        if (screenModel.bootStarted) return@LaunchedEffect
+        screenModel.bootStarted = true
+        val boot = scope.launch(IoDispatcher) {
             val db = AppDbProviders.get()
             val source = if (book.isLocal) null else db.bookSourceDao.getBookSource(book.origin)
             bookSource = source
@@ -133,13 +148,14 @@ fun BookInfoRoute(
                 curBook.tocUrl = curBook.bookUrl
                 curBook.bookUrl = "data:"
             }
-            if (curBook !== book) {
+            // 换实例 (搜索书并回书架那本) 或 rss 原地换过 url: 都要重新展示一次书 —— ShowBook
+            // 同时带最新章文案模板 (旧实现在此只 bump tick, 文案停在未套模板的初值)。
+            // 未换实例的普通书不展示: 构造时的 initialBook 已是同一份快照, 多余 dispatch 只会
+            // 整页重组一次 (旧实现它还顺带把 coverTick+1, 即闪封面的又一跳)
+            if (curBook !== book || curBook.isRss) {
                 screenModel.dispatch(
                     BookInfoUiEvent.ShowBook(curBook, screenModel.lastedTitleOf(curBook))
                 )
-            } else if (curBook.isRss) {
-                // 原地改 tocUrl/bookUrl 不换实例, state.book 引用不变, 需 bump tick 驱动重组
-                screenModel.dispatch(BookInfoUiEvent.BumpBookTick)
             }
             // 加载分组名 (对照 Activity upGroup: 空→no_group)
             val groupName = try {
@@ -177,6 +193,17 @@ fun BookInfoRoute(
                     }
                 }
             }
+        }
+        // 等完本段工作, 只为在组合体被摘掉 (推走/返回) 时能感知取消:
+        // boot 跑在 [scope] (组合期作用域) 上, 不随本 effect 取消, 也不随本 effect 重启重跑;
+        // 已开工标记又挂在跟 entry 同命的 ScreenModel 上 —— 不在此处解除就会永久停在
+        // "只有快照、没目录/字数/回源"的半加载态。故一并取消 + 回滚标记, 下次进入本页重跑
+        try {
+            boot.join()
+        } catch (e: CancellationException) {
+            boot.cancel()
+            screenModel.bootStarted = false
+            throw e
         }
     }
 
@@ -392,6 +419,9 @@ fun BookInfoRoute(
                         key = "photo",
                         payload = cover,
                         sourceOrigin = b.origin.takeIf { !b.isLocal && it.isNotBlank() },
+                        // 本页封面端点自签的大图 token: 查看器拿同一个值当自己的 key,
+                        // 两端才配得上对 (封面 URL 已不再参与配对)
+                        photoToken = coverBinding.photoToken,
                     )
                 )
             }
@@ -682,7 +712,10 @@ fun BookInfoRoute(
     val useDevFeat = AppConfigProviders.get().bookInfoHorizontalLayout &&
         !currentBook.isVideo && !isLandscape
 
-    // 计算 menuState (对照 Activity Content 内 menuState 构造)
+    // 计算 menuState (对照 Activity Content 内 menuState 构造)。
+    // isLocal 用 origin 判定而非 Book.isLocal 扩展: 原版菜单的“上传到 WebDav”项就是
+    // `book?.origin == BookType.localTag` (archive BookInfoActivity:229), 而扩展把
+    // origin.startsWith(webDavTag) 也算 local (webDav 书两套结论相反)。
     val menuState = BookInfoMenuState(
         isLocal = currentBook.origin == BookType.localTag,
         isWebDav = currentBook.origin.startsWith(BookType.webDavTag),
@@ -696,6 +729,7 @@ fun BookInfoRoute(
         tocUrl = currentBook.tocUrl,
     )
     val screenState = state.copy(
+        book = currentBook,
         menuState = menuState,
         isLandscape = isLandscape,
         useDevFeat = useDevFeat,
@@ -703,19 +737,32 @@ fun BookInfoRoute(
         isEInkMode = AppConfigProviders.get().isEInkMode,
     )
 
+    // 封面重载的配置级信号: 与书架同一个来源 (NOTIFY_MAIN / BOOKSHELF_REFRESH)。设置里换默认封面
+    // 图集 / 重烘焙后**缓存产物路径可能不变**, 只能靠 reloadTick 失效 (SharedBookCover 的默认封面
+    // 缓存键就拼了它); 详情页不再由每次 ShowBook 顺带 bump coverTick, 故必须显式接上这个信号
+    var coverConfigTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        launch { FlowBus.with(EventBus.NOTIFY_MAIN).collect { coverConfigTick++ } }
+        launch { FlowBus.with(EventBus.BOOKSHELF_REFRESH).collect { coverConfigTick++ } }
+    }
+
     // L3: 模糊封面背景 / 简介图依赖平台 Glide/AndroidView, 由平台通过 CompositionLocal 注入;
     // 封面统一走 BookInfoCover (内部委托 LocalBookCoverSlot 默认 SharedBookCover)
     val isEInkMode = screenState.isEInkMode
     val blurCoverBgSlot = LocalBlurCoverBgSlot.current
     val introImageSlot = LocalIntroImageSlot.current
+    // 本页封面端点在这里认下共享身份: 页转场 token 来自 entry (发起方卡片交出), 大图 token 本页自签
+    CompositionLocalProvider(LocalSharedCoverBinding provides coverBinding) {
     BookInfoScreen(
         state = screenState,
         actions = actions,
         blurCoverBgSlot = { modifier, land ->
-            // 适配 (Modifier,Boolean)->Unit 到 (Book?,Int,Boolean,Boolean,Modifier,Boolean)->Unit 签名
+            // 适配 (Modifier,Boolean)->Unit 到 (Book?,Int,Boolean,Boolean,Modifier,Boolean)->Unit 签名;
+            // 重载计数与 coverSlot 同源: 换默认封面图集/重烘焙后模糊背景也必须失效,
+            // 只传 coverTick 会让背景一直用旧图 (三端 actual 都把这一位当失效 key; 鸿蒙无该 slot 实现)
             blurCoverBgSlot(
                 currentBook,
-                state.coverTick,
+                state.coverTick + coverConfigTick,
                 state.inBookshelf,
                 isEInkMode,
                 modifier,
@@ -723,12 +770,15 @@ fun BookInfoRoute(
             )
         },
         coverSlot = { book, modifier ->
-            BookInfoCover(book, state.coverTick, modifier)
+            // coverTick (真换了封面) 与 coverConfigTick (默认封面图集/配置变更) 两个信号合成一个
+            // 重载计数传给组件: 任一变化都重载, 都不变则复用已解位图不重走图片管线
+            BookInfoCover(book, state.coverTick + coverConfigTick, modifier)
         },
         introImageSlot = { src, onClick ->
             introImageSlot(src, onClick)
         },
     )
+    } // CompositionLocalProvider(封面共享身份)
 
     // 整书换源弹窗 (对照原版长按来源 → ChangeBookSourceDialog 全高底部弹窗, 与阅读页换源同款)
     if (showChangeSourceDialog) {

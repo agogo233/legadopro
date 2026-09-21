@@ -72,7 +72,6 @@ import io.legado.app.ui.compose.platform.rememberColor
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
-import io.legado.app.ui.root.LocalPageTransitionActive
 import io.legado.app.utils.format
 import legado.shared.generated.resources.Res
 import legado.shared.generated.resources.cancel
@@ -791,7 +790,7 @@ fun ResolutionButton(
             title = { Text(stringResource(Res.string.resolution)) },
             text = {
                 // 单选列表 (对照 app 端 VideoPlayActivity.showResolutionDialog 的 singleChoiceItems 交互;
-                // 样式为 Compose 近似: 24/12 padding + 12 间距 + selectable(role=RadioButton) + 16sp weight)
+                // 条目不叠加额外 padding, 由 AlertDialog text 槽位及组件原生尺寸承载)
                 Column {
                     resolutions.forEachIndexed { index, resolution ->
                         Row(
@@ -806,8 +805,7 @@ fun ResolutionButton(
                                             onSwitchResolution(index)
                                         }
                                     },
-                                )
-                                .padding(horizontal = 24.dp, vertical = 12.dp),
+                                ),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
@@ -1015,13 +1013,8 @@ fun VideoPlayerHostContainer(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // 1. 平台纯 Surface (转场期间整体移出组合: 原生 Surface 录不进容器快照、不吃页面
-        //    alpha, 留着会在转场中全屏突兀显示; 移出会连带卸载 RenderSurface 内的加载副作用
-        //    collect, 播放器本体由 controller 持有不受影响, 恢复后 StateFlow 补发 +
-        //    updateSource 的 loadedUrl 守卫接续不重播; 代价: push 进入时起播推迟一个转场时长)
-        if (!LocalPageTransitionActive.current) {
-            platform.RenderSurface(controller, screenModel, Modifier.fillMaxSize())
-        }
+        // 1. 平台纯 Surface (对照原版 PlayerView 直挂在布局里, 不随页面转场移出组合)
+        platform.RenderSurface(controller, screenModel, Modifier.fillMaxSize())
 
         // 2. 共享手势层
         VideoGestureOverlay(
@@ -1034,7 +1027,9 @@ fun VideoPlayerHostContainer(
         // 加载指示器仍用视频侧的缓冲圈, 与"缓冲中"样式统一)
         ChapterLoadStateOverlay(
             state = loadState,
-            onRetry = screenModel::onRefreshChapter,
+            // 不走 onRefreshChapter: 它在直投态被 isDirect 早退, 错误页会挂着一颗死按钮;
+            // onRetryLoad 按形态分流 (由书进入→重解析章节, 直投→按原地址重装)
+            onRetry = screenModel::onRetryLoad,
             loadingIndicator = { VideoBufferingIndicator() },
         )
 

@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import coil3.ComponentRegistry
 import coil3.ImageLoader
+import coil3.annotation.ExperimentalCoilApi
 import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.network.NetworkFetcher
@@ -25,8 +26,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import io.legado.app.help.coroutine.IoDispatcher
 import okio.FileSystem
 import okio.buffer
 import java.io.File
@@ -121,18 +120,6 @@ class AndroidBookImageLoader(
         return abs
     }
 
-    /** 清封面持久区 (设置页"清除封面缓存")。DiskCache.clear() 是阻塞 IO, 走 IO 线程。 */
-    override suspend fun clearCoverCache(): Boolean {
-        val diskCache = imageLoader.diskCache as? MultiDiskCache ?: return false
-        // Coil 自身内存缓存也要清: 清了磁盘不内存, 封面全从 MemoryCache 命中, 看上去就是没清掉
-        imageLoader.memoryCache?.clear()
-        withContext(IoDispatcher) {
-            diskCache.clearCovers()
-            ImageBytesCache.clearPersistent()
-        }
-        return true
-    }
-
     /** [persistent] 为 true 时改写 diskCacheKey, 由 [MultiDiskCache] 分流到封面持久区。
      * 同 URL 并发请求经 [BookImageLoadDedup] 单飞去重 (I6)。 */
     private suspend fun execute(
@@ -213,7 +200,11 @@ fun registerAndroidBookImageLoader(context: Context) {
  *
  * diskCache 走双区 [buildImageDiskCache]: 书架封面落 `filesDir/covers` (与原版 Glide
  * `MultiDiskCacheFactory` 同址), 其余图片落 `cacheDir/image_cache`。
+ *
+ * [ExperimentalCoilApi] 来自 `MangaModelFetcher.Factory()` (Coil3 把自定义 Fetcher 工厂
+ * 标成实验 API; 桌面端同链路的 [buildBookImageLoader] 已是同一写法)。
  */
+@OptIn(ExperimentalCoilApi::class)
 internal fun buildBookImageLoader(
     context: Context,
     additionalComponents: ComponentRegistry.Builder.() -> Unit = {},

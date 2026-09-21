@@ -61,8 +61,6 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
         CachedPrefValue(prefs) { it.getInt(PreferKey.bookshelfGridWidth, 120) }
     private val showUnreadCache =
         CachedPrefValue(prefs) { it.getBoolean(PreferKey.showUnread, true) }
-    private val showBookshelfFastScrollerCache =
-        CachedPrefValue(prefs) { it.getBoolean(PreferKey.showBookshelfFastScroller, true) }
     private val bookshelfListShowKindCache =
         CachedPrefValue(prefs) { it.getBoolean(PreferKey.bookshelfListShowKind, false) }
     private val bookshelfListShowIntroCache =
@@ -124,7 +122,6 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
         bookshelfCoverHeightCache.refresh(prefs)
         bookshelfGridWidthCache.refresh(prefs)
         showUnreadCache.refresh(prefs)
-        showBookshelfFastScrollerCache.refresh(prefs)
         bookshelfListShowKindCache.refresh(prefs)
         bookshelfListShowIntroCache.refresh(prefs)
         bookshelfListIntroLinesCache.refresh(prefs)
@@ -189,9 +186,6 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
 
     override val showUnread: Boolean
         get() = showUnreadCache.get()
-
-    override val showBookshelfFastScroller: Boolean
-        get() = showBookshelfFastScrollerCache.get()
 
     override val bookshelfListShowKind: Boolean
         get() = bookshelfListShowKindCache.get()
@@ -402,9 +396,9 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
             return if (maxLine < 10) Int.MAX_VALUE else maxLine
         }
 
+    // 不钳制: 存储值原样使用 (四端口径一致, 见 commonMain AppConfigAccessor.welcomeShowTime)
     override val welcomeShowTime: Int
         get() = prefs.getInt(PreferKey.welcomeShowTime, 600)
-            .coerceIn(AppConfigRanges.welcomeShowTime)
 
     // ---- 系统深色模式检测 (themeMode="0" 跟随系统时用) ----
 

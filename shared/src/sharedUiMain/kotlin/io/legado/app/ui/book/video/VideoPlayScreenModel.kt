@@ -15,6 +15,7 @@ import io.legado.app.model.ReadTimeRecorder
 import io.legado.app.model.chapter.ChapterLoadState
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.ScreenModel
+import io.legado.app.ui.root.VideoPlayTarget
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.utils.systemCurrentTimeMillis
 import kotlinx.coroutines.Job
@@ -121,6 +122,27 @@ interface VideoPlayerController {
      * 画面与声音会一直播到新章解析完。实现须同时清掉「已装载 url」守卫，让同链接重试可用。
      */
     fun stop()
+
+    /**
+     * 按**当前 `videoUrl` 里的原地址 + 原请求头**重新装载一次（外部直投播放失败时页面上
+     * 唯一真能用的「重新加载」，由 [VideoPlayScreenModel.onRetryLoad] 驱动）。
+     *
+     * 为什么必须是控制器上的显式动作，而不是「把同一条地址再发一遍 StateFlow」：四端渲染层
+     * 装载的订阅键就是地址字符串（Android/desktop 按 url，iOS/鸿蒙 按 url + headers 的
+     * `LaunchedEffect`），同址再发既不会让 effect 重跑，StateFlow 对相等值也根本不发射 ——
+     * 靠重发状态在四端都推不动播放器。故实现口径固定两步：先按 [stop] 的契约清掉「已装载
+     * url」守卫并让当前媒体下台（三端直接走 [stop]；鸿蒙只取它的「清守卫」那一半，卸媒体交给
+     * ArkTS 装源通道开头的 `releasePlayer` —— 那里连旧 fd 一起收，且避开出错后 `stop()` 被
+     * 系统回绝再回一条 onError 把新装载打成播放失败），再用当前 videoUrl 的 url + headerMap
+     * 走**与首次装载完全相同**的那条装载路径（起播位置照旧读
+     * [VideoPlayViewModelShared.startPositionMs]；鸿蒙还须按原地址形态分流：
+     * http(s) → setSourceUrl，本地/授权体 URI → setSource + fd 通道）。
+     *
+     * 刻意不给默认实现：任何「只 stop 不重装」的实现都是一颗死按钮，宁可让编译期逼每端表态。
+     * 当前无源（`videoUrl` 为 null）时静默返回 —— 没有地址可重装，也不该凭空造一个错误。
+     */
+    fun reload()
+
     fun seekTo(positionMs: Long)
     fun seekBy(deltaMs: Long)
     fun setSpeed(speed: Float)
@@ -134,6 +156,12 @@ interface VideoPlayPlatformProvider {
         screenModel: VideoPlayScreenModel,
         onPlaybackEnded: () -> Unit,
     ): VideoPlayerController
+
+    /**
+     * [controller] 是否只是降级占位实现。默认 false —— 其它端的「重新加载」永不重建控制器,
+     * 行为与引入按需下载前完全一致; 桌面端在媒体组件未就绪时给空控制器, 此时为 true。
+     */
+    fun isPlaceholderController(controller: VideoPlayerController?): Boolean = false
 
     /**
      * 渲染平台原生视频画面 (纯 Surface, 如 Android PlayerView / 桌面 mpv Canvas / iOS UIKitView / 鸿蒙 ArkUIView2)。
@@ -168,12 +196,12 @@ interface VideoPlayPlatformProvider {
     fun rememberSystemFullScreen(): Boolean? = null
 
     /**
-     * 该平台是否有可用的"系统返回"通道 (返回键 / 滑动返回会进 AppBackHandler)。
-     * 默认 true。iOS 的 PlatformBackHandler 是 no-op: 视频页一进全屏就把顶栏隐掉,
-     * 而“窗口内全屏”的退出口只顶栏菜单里有 → 用户退不出全屏也打不开菜单。
-     * 置 false 时路由会在全屏期间常驻一个退出入口。
+     * 该平台是否有可用的"系统返回"通道 (返回键 / 滑动返回 / 桌面 ESC 统一返回链),
+     * 取平台能力 [io.legado.app.ui.root.PlatformCapabilities.supportsSystemBack]。
+     * 无返回通道的端 (iOS): 视频页一经全屏就把顶栏隐掉, 而"窗口内全屏"的退出口只在顶栏菜单里
+     * → 路由在全屏期间常驻一个退出入口。
      */
-    val supportsSystemBack: Boolean get() = true
+    val supportsSystemBack: Boolean get() = PlatformCapabilityProviders.get().supportsSystemBack
 
     /** 全屏切换失败时不得置真页面全屏态 */
     fun applyFullscreen(enabled: Boolean) {}
@@ -199,10 +227,16 @@ class VideoPlayScreenModel : ScreenModel {
 
     val shared = VideoPlayViewModelShared(scope = scope)
     val platform = VideoPlayPlatformProviders.getOrNull()
-    val controller: VideoPlayerController? = platform?.createController(
+
+    /**
+     * 播控器。不写成 val: 桌面端媒体播放组件是首次进本页才按需下载的, 构造期可能还没装好,
+     * 当时拿到的是占位控制器 —— 下载完成后靠 [onRetryLoad] 补建真控制器。其它端一次创建即定型。
+     */
+    var controller: VideoPlayerController? = platform?.createController(
         screenModel = this,
         onPlaybackEnded = ::onNextChapter,
     )
+        private set
 
     private val _state = MutableStateFlow(VideoPlayUiState())
     val state: StateFlow<VideoPlayUiState> = _state.asStateFlow()
@@ -292,7 +326,11 @@ class VideoPlayScreenModel : ScreenModel {
                 // 上一版 ShowBook 只写 bookName、从不初始化 inShelf → 从书架进页星恒空心,
                 // 下一次点击又拿陈旧 false 当“不在架”去上架 (空点一下)
                 _state.update {
-                    it.copy(bookName = event.book.name, inShelf = !event.book.isNotShelf)
+                    it.copy(
+                        bookName = event.book.name,
+                        inShelf = !event.book.isNotShelf,
+                        isDirect = false,
+                    )
                 }
                 scope.launch {
                     val book = event.book
@@ -317,6 +355,18 @@ class VideoPlayScreenModel : ScreenModel {
                 }
             }
 
+            // 外部直投 (不携书): 跳过书/书源/章节装载链, 直接把地址喂给播放器
+            is VideoPlayUiEvent.PlayDirect -> {
+                _state.update {
+                    it.copy(
+                        bookName = event.target.displayTitle,
+                        inShelf = false,
+                        isDirect = true,
+                    )
+                }
+                shared.playDirect(event.target)
+            }
+
             // 播放器错误归一到 shared VM 的 loadState (单一状态源): 上一版直接写 _state.loadState,
             // 而 combine 每次发射都用 shared.loadState 覆盖回去 → 错误占位要么被无声抹掉
             // (黑屏无重试钮), 要么挂在已恢复的画面上不走
@@ -335,6 +385,8 @@ class VideoPlayScreenModel : ScreenModel {
     }
 
     fun onNextChapter() {
+        // 直投只有一条地址, 无章可切 (不得弹“已播放到最后一章”那种类书提示)
+        if (shared.isDirect) return
         // 末章播完给一条提示: 原版什么都不做 (停在末帧 + 控制层自动收起), 看起来像卡死
         if (!shared.moveToNextChapter() && allowEndedToast()) {
             Toasters.get().toast("已播放到最后一章")
@@ -399,6 +451,48 @@ class VideoPlayScreenModel : ScreenModel {
             persistProgress = false,
             seekPositionMs = controller?.positionMs ?: 0L,
         )
+    }
+
+    /**
+     * 失败提示页「重新加载」的唯一入口。
+     *
+     * 两条形态必须分开: 由书进入的刷新是**重新解析章节内容** (拿一条新直链),
+     * 而外部直投根本没有章节可言 —— 地址就挂在 `shared.videoUrl` 上,
+     * 能做的只有按原地址、原请求头重新起播一次 (见 [VideoPlayerController.reload])。
+     * 上一版直投态这个入口接的是 [onRefreshChapter], 而它在 `isDirect` 下直接早退
+     * → 错误页上是一颗死按钮 (只能退页重进)。
+     */
+    fun onRetryLoad() {
+        recreateControllerIfPlaceholder()
+        if (shared.isDirect) retryDirectPlay() else onRefreshChapter()
+    }
+
+    /**
+     * 占位控制器 → 真控制器: 现有实例是占位时就重新走一次 [VideoPlayPlatformProvider.createController]。
+     *
+     * **不得**先拿平台的"当前是否就绪"判定早退: 取消下载后它恒为 false,
+     * 早退会让「重新加载」既不重弹下载确认框也不换控制器 —— 画面永远起不来, 只能退页重进。
+     * `createController` 内部已用 `ensureReady()` 把"未就绪"推成确认弹框并返回占位,
+     * 用户在那里下载完再点本按钮即可直接起播。
+     */
+    private fun recreateControllerIfPlaceholder() {
+        val p = platform ?: return
+        if (!p.isPlaceholderController(controller)) return
+        controller = p.createController(screenModel = this, onPlaybackEnded = ::onNextChapter)
+    }
+
+    /**
+     * 外部直投的重新起播: 不重发 StateFlow (同址不会让渲染层 effect 重跑),
+     * 而是给控制器一条显式命令。
+     *
+     * 取位置的顺序不能反: [VideoPlayerController.reload] 第一步就是卸媒体,
+     * 装完之后 `positionMs` 已经是 0 (或新流的缓冲位置), 续播点必须在 reload **前**拿到。
+     */
+    private fun retryDirectPlay() {
+        val c = controller ?: return
+        // 地址还没送达渲染层 (首帧未装完就出错) 也没关系: reload 内部会读当前 videoUrl
+        shared.prepareDirectReload(seekPositionMs = c.positionMs)
+        c.reload()
     }
 
     /**
@@ -592,6 +686,13 @@ data class VideoPlayUiState(
     val displayTitles: List<String> = emptyList(),
     /** 待编辑书签 (onAddBookmark 构造后由 Route 弹 BookmarkDialog) */
     val pendingBookmark: Bookmark? = null,
+    /**
+     * 外部直投播放态 (地址由其他应用/文件关联交给我们的)。
+     *
+     * 页面据此隐藏一切依赖“书”的能力: 上架星、选集网格、上/下一章、书签、
+     * 刷新、登录、源/书变量、编辑书源、书评、点标题进详情。
+     */
+    val isDirect: Boolean = false,
 )
 
 /**
@@ -611,6 +712,12 @@ sealed interface VideoPlayUiEvent {
 
     /** 显示错误 */
     data class ShowError(val message: String) : VideoPlayUiEvent
+
+    /**
+     * 外部直投起播 (对照 [io.legado.app.ui.root.VideoPlayTarget.Direct]):
+     * 不携书、不查书源、不拉章节, 页面按最小播放器渲染。
+     */
+    data class PlayDirect(val target: VideoPlayTarget.Direct) : VideoPlayUiEvent
 
     /** 书架状态更新 (对齐 Activity inShelf) */
     data class UpdateInShelf(val inShelf: Boolean) : VideoPlayUiEvent

@@ -121,6 +121,7 @@
     <string name="padding_config">边距配置</string>
     <string name="main_body">正文</string>
     <string name="showLine">显示分隔线</string>
+    <string name="divider_line">分隔线</string>
     <string name="padding_top">上边距</string>
     <string name="padding_bottom">下边距</string>
     <string name="padding_left">左边距</string>
@@ -326,10 +327,6 @@
     <string name="bitmap_cache_size">图片绘制缓存</string>
     <string name="clear_cache">清理缓存</string>
     <string name="clear_cache_summary">清除已下载书籍和字体缓存</string>
-    <string name="clear_cover_cache">清除封面缓存</string>
-    <string name="clear_cover_cache_summary">封面存在受保护分区，“清除缓存”与系统清缓存都不会动它。仅在封面占用过大、或需要让所有封面重新下载时使用。</string>
-    <string name="clear_cover_cache_success">封面缓存已清除</string>
-    <string name="clear_cover_cache_failed">清除失败：图片加载器未就绪</string>
     <string name="clear_webview_data">清除 WebView 数据</string>
     <string name="clear_webview_data_summary">清除内置浏览器所有数据</string>
     <string name="shrink_database">压缩数据库</string>
@@ -401,7 +398,6 @@
     <string name="group_style">分组样式</string>
     <string name="show_unread">显示未读标志</string>
     <string name="bookshelf_show_group_count">分组显示书籍数</string>
-    <string name="show_bookshelf_fast_scroller">显示快速滚动条</string>
     <string name="fixed_width_mode">固定宽度模式</string>
     <string name="view">视图</string>
     <string name="column_count">列数</string>
@@ -449,8 +445,6 @@
     <string name="auto_indent">自动缩进</string>
     <string name="ps_auto_refresh">打开软件时自动更新书籍</string>
     <string name="pt_auto_refresh">自动刷新</string>
-    <string name="pt_container_transform_anim">容器变换动画</string>
-    <string name="ps_container_transform_anim">从书架等列表打开书籍详情时使用卡片缩放过渡动画</string>
     <string name="click_book_open_read">点击视频书籍直接播放</string>
     <string name="click_book_open_read_summary">在搜索、发现中点击视频书籍直接打开播放页，跳过详情</string>
     <string name="media_button_on_exit_title">全程响应耳机按键</string>
@@ -980,7 +974,6 @@
     <string name="desktop_cookie_set_error">桌面端设置 cookie 出错 domain=%1$s cookie=%2$s</string>
     <string name="download_jslib_failed">下载jsLib-%1$s失败</string>
     <string name="native_book_format_not_supported">iOS/鸿蒙端暂不支持解析 %1$s 格式本地书 (pdf/cbz 解析器未下沉)</string>
-    <string name="rhino_deprecated_unreachable">rhino 已弃用,JsEngines.type 固定 QUICKJS,不应到达 type=%1$s</string>
     <string name="upload_url_not_configured">上传url未配置</string>
     <string name="download_url_rule_not_configured">下载地址规则未配置</string>
     <string name="upload_failed_with_body">上传失败,%1$s</string>
@@ -1327,7 +1320,6 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="load_info">加载详情页</string>
     <string name="load_toc">加载目录</string>
     <string name="login_source">登录 %1$s</string>
-    <string name="padding">边距</string>
     <string name="page_anim">翻页动画</string>
     <string name="page_anim_scroll">滚动</string>
     <string name="page_anim_simulation">仿真</string>
@@ -1719,4 +1711,9 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
         <item>TTS</item>
     </string-array>
     <string name="save_to_file">保存到文件</string>
+    <string name="media_runtime_title">媒体播放组件</string>
+    <string name="media_runtime_need_download">播放视频和音频需要先下载媒体播放组件（约 21 MB）。是否现在下载？</string>
+    <string name="media_runtime_downloading">正在下载媒体播放组件：%1$s</string>
+    <string name="media_runtime_download_failed">媒体播放组件下载失败：%1$s</string>
+    <string name="media_runtime_not_installed">未安装媒体播放组件</string>
 </resources>

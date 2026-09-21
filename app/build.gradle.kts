@@ -184,7 +184,6 @@ android {
     }
 
     compileOptions {
-        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
@@ -236,20 +235,22 @@ android {
 // shared 侧删除会被 merge 覆盖, 故挂在此处 doLast: merge 完成后删除合并输出下的 4 个
 // 小语种子目录, 删除先于 package{Variant} 打包 (package 任务消费 merge 输出)。
 // 输出目录用 outputs.files 取, 不硬编码路径。
-val excludedComposeLocales = listOf(
-    "values-es-rES",
-    "values-ja-rJP",
-    "values-pt-rBR",
-    "values-vi",
-)
+// 配置缓存约束: doLast 内不得引用脚本级对象或 Task.project —— 待删列表就地声明,
+// 删除用 File.deleteRecursively 而非 project.delete。
 tasks.matching {
     it.name == "mergeAppDebugAssets" || it.name == "mergeAppReleaseAssets"
 }.configureEach {
     doLast {
+        val excludedLocales = listOf(
+            "values-es-rES",
+            "values-ja-rJP",
+            "values-pt-rBR",
+            "values-vi",
+        )
         outputs.files.forEach { output ->
             val resourcesRoot = output.resolve("composeResources/legado.shared.generated.resources")
-            excludedComposeLocales.forEach { locale ->
-                project.delete(resourcesRoot.resolve(locale))
+            excludedLocales.forEach { locale ->
+                resourcesRoot.resolve(locale).deleteRecursively()
             }
         }
     }
@@ -273,7 +274,6 @@ androidComponents {
 }
 
 dependencies {
-    coreLibraryDesugaring(libs.desugar)
     testImplementation(libs.junit)
     androidTestImplementation(libs.bundles.androidTest)
 
@@ -310,6 +310,10 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.exoplayer.hls)
+    // DASH (.mpd) 解码模块: 缺它则书源给的 .mpd 直链必失败 (MIME 已设 APPLICATION_MPD,
+    // 但 DefaultMediaSourceFactory 反射加载 DashMediaSource$Factory 抛 ClassNotFoundException)。
+    // 仅 Android 内部受益; 跨端对外声明 AppPattern.videoFileRegex 仍不含 mpd (iOS AVPlayer 不支持 DASH)。
+    implementation(libs.androidx.media3.exoplayer.dash)
     implementation(libs.media3.datasource.okhttp)
 
     implementation(libs.room.runtime)

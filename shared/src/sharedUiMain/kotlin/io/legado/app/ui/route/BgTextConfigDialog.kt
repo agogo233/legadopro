@@ -17,14 +17,12 @@ import io.legado.app.help.http.OkHttpClientProviders
 import io.legado.app.help.http.newCallResponseBody
 import io.legado.app.help.storage.BackupFileOps
 import io.legado.app.help.toast.Toasters
+import io.legado.app.model.bakeReadingBgImage
 import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.ReadConfigChange
-import io.legado.app.ui.book.read.config.BgImageItem
 import io.legado.app.ui.book.read.config.BgTextConfigActions
 import io.legado.app.ui.book.read.config.BgTextConfigController
 import io.legado.app.ui.book.read.config.BgTextConfigScreen
-import io.legado.app.ui.book.read.config.DefaultBgImagePreviewSlot
-import io.legado.app.ui.book.read.page.ReaderBackgroundImageCache
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialogContent
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
@@ -35,7 +33,6 @@ import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.FileFilter
-import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.utils.stackTraceStr
 import kotlinx.coroutines.CancellationException
@@ -49,16 +46,13 @@ import org.jetbrains.compose.resources.stringResource
 
 /**
  * 背景文字配置弹窗形态 (对照原版 BgTextConfigDialog: BaseBottomDialogFragment
- * 底部全宽弹层, 无标题栏)。由界面设置弹窗"背景文字"入口弹起。
- *
- * @param onConfigChanged 配置变更回调：改名/换背景/换色等改动后触发，供上层界面设置弹窗
- *        实时刷新样式列表（缩略图与名称）。原版 ReadStyleDialog 在打开本弹窗前已 dismiss，
- *        重新进入时自然读到新值；迁移版两窗叠层，需显式通知（2026-08-04 用户反馈）。
+ * 底部全宽弹层, 无标题栏)。由界面设置弹窗"背景文字"入口 (长按样式) 弹起,
+ * 弹起期间界面设置弹窗已隐藏 (对照原版 showBgTextConfig 先 dismissAllowingStateLoss),
+ * 关掉后恢复并整棵重组, 样式列表自然读到新值。
  */
 @Composable
 fun BgTextConfigDialogHost(
     onDismiss: () -> Unit,
-    onConfigChanged: () -> Unit = {},
 ) {
     AppBottomSheetDialog(
         onDismissRequest = onDismiss,
@@ -72,7 +66,7 @@ fun BgTextConfigDialogHost(
                 color = AppTheme.colors.bottomBackground,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                BgTextConfigContent(onDismiss = onDismiss, onConfigChanged = onConfigChanged)
+                BgTextConfigContent(onDismiss = onDismiss)
             }
         }
     }
@@ -94,24 +88,10 @@ fun BgTextConfigDialogHost(
 fun BgTextConfigContent(
     /** 删除当前主题成功后关闭对话框（对照原版 deleteDur 成功后 dismissAllowingStateLoss） */
     onDismiss: (() -> Unit)? = null,
-    /** 配置变更通知（改名/换背景/换色/恢复预设），供上层界面设置弹窗实时刷新样式列表 */
-    onConfigChanged: () -> Unit = {},
 ) {
     val readBookConfig = ReadBookConfigProviders.get()
     val scope = rememberCoroutineScope()
     var showUrlInput by remember { mutableStateOf(false) }
-    // 原版由 RemoteAssetsUtils.getBgList() 提供内置背景列表；迁移后由平台能力注入，
-    // 这样 shared UI 不依赖 Android assets，同时 Android 端不会再得到空列表。
-    val bgImageList = remember {
-        PlatformCapabilityProviders.get()
-            .readerBackgroundImageNames()
-            .map { fileName ->
-                BgImageItem(
-                    label = fileName.substringBeforeLast('.', fileName),
-                    fileName = fileName,
-                )
-            }
-    }
 
     val controller = remember {
         object : BgTextConfigController {
@@ -126,8 +106,6 @@ fun BgTextConfigContent(
                     // 改名即落盘 (对照原版 BgTextConfigDialog.onDismiss -> ReadBookConfig.save,
                     // 这里提前到确认时, 防进程被杀丢配置)
                     readBookConfig.save()
-                    // 样式列表名称实时刷新 (迁移版叠窗形态, 见 BgTextConfigDialogHost)
-                    onConfigChanged()
                 }
 
             override fun darkStatusIcon(): Boolean =
@@ -163,23 +141,26 @@ fun BgTextConfigContent(
                 // 取色确认即落盘 (对照原版 BgTextConfigDialog.onDismiss -> save,
                 // 这里提前到确认时, 防进程被杀丢配置)
                 readBookConfig.save()
-                onConfigChanged()
             }
 
             override fun setCurBg(type: Int, value: String) {
                 readBookConfig.config.setCurBg(type, value)
                 // 取色/选背景图确认即落盘 (同上)
                 readBookConfig.save()
-                onConfigChanged()
+            }
+
+            // 清除图片背景回到当前模式默认纯色 (对照 ThemeCustomizeDialog 背景图清除按钮)
+            override fun clearBgImage() {
+                readBookConfig.config.setCurBg(0, readBookConfig.config.defaultCurBgStr())
+                readBookConfig.save()
             }
 
             // 删除当前主题 (对照 app 端 ReadBookConfig.deleteDur; 删除成功后关闭次级
-            // 对话框 [见 BgTextConfigScreen 删除按钮] 并通知上级界面设置弹窗实时刷新样式列表)
+            // 对话框 [见 BgTextConfigScreen 删除按钮])
             override fun deleteDur(): Boolean {
                 val deleted = readBookConfig.deleteDur()
                 if (deleted) {
                     readBookConfig.save()
-                    onConfigChanged()
                 }
                 return deleted
             }
@@ -195,7 +176,6 @@ fun BgTextConfigContent(
             override fun restorePreset(index: Int) {
                 readBookConfig.durConfig = ReadConfigDefaults.readConfigs[index].copy()
                 readBookConfig.save()
-                onConfigChanged()
             }
         }
     }
@@ -215,8 +195,6 @@ fun BgTextConfigContent(
                     readBookConfig.durConfig = config
                     // 导入后立即落盘 (对照原版 onDismiss -> save, 提前到导入完成时)
                     readBookConfig.save()
-                    // 导入整包替换 durConfig → 上级界面设置弹窗样式列表实时刷新
-                    onConfigChanged()
                 }.onSuccess {
                     ReadBookEvents.postConfig(
                         ReadConfigChange.BG, ReadConfigChange.STYLE, ReadConfigChange.LOAD_CONTENT
@@ -264,8 +242,9 @@ fun BgTextConfigContent(
             showUrlInput = true
         }
 
-        // 选择背景图: 平台文件选择器选图 → setBgFromPath 复制到 bg 目录 → setCurBg(2, fileName) → postConfig
-        override fun onSelectBgImage() {
+        // 选择背景图: 平台文件选择器选图 → setBgFromPath 复制进 novelBg 图集 →
+        // setCurBg(2, 文件名) → 烘焙清晰产物 (对齐界面背景) → postConfig + onPicked
+        override fun onSelectBgImage(onPicked: () -> Unit) {
             val services = PlatformServiceProviders.get()
             scope.launch {
                 runCatching {
@@ -276,28 +255,22 @@ fun BgTextConfigContent(
                         readBookConfig.setBgFromPath(path)
                     }
                     readBookConfig.config.setCurBg(2, fileName)
+                    withContext(IoDispatcher) {
+                        // 烘焙失败不影响导入 (渲染端 resolveBakedReadingBgSource 现场重烘焙兜底)
+                        readBookConfig.config.curBgImageSource()?.let { bakeReadingBgImage(it) }
+                    }
                 }.onSuccess {
                     // 原版 setBgFromUri 完成后立即更新当前组合；这里同时落盘，
                     // 避免用户在图片选择后尚未退出详细设置时进程被回收而丢失配置。
                     readBookConfig.save()
                     ReadBookEvents.postConfig(ReadConfigChange.BG)
+                    onPicked()
                 }.onFailure {
                     // 取消不当作失败上报 (对照原版 execute{}.onError{} 的 isActive 守卫)
                     if (it is CancellationException) throw it
                     Toasters.get().toast(it.message ?: "设置背景图失败")
                 }
             }
-        }
-
-        // 选择 assets 背景图预设 (对照 app 端 setCurBg(1, fileName) + postConfig(BG))
-        override fun onSelectBgPreset(fileName: String) {
-            controller.setCurBg(1, fileName)
-            val source = "bg://$fileName"
-            // 清除失败冷却并主动发起加载: 重选同一预设时 LaunchedEffect(source) 不会重启,
-            // 若上次加载失败 (60s 冷却) 会一直卡在"不生效"状态, 这里主动重试。
-            ReaderBackgroundImageCache.clearFailed(source)
-            ReaderBackgroundImageCache.requestAsync(source)
-            ReadBookEvents.postConfig(ReadConfigChange.BG)
         }
 
         // 配置变更通知 (对照 app 端 ReadBookEvents.postConfig)
@@ -310,15 +283,11 @@ fun BgTextConfigContent(
         controller = controller,
         actions = actions,
         isImageBook = false,
-        bgImageList = bgImageList,
-        bgImagePreviewSlot = { item, onClick ->
-            DefaultBgImagePreviewSlot(item, onClick)
-        },
         onDismiss = onDismiss,
     )
 
     // 离开时持久化 (对照 app 端 BgTextConfigViewModel.onCleared → readBookConfig.save,
-    // 与 TipConfigDialog / ReadStyleDialog / PaddingConfigDialog 保持一致)
+    // 与 ReadLayoutConfigDialog / ReadStyleDialog 保持一致)
     DisposableEffect(Unit) {
         onDispose { readBookConfig.save() }
     }
@@ -340,8 +309,6 @@ fun BgTextConfigContent(
                         readBookConfig.durConfig = config
                         // 导入后立即落盘 (对照原版 onDismiss -> save, 提前到导入完成时)
                         readBookConfig.save()
-                        // 导入整包替换 durConfig → 上级界面设置弹窗样式列表实时刷新
-                        onConfigChanged()
                     }.onSuccess {
                         ReadBookEvents.postConfig(
                             ReadConfigChange.BG,

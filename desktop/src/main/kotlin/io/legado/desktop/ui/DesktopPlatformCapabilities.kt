@@ -43,7 +43,6 @@ import io.legado.app.utils.cnCompare
 import io.legado.app.ui.root.TransitionEasing
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.utils.GSON
-import io.legado.app.utils.RemoteAssetsUtils
 import io.legado.app.utils.browseUrl
 import io.legado.app.utils.compress.ZipUtils
 import io.legado.app.utils.toJson
@@ -116,11 +115,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
             targetPageFadeIn = false,
             outgoingFadeOut = true,
             targetPageScaleFrom = 1f,
-            // 容器变换单独给时长与曲线: Fluent 的 200ms + (0.1,0.9,0.2,1) 是为"淡入 + 8% 位移"这种
-            // 轻转场定的 —— 那根曲线 20% 时间就走完 90% 进度, 拿来驱动卡片→全屏的大幅形变只能
-            // 看见头几帧。改 350ms + 标准缓动缓停 (Material 容器变换中等尺寸的量级)
-            containerTransformDurationMillis = 350,
-            containerTransformEasing = TransitionEasing.CubicBezier(0.4f, 0f, 0.2f, 1f),
         )
 
     // 桌面无系统对话框动画规范, 沿用 shared 默认 (Android 系统 dialog 动画资源语义 200/150ms)
@@ -294,6 +288,7 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
 
     override fun copyToClipboard(text: String) {
         shareText(text)
+        runCatching { Toasters.get().toast(jvmGetString("copy_complete")) }
     }
 
     override fun getClipboardText(): String? = runCatching {
@@ -829,16 +824,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     override fun openImportFile(filePath: String) {
         scope.launch { FileAssociationDispatch.dispatch(filePath) }
     }
-
-    // ===== 阅读样式平台能力 =====
-
-    /**
-     * 阅读背景内置图片列表 (对照 app 端 [RemoteAssetsUtils.getBgList])。
-     * RemoteAssetsUtils 位于 shared jvmAndAndroidMain, 桌面 JVM 直接复用同一下载/缓存链路
-     * (bg:// 由 ImageBitmapLoader.jvm 的 RemoteAssetsUtils.getBgCachePath/downloadBgIfNeeded 支撑),
-     * 背景文字配置弹窗的内置预设列表 (午后沙滩等) 与 Android 端一致。
-     */
-    override fun readerBackgroundImageNames(): List<String> = RemoteAssetsUtils.getBgList()
 
     /**
      * 系统 TTS 设置入口 (朗读设置弹窗"系统TTS设置"项): 各平台打开自己的语音设置页。

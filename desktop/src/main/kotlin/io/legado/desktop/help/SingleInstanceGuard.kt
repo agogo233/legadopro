@@ -4,7 +4,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.help.file.desktopAppRootDir
 import io.legado.app.ui.association.LegadoDeepLink
 import io.legado.app.ui.association.LegadoDeepLinkHandler
-import io.legado.desktop.offerAssociationFiles
+import io.legado.desktop.offerAssociationArgs
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -18,6 +18,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
 import kotlin.system.exitProcess
 
@@ -35,6 +37,16 @@ private data class ForwardMessage(val token: String, val args: List<String>)
  * 用户已运行 legado 时再次启动 (浏览器点 `legado://` 链接 / 双击 exe), 应把启动参数转发给
  * 已运行实例并前置其窗口, 而不是开第二个进程 (第二个进程会与首实例争抢同一个 SQLite 库)。
  *
+ * # 启动耗时 (2026-09 实测与本类为何不在主线程跑完整套)
+ *
+ * 同步跑完整套“探活 + bind + 写 lock”在主线程吃掉 110~166ms, 而这段与 Compose 开窗前的
+ * AWT/Swing 初始化 (实测 189ms) 本来可以并行。所以入口改为 [startAsync] (后台线程) +
+ * [awaitPrimaryDecision] (主线程在碰到任何配置/数据库之前的唯一一次等待), 等待只覆盖
+ * “探活判定”, 不覆盖 bind/写 lock (那些跟本进程的启动无关)。
+ *
+ * 并发双起 (连击双击) 的竞态窗口不因此变宽: 今天同样是“探活后紧接着 bind+写 lock”之间那段
+ * 窗口 (两进程都探到无实例 → 都当首实例), 本类只把这段从主线程搬到守卫线程, 时长不变。
+ *
  * # 协议
  *
  * - **lock 文件**: `{desktopAppRootDir()}/instance.lock`, 单行 JSON `{"port":N,"token":"hex","pid":N}`。
@@ -49,7 +61,7 @@ private data class ForwardMessage(val token: String, val args: List<String>)
  *
  * 1. args 里第一个 legado://`/`yuedu:// URL 投递 [LegadoDeepLinkHandler.handle]
  *    (与 Main.kt 冷启动 `handleDeepLinkArgs` 同一条链, 由 DeepLinkImportHost 弹导入框);
- * 2. args 里的存在文件路径投递 [offerAssociationFiles] (文件关联双击, 同一条队列);
+ * 2. args 里的关联文件地址投递 [offerAssociationArgs] (文件关联双击, 与冷启动共用同一入口筛子);
  * 3. 窗口前置 ([bindWindow] 注册的 AWT 窗口, EDT 上取消最小化 + toFront + requestFocus)。
  *
  * # 边界处理
@@ -78,29 +90,96 @@ object SingleInstanceGuard {
     @Volatile
     private var serverSocket: ServerSocket? = null
 
+    /** 守卫线程句柄 (仅 [startAsync] 写)。 */
     @Volatile
-    private var ownToken: String? = null
+    private var guardThread: Thread? = null
+
+    /** “探活判定已完成”门闩: 主线程在 [awaitPrimaryDecision] 上等它, 幂等。 */
+    private val decided = CountDownLatch(1)
 
     /** 首实例的主窗口 (Main.kt 在 Window 内 bind), 供转发到达时前置; 窗口未组合完成时为 null。 */
     @Volatile
     private var mainWindow: java.awt.Window? = null
 
     /**
-     * 单实例入口: **必须在 main() 最前调用** (在 handleDeepLinkArgs / 任何数据库或 provider 初始化之前),
-     * 否则二次启动进程会先碰 SQLite 再退出。
+     * 入口 (后台线程版): 在 `main()` 里起守卫线程后立即返回, 主线程继续做与数据无关的初始化
+     * (AWT/Swing 类加载、deep link/关联文件入队); “是不是第二个实例”的判定由
+     * [awaitPrimaryDecision] 在**任何配置/数据库初始化之前** 收口。
      *
      * 调用前需保证 `legado.portable.root` 已设置 (Main.kt 的 initDesktopRuntimeEnvironment),
      * 因为 [desktopAppRootDir] 的解析结果进程内 lazy 缓存一次, 提前调用会把便携模式的数据根定位歪。
-     *
-     * 已有实例存活: 转发 args 后 `exitProcess(0)`, **本函数不返回**。
-     * 无实例 / 残留 lock: 接管为首实例 (开监听 + 写 lock + 注册 shutdown hook) 并正常返回。
      */
-    fun ensureSingleInstance(args: Array<String>) {
+    fun startAsync(args: Array<String>) {
+        val thread = Thread({
+            try {
+                ensureSingleInstance(args)
+            } finally {
+                // 守卫线程抱异常也要放闸: 不能让主线程干等。判定没做成就继续启动, 与“bind
+                // 失败降级为多实例”同一取向 —— 宁可丢单实例能力, 不可把启动卡死。
+                decided.countDown()
+            }
+        }, "legado-single-instance-guard")
+        // daemon: 本线程可能长期挂在 acceptLoop 上, 当用户线程会阻止 JVM 正常退出
+        thread.isDaemon = true
+        guardThread = thread
+        thread.start()
+    }
+
+    /**
+     * 等 [startAsync] 的探活判定 (已有实例存活时守卫线程直接 exitProcess, 本函数不会被走到)。
+     *
+     * 必须在首次触碰 java.util.prefs / Room 数据库 / 任何数据文件写入之前调用。
+     * 默认上限 [DEFAULT_DECIDE_WAIT_MS] 覆盖探活内部两处超时 (connect 800ms + 读应答 1500ms),
+     * 所以超时不是“正常慢”, 而是守卫线程真挂死 —— 那种情况选择继续启动并留痕,
+     * 代价是可能与已有实例同时开同一库, 比把窗口永久卡在闪屏上可接受。
+     *
+     * @return true = 判定已完成 (本进程是首实例); false = 超时后放行
+     */
+    fun awaitPrimaryDecision(maxWaitMs: Long = DEFAULT_DECIDE_WAIT_MS): Boolean {
+        if (guardThread == null) return true
+        val ok = decided.await(maxWaitMs, TimeUnit.MILLISECONDS)
+        if (!ok) {
+            // 超时 = 守卫线程挂死 (探活内部自带 connect 800ms + 读应答 1500ms 上界, 正常走不到)。
+            // 此刻主线程将往下走 java.util.prefs 与 Room, 所以必须先立旗再放行:
+            // 否则守卫随后探到存活实例会 exitProcess(0), 把一个**已经开始写注册表/开库**的进程腰斩
+            // (这是改异步后新增的窗口: 旧代码同步阻塞, 二次进程在 exitProcess 前不可能碰数据)。
+            decisionAbandoned = true
+            AppLog.put("单实例判定超时 ${maxWaitMs}ms, 放行启动 (可能与已有实例并存, 已禁止守卫事后退出)", tag = TAG)
+        }
+        return ok
+    }
+
+    /**
+     * 主线程是否已"不等判定"放行。置位后守卫线程**不得再 exitProcess**:
+     * 宁可退化成"两个进程同时开一个库"(SQLite WAL 有文件锁, 只会 SQLITE_BUSY),
+     * 也不能在写注册表/写库中途被自己 kill。
+     */
+    @Volatile
+    private var decisionAbandoned = false
+
+    /** 探活内部超时总和 (connect 800 + 读应答 1500) 的宽容量, 见 [awaitPrimaryDecision]。 */
+    private const val DEFAULT_DECIDE_WAIT_MS = 3_000L
+
+    /**
+     * 单实例主体: 探活 → (已有实例则转发 + `exitProcess(0)`, **不返回**) → 判定完成 → 接管为首实例。
+     *
+     * 由 [startAsync] 在守卫线程上调; 主线程必须经 [awaitPrimaryDecision] 等过判定才能碰数据。
+     */
+    private fun ensureSingleInstance(args: Array<String>) {
         val lockFile = lockFile() ?: return
         if (forwardToRunningInstance(lockFile, args)) {
+            if (decisionAbandoned) {
+                // 主线程已经越过判定点开始碰数据 —— 这里再 exitProcess 就是腰斩。
+                // 参数已送达首实例, 本进程不接管 lock (写了会抢走真首实例的 lock), 就此静默做旁观者。
+                AppLog.put("参数已转发, 但主线程已超时放行 → 本进程不退出也不再接管 lock", tag = TAG)
+                decided.countDown()
+                return
+            }
             AppLog.put("已有实例接收本次启动参数, 当前进程退出", tag = TAG)
             exitProcess(0)
         }
+        // 判定到此完成: 后面的 bind/写 lock 只影响“下一个进程能不能找到我们”, 与本进程启动无关
+        decided.countDown()
         becomePrimary(lockFile)
     }
 
@@ -146,11 +225,9 @@ object SingleInstanceGuard {
             return
         }
         serverSocket = server
-        ownToken = token
         if (!writeLock(lockFile, InstanceLock(server.localPort, token, currentPid()))) {
             runCatching { server.close() }
             serverSocket = null
-            ownToken = null
             return
         }
         Runtime.getRuntime().addShutdownHook(Thread { releaseLock(lockFile, token) })
@@ -162,7 +239,13 @@ object SingleInstanceGuard {
 
     private fun acceptLoop(server: ServerSocket, token: String) {
         while (!server.isClosed) {
-            val socket = runCatching { server.accept() }.getOrElse { return }
+            val socket = runCatching { server.accept() }
+                .onFailure {
+                    // 静默 return 会让监听线程默默死掉而 lock 文件还在: 后续二次启动连到已死端口
+                    // → 连接被拒 → 各自当首实例, 单实例能力静默失效
+                    if (!server.isClosed) AppLog.put("单实例监听 accept 异常, 监听退出", it, tag = TAG)
+                }
+                .getOrElse { return }
             runCatching { handleConnection(socket, token) }
                 .onFailure { AppLog.put("处理转发连接异常", it, tag = TAG) }
             runCatching { socket.close() }
@@ -187,12 +270,16 @@ object SingleInstanceGuard {
 
     /** 首实例消费转发来的启动参数: 投递 deep link + 关联文件 + 前置窗口 (与 Main.kt 冷启动语义一致)。 */
     private fun onForwardedArgs(args: List<String>) {
-        args.firstOrNull { LegadoDeepLink.isDeepLink(it) }?.let { url ->
+        // 一次转发可能带多个 legado://, 旧实现只取首个
+        args.filter { LegadoDeepLink.isDeepLink(it) }.forEach { url ->
             if (!LegadoDeepLinkHandler.handle(url)) {
-                AppLog.put("转发的 deep link 解析失败 (缺 src 参数): $url", tag = TAG)
+                AppLog.put("转发的 deep link 解析失败 (缺 src 参数或 scheme/路径非法): $url", tag = TAG)
             }
         }
-        offerAssociationFiles(args.filter { !LegadoDeepLink.isDeepLink(it) && File(it).isFile })
+        // 必须走 Main.kt 的同一个入口筛子 offerAssociationArgs: 上一版这里自己内联了
+        // `File(it).isFile`, 于是 file URI 形态 (Linux .desktop 的 %u、部分文件管理器) 在
+        // 首实例已运行时被滤掉 —— 观感是"第一次双击能播, 第二次双击什也不会发生"
+        offerAssociationArgs(args)
         activateWindow()
     }
 
@@ -234,7 +321,9 @@ object SingleInstanceGuard {
     /** 解析 lock; 文件缺失/损坏/端口非法一律返回 null (调用方按"无实例"处理)。 */
     private fun readLock(lockFile: File): InstanceLock? {
         if (!lockFile.isFile) return null
-        val text = runCatching { lockFile.readText(StandardCharsets.UTF_8) }.getOrNull()
+        val text = runCatching { lockFile.readText(StandardCharsets.UTF_8) }
+            .onFailure { AppLog.put("lock 文件读取失败 (按无实例处理): ${lockFile.absolutePath}", it, tag = TAG) }
+            .getOrNull()
             ?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val lock = runCatching { json.decodeFromString<InstanceLock>(text) }.getOrElse {
             AppLog.put("lock 文件损坏, 按无实例处理: ${lockFile.absolutePath}", tag = TAG)
@@ -274,7 +363,6 @@ object SingleInstanceGuard {
         if (readLock(lockFile)?.token == token) {
             runCatching { lockFile.delete() }
         }
-        ownToken = null
     }
 
     // ==================== 工具 ====================

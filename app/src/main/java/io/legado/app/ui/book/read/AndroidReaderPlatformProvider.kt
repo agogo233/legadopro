@@ -30,6 +30,10 @@ import io.legado.app.constant.AppConst
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.Bookmark
+import io.legado.app.data.entities.localDateNow
+import io.legado.app.data.entities.localDateOf
+import io.legado.app.data.entities.localDateParseOrNull
+import io.legado.app.data.entities.toYearMonthDay
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
@@ -73,8 +77,6 @@ import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 class AndroidReaderPlatformProvider(
     private val activity: MainActivity,
@@ -747,11 +749,10 @@ private class AndroidReaderMenuState(
     /** 模拟阅读配置弹窗 (对照原版 BaseReadBookActivity.showSimulatedReading) */
     private fun showSimulatedReading() {
         val book = screenModel.viewModel.book.value ?: return
-        val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         val enabledState = mutableStateOf(book.config.readSimulating)
         val startState = mutableStateOf(book.getStartChapter().toString())
         val numState = mutableStateOf(book.config.dailyChapters.toString())
-        val dateState = mutableStateOf(book.getStartDate()?.format(dateFormatter).orEmpty())
+        val dateState = mutableStateOf(book.getStartDate()?.toString().orEmpty())
         activity.alert(androidAppString("simulated_reading")) {
             customView {
                 val colors = AppTheme.colors
@@ -797,18 +798,18 @@ private class AndroidReaderMenuState(
                             modifier = Modifier
                                 .weight(1f)
                                 .clickable {
-                                    val localStartDate = runCatching {
-                                        LocalDate.parse(dateState.value)
-                                    }.getOrDefault(LocalDate.now())
+                                    val localStartDate = localDateParseOrNull(dateState.value)
+                                        ?: localDateNow()
+                                    val (ly, lm, ld) = localStartDate.toYearMonthDay()
                                     DatePickerDialog(
                                         activity,
                                         { _, yy, mm, dayOfMonth ->
-                                            dateState.value = LocalDate.of(yy, mm + 1, dayOfMonth)
-                                                .format(dateFormatter)
+                                            dateState.value =
+                                                localDateOf(yy, mm + 1, dayOfMonth).toString()
                                         },
-                                        localStartDate.year,
-                                        localStartDate.monthValue - 1,
-                                        localStartDate.dayOfMonth,
+                                        ly,
+                                        lm - 1,
+                                        ld,
                                     ).show()
                                 }
                                 .padding(vertical = 8.dp),
@@ -848,11 +849,9 @@ private class AndroidReaderMenuState(
                 }
             }
             okButton {
-                val date = dateState.value.let {
-                    if (it.isEmpty()) LocalDate.now()
-                    else LocalDate.parse(it, dateFormatter)
-                }
-                book.config.startDate = date
+                // 日期来自 DatePicker, 只会是 formatDate 产物或空 (空=今天)
+                book.config.startDate =
+                    localDateParseOrNull(dateState.value) ?: localDateNow()
                 book.config.dailyChapters = numState.value.intOr(book.totalChapterNum)
                 book.config.startChapter = startState.value.intOr(0)
                 book.config.readSimulating = enabledState.value
@@ -1100,3 +1099,4 @@ private class AndroidReaderMenuState(
         }
     }
 }
+

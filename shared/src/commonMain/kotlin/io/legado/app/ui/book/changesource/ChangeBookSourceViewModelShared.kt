@@ -62,9 +62,9 @@ import kotlin.math.min
  * 与 ContentProcessor.getContent (重 Android 依赖) 留 app 端; SourceConfig 评分 3 方法已下沉
  * (走 PreferenceProviders), 仍经 platform 注入保持聚合一致; toastOnUi Context 专属。
  *
- * 设计: 组合委托; app 端 ChangeChapterSourceViewModel 继承
- * ChangeBookSourceViewModel 覆盖 initData, 本类不接收 Bundle——app 端保留原签名解析后
- * 转发 (name/author/fromReadBookActivity/oldBook), 子类签名不变。
+ * 设计: 组合委托; 换源与章节换源两 Route (ChangeSourceRoute/ChangeChapterSourceRoute)
+ * 直接实例化本类, 本类不接收 Bundle——原 app 端 ChangeBookSourceViewModel/
+ * ChangeChapterSourceViewModel 转发壳已删除, 启动参数由调用方直接传构造器。
  *
  * @param scope 协程作用域 (Android = viewModelScope / 桌面 = 应用主作用域)
  * @param platform 平台专属依赖聚合 (AppConfig 4 开关 + threadCount + searchGroup 读写 +
@@ -937,7 +937,7 @@ class ChangeBookSourceViewModelShared(
  * # 为何不扩展既有 Provider 接口
  *
  * - `AppConfigAccessor` 接口暂未包含 4 个 changeSource* 字段, 扩散接口需改 app 端
- *   `AppConfigAccessorImpl` + 桌面端 `DesktopAppConfigAccessor` + 接口本身, 改动面较大;
+ *   `WebBookProvidersImpl` + 桌面端 `DesktopAppConfigAccessor` + 接口本身, 改动面较大;
  * - `ContentProcessorAccessor` / `BookHelpAccessor` 同样缺 getContent / getDurChapter;
  * - `SourceConfig` 已下沉 commonMain (走 PreferenceProviders), 但评分方法仍通过
  *   [ChangeBookSourcePlatform] 注入以聚合 getDurChapter/processContent 等其他平台差异;

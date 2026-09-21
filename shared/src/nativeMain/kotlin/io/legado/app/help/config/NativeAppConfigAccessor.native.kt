@@ -9,7 +9,7 @@ import kotlin.concurrent.Volatile
  * nativeMain: [AppConfigAccessor] 的 iOS / 鸿蒙 两端共用实现。
  *
  * 详见 [AppConfigAccessor] 接口注释。Android 端在 app 模块用
- * `AppConfigAccessorImpl` 包装 `AppConfig` (SharedPreferences-backed),
+ * `WebBookProvidersImpl` 包装 `AppConfig` (SharedPreferences-backed),
  * iOS / 鸿蒙端无 SharedPreferences, 用 [PreferenceProvider] 委托:
  * - 数值类配置走 [PreferenceProvider] (iOS 端 NSUserDefaults 真实持久化 / 鸿蒙端文件持久化,
  *   由各端 [IosPreferenceProvider] / [OhosPreferenceProvider] 提供)
@@ -29,7 +29,7 @@ import kotlin.concurrent.Volatile
  *
  * 前置依赖: PreferenceProvider 需先注册 (AppConfigAccessor 委托 PreferenceProvider)。
  *
- * 模式参考桌面端 `DesktopAppConfigAccessorImpl`。
+ * 模式参考桌面端 `DesktopAppConfigAccessor`。
  */
 class NativeAppConfigAccessor(
     private val prefs: PreferenceProvider = PreferenceProviders.get(),
@@ -61,8 +61,6 @@ class NativeAppConfigAccessor(
         CachedPrefValue(prefs) { it.getInt(PreferKey.bookshelfGridWidth, 120) }
     private val showUnreadCache =
         CachedPrefValue(prefs) { it.getBoolean(PreferKey.showUnread, true) }
-    private val showBookshelfFastScrollerCache =
-        CachedPrefValue(prefs) { it.getBoolean(PreferKey.showBookshelfFastScroller, true) }
     private val bookshelfListShowKindCache =
         CachedPrefValue(prefs) { it.getBoolean(PreferKey.bookshelfListShowKind, false) }
     private val bookshelfListShowIntroCache =
@@ -126,7 +124,6 @@ class NativeAppConfigAccessor(
         bookshelfCoverHeightCache.refresh(prefs)
         bookshelfGridWidthCache.refresh(prefs)
         showUnreadCache.refresh(prefs)
-        showBookshelfFastScrollerCache.refresh(prefs)
         bookshelfListShowKindCache.refresh(prefs)
         bookshelfListShowIntroCache.refresh(prefs)
         bookshelfListIntroLinesCache.refresh(prefs)
@@ -192,9 +189,6 @@ class NativeAppConfigAccessor(
 
     override val showUnread: Boolean
         get() = showUnreadCache.get()
-
-    override val showBookshelfFastScroller: Boolean
-        get() = showBookshelfFastScrollerCache.get()
 
     override val bookshelfListShowKind: Boolean
         get() = bookshelfListShowKindCache.get()
@@ -404,9 +398,9 @@ class NativeAppConfigAccessor(
             return if (maxLine in 5..30) maxLine else Int.MAX_VALUE
         }
 
+    // 不钳制: 存储值原样使用 (四端口径一致, 见 commonMain AppConfigAccessor.welcomeShowTime)
     override val welcomeShowTime: Int
         get() = prefs.getInt(PreferKey.welcomeShowTime, 600)
-            .coerceIn(AppConfigRanges.welcomeShowTime)
 
     // ---- 设置界面直写 pref 的开关 (热路径, 走缓存) ----
     // 原版 AppConfig 均为 boolPref 直读; 覆写为缓存字段, 变更由监听刷新

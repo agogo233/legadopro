@@ -1,7 +1,6 @@
 package io.legado.app.data.entities
 
 import androidx.room3.Entity
-import io.legado.app.utils.systemCurrentTimeMillis
 import io.legado.app.utils.yearMonthDayFromMillis
 import kotlinx.serialization.Serializable
 
@@ -27,11 +26,32 @@ data class ReadRecord(
 ) {
     companion object {
         /** 把秒时间戳转成本地日期 yyyyMMdd 整数键 */
-        fun dayKey(timeSec: Long = systemCurrentTimeMillis() / 1000): Int {
+        fun dayKey(timeSec: Long): Int {
             // Calendar.getInstance() + cal.get(YEAR/MONTH/DAY_OF_MONTH) 改走
             // yearMonthMonthDayFromMillis expect/actual，避免 commonMain 引入 java.util.Calendar
             val (y, m, d) = yearMonthDayFromMillis(timeSec * 1000L)
             return y * 10000 + m * 100 + d
+        }
+
+        /**
+         * 合并同一本书、同一天内重叠或连续的阅读区间。
+         *
+         * 纯函数，按 (bookName, day, startSec) 升序排列。
+         */
+        fun mergeIntervals(records: List<ReadRecord>): List<ReadRecord> {
+            if (records.size <= 1) return records
+            val sorted = records.sortedWith(compareBy({ it.bookName }, { it.day }, { it.startSec }))
+            val result = ArrayList<ReadRecord>(sorted.size)
+            for (r in sorted) {
+                if (r.bookName.isEmpty() || r.endSec <= r.startSec) continue
+                val last = result.lastOrNull()
+                if (last != null && last.bookName == r.bookName && last.day == r.day && r.startSec <= last.endSec) {
+                    last.endSec = maxOf(last.endSec, r.endSec)
+                } else {
+                    result.add(r.copy())
+                }
+            }
+            return result
         }
     }
 }

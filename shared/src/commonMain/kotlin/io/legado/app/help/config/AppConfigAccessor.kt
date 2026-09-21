@@ -9,8 +9,8 @@ import kotlin.concurrent.Volatile
  * AppConfig 依赖 SharedPreferences + appCtx, 留 app 端。本接口暴露 webBook
  * 编排层 (BookChapterList/BookContent) 及下沉的 Book 扩展
  * (getDisplayTitle/getUseReplaceRule 等) 用到的配置项, 由 app 端
- * AppConfigAccessorImpl 包装 AppConfig 实现, 在 App.onCreate 经
- * [AppConfigProviders.register] 注册。
+ * WebBookProvidersImpl 实现 (包装 AppConfig), 在 App.onCreate 的
+ * registerAndroidWebBookProviders 经 [AppConfigProviders.register] 注册。
  *
  * 模式参考 BookInfoRefreshers / SourceDebugLoggers。
  */
@@ -54,9 +54,6 @@ interface AppConfigAccessor {
 
     /** 是否显示未读 (原 AppConfig.showUnread), 默认 true。 */
     val showUnread: Boolean
-
-    /** 书架是否显示快速滚动条 (原 AppConfig.showBookshelfFastScroller), 默认 true。 */
-    val showBookshelfFastScroller: Boolean
 
     /** 书架列表显示种类 (原 AppConfig.bookshelfListShowKind), 默认 false。 */
     val bookshelfListShowKind: Boolean
@@ -265,7 +262,13 @@ interface AppConfigAccessor {
     /** 源编辑最大行数 (原 AppConfig.sourceEditMaxLine): 存储值不在 5..30 一律视为不限制, 返回 Int.MAX_VALUE。 */
     val sourceEditMaxLine: Int
 
-    /** 欢迎页展示时长毫秒 (原 AppConfig.welcomeShowTime), 默认 600, 范围 600..3000。 */
+    /**
+     * 欢迎页展示时长毫秒 (原 AppConfig.welcomeShowTime), 默认 600。
+     *
+     * 不做区间钳制: 存储值原样生效 (四端一致), 超出 600..3000 或 <=0 都不改写。
+     * <=0 = 不显示启动页 (与 app 端 WelcomeActivity 的 `if (delayMs > 0)` 同语义);
+     * 600..3000 只是设置界面数值选择器 [AppConfigRanges.welcomeShowTime] 的可选区间。
+     */
     val welcomeShowTime: Int
 
     /** 是否启用开发特性 (原 AppConfig.devFeat), 默认 false。 */
@@ -302,7 +305,7 @@ interface AppConfigAccessor {
 
 /**
  * app 端 AppConfig intPref 区间钳制表 (语义权威), 各端 Accessor 读取时 coerceIn。
- * Android 端由 AppConfig.intPref 自带钳制, 无需引用。
+ * Android 端 AppConfig 也引用本表 (区间口径只有一份, 改区间不再两头对)。
  */
 object AppConfigRanges {
     val bookshelfListIntroLines = 1..3
@@ -310,6 +313,11 @@ object AppConfigRanges {
     val bottomBarHeight = 36..80
     val bottomBarIconSize = 18..36
     val bottomBarLabelMode = 0..3
+
+    /**
+     * 启动图时长的可选区间 (供设置界面 NumberPickerDialog 用)。
+     * 注意: 本项不参与读取钳制 —— 各端 Accessor 与闪屏均直取存储值, 存什么用什么。
+     */
     val welcomeShowTime = 600..3000
 }
 

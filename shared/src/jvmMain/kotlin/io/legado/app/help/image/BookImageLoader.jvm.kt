@@ -20,7 +20,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okio.FileSystem
 import okio.buffer
 import java.io.File
@@ -141,18 +140,6 @@ class JvmBookImageLoader : BookImageLoader {
             null
         }
 
-    /** 清封面持久区 (设置页"清除封面缓存"), 同 androidMain。 */
-    override suspend fun clearCoverCache(): Boolean {
-        val diskCache = jvmBookImageLoader.diskCache as? MultiDiskCache ?: return false
-        // Coil 自身内存缓存也要清: 清了磁盘不内存, 封面全从 MemoryCache 命中, 看上去就是没清掉
-        jvmBookImageLoader.memoryCache?.clear()
-        withContext(Dispatchers.IO) {
-            diskCache.clearCovers()
-            ImageBytesCache.clearPersistent()
-        }
-        return true
-    }
-
     /** [persistent] 为 true 时改写 diskCacheKey, 由 [MultiDiskCache] 分流到封面持久区。
      * 同 URL 并发请求经 [BookImageLoadDedup] 单飞去重 (I6)。 */
     private suspend fun execute(
@@ -192,7 +179,8 @@ class JvmBookImageLoader : BookImageLoader {
  * 调用时机: desktop Main.kt 阶段1 (首个 Composable 图片加载之前) —
  * setSafe 在默认 loader 已被 get 创建后调用会抛 IllegalStateException,
  * 故必须先于任何 AsyncImage / rememberAsyncImagePainter 组合。
- * 注册本身零开销 (ImageLoader lazy 构建, OkHttpClient 惰性到首次网络 fetch)。
+ * 注册本身零开销 ([jvmBookImageLoader] 是 lazy, OkHttpClient 惰性到首次网络 fetch) ——
+ * 真正的开销在首次 get 触发 lazy 构建那一次。
  */
 fun registerJvmBookImageLoader() {
     SingletonImageLoader.setSafe { jvmBookImageLoader }

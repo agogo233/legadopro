@@ -44,6 +44,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.decodeFromString
 
 /**
  * 恢复流程 (KMP 共享版, 全平台唯一实现)。
@@ -122,90 +123,93 @@ object RestoreShared {
         val appDb = AppDbProviders.get()
         val sep = BackupFileOps.separator
 
-        // 1. DAO 数据恢复 (与原版顺序一致)
-        fileToListT<Book>(path, "bookshelf.json")?.let { books ->
-            books.forEach { book -> book.upType() }
-            books.filter { book -> book.isLocal }
-                .forEach { book -> book.coverUrl = FileBook.getCoverPath(book.bookUrl) }
-            val newBooks = arrayListOf<Book>()
-            val ignoreLocalBook = BackupConfigShared.ignoreLocalBook
-            books.forEach { book ->
-                if (ignoreLocalBook && book.isLocal) {
-                    return@forEach
+        // 1. DAO 数据恢复收敛至单一原子事务 (事务保护 + 消除高频失效分发开销)
+        appDb.runInTransactionSuspending {
+            fileToListT<Book>(path, "bookshelf.json")?.let { books ->
+                books.forEach { book -> book.upType() }
+                books.filter { book -> book.isLocal }
+                    .forEach { book -> book.coverUrl = FileBook.getCoverPath(book.bookUrl) }
+                val newBooks = arrayListOf<Book>()
+                val updateBooks = arrayListOf<Book>()
+                val ignoreLocalBook = BackupConfigShared.ignoreLocalBook
+                val existingUrls = appDb.bookDao.allBookUrlsWithName().map { it.bookUrl }.toHashSet()
+                books.forEach { book ->
+                    if (ignoreLocalBook && book.isLocal) {
+                        return@forEach
+                    }
+                    if (book.bookUrl in existingUrls) {
+                        updateBooks.add(book)
+                    } else {
+                        newBooks.add(book)
+                    }
                 }
-                if (appDb.bookDao.has(book.bookUrl)) {
-                    // 原版捕获 SQLiteConstraintException 后改 insert; commonMain 无该类型, 按异常回退
-                    // onFailure 首行 ensureActive: update 是挂起取消点, 别把取消当成约束冲突再去 insert
-                    runCatching { appDb.bookDao.update(book) }
-                        .onFailure {
-                            currentCoroutineContext().ensureActive()
-                            appDb.bookDao.insert(book)
-                        }
-                } else {
-                    newBooks.add(book)
+                if (updateBooks.isNotEmpty()) {
+                    appDb.bookDao.update(*updateBooks.toTypedArray())
                 }
-            }
-            appDb.bookDao.insert(*newBooks.toTypedArray())
-        }
-        fileToListT<Bookmark>(path, "bookmark.json")?.let {
-            appDb.bookmarkDao.insert(*it.toTypedArray())
-        }
-        fileToListT<BookGroup>(path, "bookGroup.json")?.let {
-            appDb.bookGroupDao.insert(*it.toTypedArray())
-        }
-        fileToListT<BookSource>(path, "bookSource.json")?.let {
-            appDb.bookSourceDao.insert(*it.toTypedArray())
-            // 恢复备份 REPLACE 整批书源行: 全量失效源缓存
-            SourceHelp.evictAll()
-        }
-        fileToListT<OldRssSource>(path, "rssSources.json")?.let {
-            appDb.bookSourceDao.insert(*it.map { old -> old.toBookSource() }.toTypedArray())
-            SourceHelp.evictAll()
-        }
-        fileToListT<ReplaceRule>(path, "replaceRule.json")?.let {
-            appDb.replaceRuleDao.insert(*it.toTypedArray())
-        }
-        fileToListT<SearchKeyword>(path, "searchHistory.json")?.let {
-            appDb.searchKeywordDao.insert(*it.toTypedArray())
-        }
-        fileToListT<RuleSub>(path, "sourceSub.json")?.let {
-            appDb.ruleSubDao.insert(*it.toTypedArray())
-        }
-        fileToListT<TxtTocRule>(path, "txtTocRule.json")?.let {
-            appDb.txtTocRuleDao.insert(*it.toTypedArray())
-        }
-        fileToListT<HttpTTS>(path, "httpTTS.json")?.let {
-            appDb.httpTTSDao.insert(*it.toTypedArray())
-        }
-        fileToListT<DictRule>(path, "dictRule.json")?.let {
-            appDb.dictRuleDao.insert(*it.toTypedArray())
-        }
-        fileToListT<SourceFilterRule>(path, "sourceFilterRule.json")?.let {
-            appDb.sourceFilterRuleDao.insert(*it.toTypedArray())
-        }
-        fileToListT<KeyboardAssist>(path, "keyboardAssists.json")?.let {
-            appDb.keyboardAssistsDao.insert(*it.toTypedArray())
-        }
-
-        currentCoroutineContext().ensureActive()
-        restoreReadRecord(path)
-
-        // 2. servers.json 解密 (若加密, 与原版同逻辑)
-        runCatching {
-            val serversFile = path + sep + "servers.json"
-            if (BackupFileOps.exists(serversFile)) {
-                var json = BackupFileOps.readText(serversFile)
-                if (!json.isJsonArray()) {
-                    json = aes.decryptStr(json)
-                }
-                GSON.fromJsonArray<Server>(json).getOrNull()?.let {
-                    appDb.serverDao.insert(*it.toTypedArray())
+                if (newBooks.isNotEmpty()) {
+                    appDb.bookDao.insert(*newBooks.toTypedArray())
                 }
             }
-        }.onFailure {
-            // 块内 serverDao.insert 是挂起取消点, 首行 ensureActive 把取消放出去, 不当成"恢复出错"记日志
+            fileToListT<Bookmark>(path, "bookmark.json")?.let {
+                appDb.bookmarkDao.insert(*it.toTypedArray())
+            }
+            fileToListT<BookGroup>(path, "bookGroup.json")?.let {
+                appDb.bookGroupDao.insert(*it.toTypedArray())
+            }
+            fileToListT<BookSource>(path, "bookSource.json")?.let {
+                appDb.bookSourceDao.insert(*it.toTypedArray())
+                // 恢复备份 REPLACE 整批书源行: 全量失效源缓存
+                SourceHelp.evictAll()
+            }
+            fileToListT<OldRssSource>(path, "rssSources.json")?.let {
+                appDb.bookSourceDao.insert(*it.map { old -> old.toBookSource() }.toTypedArray())
+                SourceHelp.evictAll()
+            }
+            fileToListT<ReplaceRule>(path, "replaceRule.json")?.let {
+                appDb.replaceRuleDao.insert(*it.toTypedArray())
+            }
+            fileToListT<SearchKeyword>(path, "searchHistory.json")?.let {
+                appDb.searchKeywordDao.insert(*it.toTypedArray())
+            }
+            fileToListT<RuleSub>(path, "sourceSub.json")?.let {
+                appDb.ruleSubDao.insert(*it.toTypedArray())
+            }
+            fileToListT<TxtTocRule>(path, "txtTocRule.json")?.let {
+                appDb.txtTocRuleDao.insert(*it.toTypedArray())
+            }
+            fileToListT<HttpTTS>(path, "httpTTS.json")?.let {
+                appDb.httpTTSDao.insert(*it.toTypedArray())
+            }
+            fileToListT<DictRule>(path, "dictRule.json")?.let {
+                appDb.dictRuleDao.insert(*it.toTypedArray())
+            }
+            fileToListT<SourceFilterRule>(path, "sourceFilterRule.json")?.let {
+                appDb.sourceFilterRuleDao.insert(*it.toTypedArray())
+            }
+            fileToListT<KeyboardAssist>(path, "keyboardAssists.json")?.let {
+                appDb.keyboardAssistsDao.insert(*it.toTypedArray())
+            }
+
             currentCoroutineContext().ensureActive()
-            AppLog.put("恢复服务器配置出错\n${it.message}", it, tag = TAG)
+            restoreReadRecord(path)
+
+            // 2. servers.json 解密 (若加密, 与原版同逻辑)
+            runCatching {
+                val serversFile = path + sep + "servers.json"
+                if (BackupFileOps.exists(serversFile)) {
+                    var json = BackupFileOps.readText(serversFile)
+                    if (!json.isJsonArray()) {
+                        json = aes.decryptStr(json)
+                    }
+                    GSON.fromJsonArray<Server>(json).getOrNull()?.let {
+                        appDb.serverDao.insert(*it.toTypedArray())
+                    }
+                }
+            }.onFailure {
+                // 块内 serverDao.insert 是挂起取消点, 首行 ensureActive 把取消放出去, 不当成"恢复出错"记日志
+                currentCoroutineContext().ensureActive()
+                AppLog.put("恢复服务器配置出错\n${it.message}", it, tag = TAG)
+            }
         }
 
         currentCoroutineContext().ensureActive()
@@ -329,8 +333,8 @@ object RestoreShared {
         }
 
         currentCoroutineContext().ensureActive()
-        // 5.5 图集落位: customImg/、bg/ 仍恢复到文件根; coverCache/ 是独立持久命名空间,
-        // 恢复到平台 coversDir, 不与 customImg/covers 混用。
+        // 5.5 图集落位: customImg/、bg/ 恢复到文件根; oldCovers/ 是独立命名空间,
+        // 恢复到平台 coversDir, 避免与 customImg/covers 混用。
         runCatching {
             val filesBase = AppFilesDirs.get().externalFilesDir ?: AppFilesDirs.get().filesDir
             listOf("customImg", "bg").forEach { dirName ->
@@ -342,14 +346,19 @@ object RestoreShared {
         }.onFailure {
             AppLog.put("恢复图集出错\n${it.message}", it, tag = TAG)
         }
-        val coverCacheSrc = path + sep + "coverCache"
         val coversDir = AppFilesDirs.get().coversDir
-        if (coversDir != null && BackupFileOps.exists(coverCacheSrc)) {
-            try {
-                copyImageDirToRoot(coverCacheSrc, coversDir)
-            } catch (e: Exception) {
-                AppLog.put("恢复封面缓存出错\n${e.message}", e, tag = TAG)
-                throw e
+        if (coversDir != null) {
+            val oldCoversSrc = listOf(
+                path + sep + "oldCovers",
+                path + sep + "coverCache"
+            ).firstOrNull { BackupFileOps.exists(it) }
+            if (oldCoversSrc != null) {
+                try {
+                    copyImageDirToRoot(oldCoversSrc, coversDir)
+                } catch (e: Exception) {
+                    AppLog.put("恢复本地与遗留封面出错\n${e.message}", e, tag = TAG)
+                    throw e
+                }
             }
         }
 
@@ -359,12 +368,12 @@ object RestoreShared {
 
     /**
      * 备份 zip 内目录递归复制到指定物理目录并覆盖同名文件。用于 customImg/、bg/，以及
-     * 独立的 coverCache/ → AppFilesDirs.coversDir；旧备份缺少这些目录时由调用方跳过。
+     * 独立的 oldCovers/ (及历史 coverCache/) → AppFilesDirs.coversDir；旧备份缺少这些目录时由调用方跳过。
      * 目录判断用 [BackupFileOps.listFiles] 非 null (File.listFiles 语义: 非目录才返回 null)。
      *
      * 设置点与手动封面都存相对引用 (主题背景/启动图为裸文件名 → customImg 图集目录、
      * 手动封面 `covers/<字节数>.jpg`),
-     * 落位后无需重写任何路径; 旧备份里的绝对路径**不做迁移**, 读取端按绝对路径原样处理。
+     * 落位后无需重写任何路径; 旧备份里的绝对路径不做迁移, 读取端按绝对路径处理。
      */
     private fun copyImageDirToRoot(srcDir: String, dstDir: String) {
         BackupFileOps.listFiles(srcDir)?.forEach { entry ->
@@ -383,29 +392,68 @@ object RestoreShared {
     }
 
     /**
-     * 恢复阅读记录 (新格式 + 旧格式迁移, 与 app 端 [io.legado.app.help.storage.Restore.restoreReadRecord] 同语义)。
+     * 恢复阅读记录。
      *
-     * - 新格式 (startSec > 0 && endSec > startSec): 直接 insert
-     * - 旧格式 (readTime > 0): 用 [restoreOldRecord] 迁移算法还原为时间段
+     * 兼容两类备份结构：
+     * 1. 1A 紧凑映射 (Map<String, List<List<Long>>>): `{ "书名": [ [startSec, endSec], ... ] }`
+     * 2. 传统对象数组: `[ {"bookName": "...", "startSec": ..., "endSec": ...}, ... ]`
+     *    与远古累计时长 `[ {"bookName": "...", "readTime": ..., "lastRead": ...}, ... ]` (走 [restoreOldRecord] 迁移)
      *
-     * @see io.legado.app.help.storage.RestoreShared.ReadRecordBackup
+     * 导入前统一经 [ReadRecord.mergeIntervals] 融合重叠与接续切片后批量写入。
      */
     private suspend fun restoreReadRecord(path: String) {
-        val backups = fileToListT<ReadRecordBackup>(path, "readRecord.json") ?: return
-        if (backups.isEmpty()) return
+        val file = path + BackupFileOps.separator + "readRecord.json"
+        if (!BackupFileOps.exists(file)) return
+        val json = runCatching { BackupFileOps.readText(file) }.getOrNull()?.trim() ?: return
+        if (json.isEmpty()) return
+
         val dao = AppDbProviders.get().readRecordDao
         val nowSec = systemCurrentTimeMillis() / 1000
-        backups.forEach { b ->
-            if (b.bookName.isEmpty()) return@forEach
-            if (b.startSec > 0 && b.endSec > b.startSec) {
-                // 新格式：直接插入
-                dao.insertSession(ReadRecord(b.bookName, b.day, b.startSec, b.endSec))
-            } else if (b.readTime > 0) {
-                // 旧格式：用迁移算法还原为时间段 (与 app 端 Restore.restoreOldRecord 同算法)
-                val endSec0 = if (b.lastRead > 0) b.lastRead / 1000 else nowSec
-                val day0 = if (b.day != 0) b.day else ReadRecord.dayKey(endSec0)
-                restoreOldRecord(dao, b.bookName, day0, b.readTime / 1000, endSec0)
+        val rawRecords = arrayListOf<ReadRecord>()
+
+        if (json.startsWith("{")) {
+            // 1A 紧凑映射结构: { "书名": [ [startSec, endSec], ... ] }
+            runCatching {
+                val map = GSON.decodeFromString<Map<String, List<List<Long>>>>(json)
+                map.forEach { (bookName, intervals) ->
+                    if (bookName.isNotEmpty()) {
+                        intervals.forEach { interval ->
+                            if (interval.size >= 2) {
+                                val s = interval[0]
+                                val e = interval[1]
+                                if (e > s) {
+                                    rawRecords.add(ReadRecord(bookName, ReadRecord.dayKey(s), s, e))
+                                }
+                            }
+                        }
+                    }
+                }
+            }.onFailure {
+                AppLog.put("readRecord.json 紧凑格式解析出错\n${it.message}", it, toast = true, tag = TAG)
             }
+        } else {
+            // 兼容传统 JSON 数组格式
+            val backups = runCatching {
+                GSON.fromJsonArray<ReadRecordBackup>(json).getOrThrow()
+            }.onFailure {
+                AppLog.put("readRecord.json 读取解析出错\n${it.message}", it, toast = true, tag = TAG)
+            }.getOrNull()
+
+            backups?.forEach { b ->
+                if (b.bookName.isEmpty()) return@forEach
+                if (b.startSec > 0 && b.endSec > b.startSec) {
+                    rawRecords.add(ReadRecord(b.bookName, b.day, b.startSec, b.endSec))
+                } else if (b.readTime > 0) {
+                    val endSec0 = if (b.lastRead > 0) b.lastRead / 1000 else nowSec
+                    val day0 = if (b.day != 0) b.day else ReadRecord.dayKey(endSec0)
+                    restoreOldRecord(rawRecords, b.bookName, day0, b.readTime / 1000, endSec0)
+                }
+            }
+        }
+
+        if (rawRecords.isNotEmpty()) {
+            val merged = ReadRecord.mergeIntervals(rawRecords)
+            dao.insert(*merged.toTypedArray())
         }
     }
 
@@ -421,8 +469,8 @@ object RestoreShared {
      * 用 [prevDayKey] / [midnightSecFromDayKey] 替代 app 端 java.util.Calendar,
      * 保证 commonMain 跨平台可用 (jvmAndAndroid/iOS/ohos actual 行为等价)。
      */
-    private suspend fun restoreOldRecord(
-        dao: io.legado.app.data.dao.ReadRecordDao,
+    private fun restoreOldRecord(
+        records: MutableList<ReadRecord>,
         bookName: String, day: Int, remainingSecs: Long, endSec: Long
     ) {
         var remaining = remainingSecs
@@ -431,14 +479,14 @@ object RestoreShared {
         val maxBack = minOf(16L * 3600, (endSec - midnightSecFromDayKey(curDay)).coerceAtLeast(0))
         val seg0 = minOf(remaining, maxBack)
         if (seg0 > 0) {
-            dao.insertSession(ReadRecord(bookName, curDay, endSec - seg0, endSec))
+            records.add(ReadRecord(bookName, curDay, endSec - seg0, endSec))
             remaining -= seg0
         }
         curDay = prevDayKey(curDay)
         while (remaining > 0) {
             val winEnd = midnightSecFromDayKey(curDay) + 20L * 3600
             val seg = minOf(remaining, 16L * 3600)
-            dao.insertSession(ReadRecord(bookName, curDay, winEnd - seg, winEnd))
+            records.add(ReadRecord(bookName, curDay, winEnd - seg, winEnd))
             remaining -= seg
             curDay = prevDayKey(curDay)
         }

@@ -126,6 +126,15 @@ interface PlatformCapabilities {
      */
     val rssDirectWindow: Boolean get() = false
 
+    /**
+     * 该端是否存在"系统返回"通道: 返回键/返回手势 (Android/鸿蒙) 或桌面 ESC 统一返回链。
+     *
+     * false 的端 (iOS) 按键返回不进 AppBackHandler,
+     * 页面内的子状态必须自带可见退出口 (书架文件夹样式分组内顶栏返回箭头 /
+     * 视频页全屏退出钮)。
+     */
+    val supportsSystemBack: Boolean get() = true
+
     // 书籍路由解析: shared 无 DB 能力, 按 bookUrl 解析为 BookRef 供 LaunchRequest 路由导航
     suspend fun resolveBookRef(bookUrl: String): BookRef? = null
 
@@ -316,6 +325,15 @@ interface PlatformCapabilities {
     /** 是否有系统状态栏/导航栏 (决定 MoreConfig 的隐藏状态栏/导航栏开关显隐) */
     fun hasSystemBars(): Boolean = true
 
+    /**
+     * 当前窗口是否处于多窗口模式 (分屏/自由窗口)。
+     *
+     * 对照原版 `BaseActivity.isInMultiWindow`: 多窗口下窗口没有真正的全屏语义,
+     * 原版据此让 `PageView.vwStatusBar` 占位恒 gone (不避让状态栏) 且不加
+     * `SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN` (不进沉浸式布局)。非 Android 端无此概念, 恒 false。
+     */
+    val isInMultiWindow: Boolean get() = false
+
     /** 是否支持锁定屏幕方向 (决定 MoreConfig 的屏幕方向选项显隐) */
     fun hasScreenOrientation(): Boolean = true
 
@@ -491,12 +509,6 @@ interface PlatformCapabilities {
     // 对照 app 端 FontSelectDialog.loadFontFiles: 字体目录 + 本地字体合并去重排序
     /** 扫描字体文件列表 (对照 app 端 FontSelectDialog, 未实现端空列表) */
     suspend fun scanFontItems(): List<FontItem> = emptyList()
-
-    /**
-     * 阅读背景内置图片列表（对照 app 端 [RemoteAssetsUtils.getBgList]）。
-     * shared UI 只负责展示和派发选择事件，资源列表由平台提供；未实现端返回空列表。
-     */
-    fun readerBackgroundImageNames(): List<String> = emptyList()
 
     // 书源管理平台能力 (各端按需 override, 未实现端统一给出明确提示)
     // 对照 app 端 BookSourceActivity 同名方法

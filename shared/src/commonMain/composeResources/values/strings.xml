@@ -121,6 +121,7 @@
     <string name="padding_config">Padding settings</string>
     <string name="main_body">Content</string>
     <string name="showLine">Display divider</string>
+    <string name="divider_line">Divider</string>
     <string name="padding_top">Top</string>
     <string name="padding_bottom">Bottom</string>
     <string name="padding_left">Left</string>
@@ -326,10 +327,6 @@
     <string name="bitmap_cache_size">bitmap cache size</string>
     <string name="clear_cache">Clear cache</string>
     <string name="clear_cache_summary">Clear the cache of the downloaded books and fonts</string>
-    <string name="clear_cover_cache">Clear cover cache</string>
-    <string name="clear_cover_cache_summary">Covers are kept in a protected area that "Clear cache" and the system cache cleanup never touch. Use this only when that area grows too large or to force every cover to re-download.</string>
-    <string name="clear_cover_cache_success">Cover cache cleared</string>
-    <string name="clear_cover_cache_failed">Clear failed: image loader not ready</string>
     <string name="clear_webview_data">Clear WebView Data</string>
     <string name="clear_webview_data_summary">Clear all data in WebView</string>
     <string name="shrink_database">Shrink database</string>
@@ -401,7 +398,6 @@
     <string name="group_style">Group style</string>
     <string name="show_unread">Show unread flag</string>
     <string name="bookshelf_show_group_count">Show book count on groups</string>
-    <string name="show_bookshelf_fast_scroller">Show fast scroller</string>
     <string name="fixed_width_mode">Fixed width mode</string>
     <string name="view">View</string>
     <string name="column_count">Columns</string>
@@ -449,8 +445,6 @@
     <string name="auto_indent">Auto indent</string>
     <string name="ps_auto_refresh">Update books automatically when opening the software</string>
     <string name="pt_auto_refresh">Auto-refresh</string>
-    <string name="pt_container_transform_anim">Container transform animation</string>
-    <string name="ps_container_transform_anim">Card-scale transition when opening book info from bookshelf and other lists</string>
     <string name="click_book_open_read">Directly play video books</string>
     <string name="click_book_open_read_summary">Click video books in search/discovery to play directly, skipping details</string>
     <string name="media_button_on_exit_title">Headset buttons are always available</string>
@@ -968,7 +962,6 @@
     <string name="desktop_cookie_set_error">Failed to set cookie on desktop domain=%1$s cookie=%2$s</string>
     <string name="download_jslib_failed">Failed to download jsLib-%1$s</string>
     <string name="native_book_format_not_supported">Parsing local %1$s books is not supported on this platform yet (pdf/cbz parsers not ported)</string>
-    <string name="rhino_deprecated_unreachable">Rhino is deprecated, JsEngines.type is fixed to QUICKJS, type=%1$s should never be reached</string>
     <string name="upload_url_not_configured">Upload URL not configured</string>
     <string name="download_url_rule_not_configured">Download URL rule not configured</string>
     <string name="upload_failed_with_body">Upload failed: %1$s</string>
@@ -1259,7 +1252,6 @@
     <string name="load_info">Load book detail</string>
     <string name="load_toc">Load chapters</string>
     <string name="login_source">Login%1$s</string>
-    <string name="padding">Padding</string>
     <string name="page_anim">Flip animation</string>
     <string name="page_anim_scroll">Scroll</string>
     <string name="page_anim_simulation">Simulation</string>
@@ -1651,4 +1643,9 @@
         <item>TTS</item>
     </string-array>
     <string name="save_to_file">Save to file</string>
+    <string name="media_runtime_title">Media playback component</string>
+    <string name="media_runtime_need_download">Playing video and audio requires downloading the media playback component (about 21 MB). Download now?</string>
+    <string name="media_runtime_downloading">Downloading the media playback component: %1$s</string>
+    <string name="media_runtime_download_failed">Failed to download the media playback component: %1$s</string>
+    <string name="media_runtime_not_installed">Media playback component is not installed</string>
 </resources>

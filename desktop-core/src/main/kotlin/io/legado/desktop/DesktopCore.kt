@@ -7,6 +7,7 @@ import io.legado.app.data.BundledDatabaseDriver
 import io.legado.app.data.DesktopAppDatabaseProvider
 import io.legado.app.help.AppWebDavShared
 import io.legado.app.help.DefaultDataResourceProviders
+import io.legado.app.help.RuleBigDataProviders
 import io.legado.app.help.book.BookHelpProviders
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookImageStorageProviders
@@ -16,7 +17,7 @@ import io.legado.app.help.book.JvmBookStorage
 import io.legado.app.help.book.JvmLocalBookLocator
 import io.legado.app.help.book.LocalBookLocators
 import io.legado.app.help.config.AppConfigProviders
-import io.legado.app.help.config.COVER_CACHE_REF_SEGMENT
+import io.legado.app.help.config.OLD_COVERS_REF_SEGMENT
 import io.legado.app.help.config.LocalConfigKeys
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ReadBookConfigProviders
@@ -79,6 +80,7 @@ import io.legado.desktop.model.registerDesktopReadBookPlatform
 import io.legado.desktop.model.webBook.registerDesktopWebBookProviders
 import io.legado.desktop.tts.DesktopHttpTtsPlayer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.io.File
@@ -140,7 +142,10 @@ object DesktopCore {
     fun initRuntimeEnvironment(portableDataRoot: File?, quickjsLibFile: File?) {
         // 1. 便携模式定位: 数据存 exe/启动目录同级 data/ (设置 legado.portable.root 系统属性)
         if (portableDataRoot != null) {
-            portableDataRoot.mkdirs()
+            // 创建失败不静默: 失败后仍设属性, 后续 prefs/DB 会在首次访问时才炸, 现场离根因很远
+            if (!portableDataRoot.mkdirs() && !portableDataRoot.isDirectory) {
+                AppLog.put("portable 数据目录创建失败: ${portableDataRoot.absolutePath}", tag = TAG)
+            }
             System.setProperty("legado.portable.root", portableDataRoot.absolutePath)
             AppLog.put("portable 模式, dataDir = ${portableDataRoot.absolutePath}", tag = TAG)
         }
@@ -157,6 +162,34 @@ object DesktopCore {
     }
 
     /**
+     * 启动期原生依赖预热 (与 AWT/Swing 初始化赛跑, 在 main() 里调):
+     *
+     * 1. **JNA 首用** —— 阶段0 构 `DesktopAppConfigAccessor` 时, `themeMode="0"`（默认，跟随系统）
+     *    的 `isNightTheme` 会调 :desktop 注入的 `probeSystemNightMode()` 读注册表。
+     *    实测证据 (零改动对照): 把 `theme/Mode` 改成"1"(走不到探测器) 后, `config: AppConfig` 段从
+     *    **86ms 掉到 11ms**; 而只 `Class.forName(Advapi32Util)` 预热**无效** (第八轮实测仍 81ms),
+     *    因为贵的是**首次真正调用 JNA** (要在此刻完成原生调用准备), 不是类加载。
+     *    所以本模块只预热与 AWT 有关的部分, JNA 那一跳由 :desktop 的 Main.kt 在后台线程真调一次
+     *    (`:desktop-core` 依赖闭包不得携带 jna, 供 :headless 复用, 故不能写在这里)。
+     * 2. **AWT 字体环境** —— 首次枚举系统字体只在主线程发生时, 会压在闪屏构造与首帧排版前面
+     *    (实测闪屏段内 JWindow 构造+尺寸/底色 从 145ms 降到 54ms, 整段 197ms→95ms)。
+     *
+     * 与单实例不变量的关系: 两项**不读不写应用配置值、不碰 SQLite/数据文件** (GraphicsEnvironment
+     * 只读系统字体目录), 所以可以在 [SingleInstanceGuard.awaitPrimaryDecision] 之前起。
+     * 本函数**只由 :desktop 调**: :headless 无 UI, 不该在这里替它初始化 AWT。
+     */
+    fun warmUpNativeDependencies() {
+        Thread({
+            runCatching {
+                java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().allFonts
+            }.onFailure { AppLog.put("AWT 字体环境预热失败 (不影响功能)", it) }
+        }, "native-dep-warm").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    /**
      * 阶段1: 首屏必需 provider 同步注册 — 核心子集 (无 UI 依赖)。
      *
      * 从 :desktop Main.kt application{} 内的同步注册块机械抽取, 保持原相对顺序。
@@ -167,7 +200,7 @@ object DesktopCore {
      *   注入 Compose; 必须与全局 ReadBookConfigProviders 同实例, 否则配置写读分家)。
      *   headless 不消费该返回值, 但注册本身必须执行 (备份格式兼容性补齐)。
      */
-    fun registerCoreProviders(): ReadBookConfigShared {
+    fun registerEarlyProviders(): ReadBookConfigShared {
         // 注册桌面端 Host 类 provider (启动期最早, 让 shared commonMain 调用 AppLog/appString 时有输出)
         // - AppLogHost: 桥接到 println, 未注册时 AppLog 副作用 (write/toast/debugPrint) 静默 no-op
         // - AppStringProvider: key → strings.xml 同步查表 (jvmGetString, runBlocking 桥接),
@@ -197,6 +230,19 @@ object DesktopCore {
         // 应用内语言 (PreferKey.language → JVM 默认 Locale):
         // 必须在 registerDesktopConfig 之后 (要读 pref)
         applyDesktopLanguagePref()
+        return desktopReadBookConfig
+    }
+
+    /**
+     * 阶段1 的余下部分 (HTTP/JS/Room/存储/封面等重注册)。
+     *
+     * 与 [registerEarlyProviders] 拆开的原因 (2026-09 启动实测): 闪屏只能读偏好+主题, 却被排在
+     * 整段注册之后才 show, 导致冷启动 0.96s 屏幕上仍无任何反馈 (用户报的“启动卡顿”很大程度是这段
+     * 无反馈)。拆开后 :desktop 可以在 early 完成即弹闪屏, 再做重注册; 注册相对顺序与拆分前一致。
+     */
+    fun registerRestProviders() {
+        // 以下分段 timed 打点 (2026-09 启动归因): 阶段1 总耗时实测 277~299ms, 但不清楚钱具体
+        // 在哪一步 (Room 开库/加载 sqliteJni? OkHttp+TLS? JS 引擎?), 不拆就没法判断该拿哪段开刀。
         // 注册桌面端更新能力 (AppUpdateEnvironment, 薄壳转发 shared AppUpdateManager):
         // 依赖 PreferenceProviders (上方 registerDesktopConfig) + DesktopAppInfo, 无其他依赖
         registerDesktopAppUpdate()
@@ -244,8 +290,35 @@ object DesktopCore {
         registerDesktopReadBookPlatform()
         // 封面选图持久化 (对齐 Android 原版 externalFiles/covers, 落桌面应用数据根目录 covers/)
         CoverStorageServiceProviders.register(DesktopCoverStorageService())
-        return desktopReadBookConfig
+        // Room 开库预热 (与首帧组合并行; 上一轮我误删了它, 实测把 273ms 开库成本又退回主链路上)。
+        // 实测: 注册 provider 只要 1~2ms, 真正开库 (加载 sqliteJni 原生库 + 建/打开 db 与 -wal/-shm
+        // + Room schema 校验 + InvalidationTracker 启动) 要 224~282ms, 而它拖到首次 DAO 访问 ——
+        // 首次访问就是首帧的分组/书籍流。预热的是**首帧真正要用的那两条查询** (任意一条便宜查询
+        // 只能做到"连接已开", 语句准备与表页加载仍会算到首帧头上)。
+        // 不用 Coroutine.async: 它的 executeContext 是 mainDispatcher, 启动期 EDT 正忙首帧。
+        // 失败不阻断启动 (首帧会再触发同一条路径), 但必须落日志。
+        Thread({
+            runCatching {
+                kotlinx.coroutines.runBlocking {
+                    val db = AppDbProviders.get()
+                    db.bookGroupDao.flowShow().first()
+                    db.bookDao.flowByGroup(io.legado.app.data.entities.BookGroup.IdAll).first()
+                }
+            }.onFailure { AppLog.put("Room 开库预热失败 (不影响功能, 首帧会重新触发开库)", it) }
+        }, "room-open-warm").apply {
+            isDaemon = true
+            start()
+        }
     }
+
+    /**
+     * 全量注册 = [registerEarlyProviders] + [registerRestProviders]。
+     *
+     * headless 入口无 UI/无闪屏, 保持单调用原语义; 与 :desktop 的分两段调用等价
+     * (早段返回的 ReadBookConfig 实例经全局 ReadBookConfigProviders 共享, 不存在两份实例)。
+     */
+    fun registerCoreProviders(): ReadBookConfigShared =
+        registerEarlyProviders().also { registerRestProviders() }
 
     /**
      * 阶段3: 后台异步注册非首屏必需 provider — 核心子集 (无 UI 依赖)。
@@ -333,27 +406,47 @@ object DesktopCore {
         withContext(Dispatchers.Default) {
             // 15. adjustSortNumber: 调整书源排序序号 (依赖 AppDbProviders, 已注册)
             // 异常由 Coroutine 内部 printOnDebug 吞没, 与 app 端语义一致
-            Coroutine.async { SourceHelp.adjustSortNumber() }
+            // 书源表为空时不调: 它无条件发 max/min/重复序号 3 条聚合 SQL, 而 0 行时结果恒为
+            // "不越界 + 无重复" 直接 return; 用 1 条 count 换掉 3 条聚合, 判定本身比被省掉的活便宜
+            Coroutine.async {
+                if (AppDbProviders.get().bookSourceDao.allCount() > 0) {
+                    SourceHelp.adjustSortNumber()
+                }
+            }
             // LogUtils.init 为 Android 专属, desktop 用 registerDesktopAppLogHost 替代
             // 对照 app 端 App.kt:144 DefaultData.upVersion() + dbCallback.onCreate 预置数据:
             // 桌面端 Room KMP 无 Callback, 首启/升级的默认数据统一在这里幂等补齐
             initDesktopDefaultData()
-            // 15b. 旧数据封面引用修复: 旧版 coverUrl 存绝对路径, 便携移动程序目录后失效,
-            // 同名文件在当前 covers 目录存在时改存 coverCache/ 相对引用 (幂等)
+            // 15b. 旧数据封面引用修复: 绝对路径改存 oldCovers/ 相对引用 (幂等)
             Coroutine.async { repairLegacyStoredCoverRefs() }
             // 16. 启动期缓存清理 + WebDav 进度同步
             // (对照 app 端 App.kt onCreate 的两个 Coroutine.async 块:
-            //  - 缓存清理: 距上次备份超过 1 天才执行 (lastBackup 由桌面备份 hook 写入),
-            //    清 cacheDao 过期条目 + 无效书籍缓存 + 备份/阅读背景/主题背景缓存;
+            //  - 缓存清理: 距上次清理超过 1 天才执行, 清 cacheDao 过期条目 + 无效书籍缓存 +
+            //    备份/阅读背景/主题背景缓存;
             //  - 进度同步: syncBookProgress 开启时从 WebDav 拉取所有书籍进度写回本地)
             Coroutine.async {
-                val lastBackup = PreferenceProviders.get().getLong(LocalConfigKeys.lastBackup, 0L)
-                if (lastBackup + TimeUnit.DAYS.toMillis(1) < System.currentTimeMillis()) {
-                    AppDbProviders.get().cacheDao.clearDeadline(System.currentTimeMillis())
-                    BookHelpShared.clearInvalidCache()
-                    BackupShared.clearCache()
-                    ReadBookConfigProviders.get().clearBgAndCache()
-                    ThemeConfigProviders.get().clearBg()
+                val prefs = PreferenceProviders.get()
+                // 节流读专用的 lastCacheCleanup: 原写法读 lastBackup, 但那个 key 只在用户真备份/恢复
+                // 时写入, 从不备份的用户恒为 0 → 条件恒成立 → 每次启动都全跑一遍清理族
+                val lastCleanup = prefs.getLong(LocalConfigKeys.lastCacheCleanup, 0L)
+                if (lastCleanup + TimeUnit.DAYS.toMillis(1) < System.currentTimeMillis()) {
+                    runCatching {
+                        AppDbProviders.get().cacheDao.clearDeadline(System.currentTimeMillis())
+                        // 书架无书且缓存目录无残留时 clearInvalidCache 必然空转: 它删的就是
+                        // "书架之外的 book_cache / ruleData 子目录", 三者全空则无物可删
+                        if (hasInvalidCacheWork()) {
+                            BookHelpShared.clearInvalidCache()
+                        }
+                        BackupShared.clearCache()
+                        ReadBookConfigProviders.get().clearBgAndCache()
+                        ThemeConfigProviders.get().clearBg()
+                    }.onSuccess {
+                        // 只在整段跑完才写时间戳: 中途抛错就不写, 下次启动重试,
+                        // 否则一次失败会被当成"今天已经清过"静默节流掉
+                        prefs.putLong(LocalConfigKeys.lastCacheCleanup, System.currentTimeMillis())
+                    }.onFailure {
+                        AppLog.put("启动期缓存清理失败\n${it.message}", it)
+                    }
                 }
             }
             Coroutine.async {
@@ -367,16 +460,17 @@ object DesktopCore {
     /**
      * 旧数据封面引用修复 (一次性兜底, 幂等可重复执行)。
      *
-     * 背景: 桌面端落库引用曾存绝对路径/file: URI (Book.coverUrl), 便携版移动程序目录后
-     * 指向移动前位置失效; 新数据已存 coverCache/ 相对引用 (getCoverPath)。本修复把
-     * "旧格式引用 + 同名封面文件 (md5_16(bookUrl).jpg) 已随数据目录迁移到当前 covers 目录"
-     * 的书改存相对引用。bookUrl (主键) 不重写: 主键变更牵动 chapters/toc/缓存目录联动,
-     * 且 books/ 相对引用的读取端本就有 originName 兜底 (openLocalFile)。
+     * 便携版移动程序目录后，绝对路径与 file: URI 失效；同名封面文件在当前 covers 目录存在时，
+     * 改存 oldCovers/ 相对引用。
      */
     private suspend fun repairLegacyStoredCoverRefs() {
         runCatching {
-            val bookDao = AppDbProviders.get().bookDao
             val coversDir = File(desktopAppRootDir(), "covers")
+            // 早退两条判据都比下面的 all() 全表读便宜: covers 目录不存在时同名封面文件必不存在
+            // (candidate.isFile 全假), 书架 0 行时无行可修; 空库/全新用户启动不再物化全部 Book 实体
+            if (!coversDir.isDirectory) return@runCatching
+            val bookDao = AppDbProviders.get().bookDao
+            if (bookDao.allBookCount() == 0) return@runCatching
             bookDao.all().forEach { book ->
                 val coverUrl = book.coverUrl ?: return@forEach
                 // 仅旧格式 (file: URI / 绝对路径); 相对引用与网络 URL 跳过
@@ -386,7 +480,7 @@ object DesktopCore {
                 if (!isLegacyRef) return@forEach
                 val candidate = File(coversDir, desktopResolveStoredRef(coverUrl).name)
                 if (!candidate.isFile) return@forEach
-                book.coverUrl = "$COVER_CACHE_REF_SEGMENT/${candidate.name}"
+                book.coverUrl = "$OLD_COVERS_REF_SEGMENT/${candidate.name}"
                 bookDao.update(book)
             }
         }.onFailure { AppLog.put("封面引用修复失败\n${it.message}", it) }
@@ -397,4 +491,33 @@ object DesktopCore {
      * 预置书架分组 / 键盘助手 / httpTTS / txtTocRule / dictRule, 幂等可重复调用。
      */
     suspend fun initDefaultData() = initDesktopDefaultData()
+
+    /**
+     * [BookHelpShared.clearInvalidCache] 是否还有活可干 (调用点早退判据)。
+     *
+     * 判据必须比被它省掉的活便宜: 1 条 COUNT(*) + 2 次单层目录 list, 换掉
+     * "全表读 name/bookUrl + book_cache 子目录逐个扫描 + ruleData 子目录逐个扫描"。
+     *
+     * 不漏清的依据: clearInvalidCache 共四步 —— ①② 按书架删 book_cache 失效目录与漫画超量淘汰
+     * (根目录空 → 无可删对象), ③ 按书架删 RuleBigData 大变量目录 (impl 未注册时本来就是 no-op),
+     * ④ clearCacheExtra (桌面/headless 共用的 DesktopBookHelpAccessor 为空实现)。
+     * 书架 0 行 + ①③ 两类目录都空时四步全为空转, 故本判定与原行为等价。
+     */
+    private suspend fun hasInvalidCacheWork(): Boolean {
+        if (AppDbProviders.get().bookDao.allBookCount() > 0) return true
+        if (!dirAbsentOrEmpty(File(BookStorageProviders.get().rootPath))) return true
+        val ruleDirs = RuleBigDataProviders.impl?.listBookDataDirs().orEmpty()
+        return ruleDirs.any { !dirAbsentOrEmpty(File(it)) }
+    }
+
+    /**
+     * 单层目录是否"不存在或为空" (只 list 一层, 不递归)。
+     *
+     * File.list() 在"是目录但读目录出错"时也返回 null, 这种情况按非空处理让清理照原样跑,
+     * 不用空判掩盖 IO 错误造成漏清。
+     */
+    private fun dirAbsentOrEmpty(dir: File): Boolean {
+        val entries = dir.list()
+        return if (entries == null) !dir.isDirectory else entries.isEmpty()
+    }
 }

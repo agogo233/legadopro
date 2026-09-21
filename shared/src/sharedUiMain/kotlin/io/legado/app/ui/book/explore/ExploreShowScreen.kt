@@ -29,6 +29,7 @@ import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
@@ -41,16 +42,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
-import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.ui.bookshelf.KindLabels
+import io.legado.app.ui.bookshelf.shelfCoverHeightDp
+import io.legado.app.ui.root.LocalSharedCoverBinding
+import io.legado.app.ui.root.rememberSharedCoverSourceBinding
 import io.legado.app.ui.compose.component.AppTitleBar
 import io.legado.app.ui.compose.component.FastScrollLazyVerticalGrid
 import io.legado.app.ui.compose.component.OverflowMenu
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.theme.AppTheme
-import io.legado.app.ui.root.ContainerTransformCard
-import io.legado.app.ui.root.ContainerTransformIdentity
 import legado.shared.generated.resources.Res
 import legado.shared.generated.resources.explore_cols
 import legado.shared.generated.resources.ic_bookmark
@@ -107,6 +108,33 @@ import org.jetbrains.compose.resources.stringResource
 
 /** 书架内绿点颜色 (复刻 R.color.md_green_600 = #43A047, Material Green 600) */
 private val InBookshelfDotColor = Color(0xFF43A047)
+
+/** 触底预加载阈值 (倒数第 N 项可见时触发下一页加载) */
+private const val PRELOAD_THRESHOLD = 5
+
+/**
+ * 触底预加载的**重判信号** (只决定"何时再判一次", 不参与判据本身)。
+ *
+ * 分两种形态, 不能合并成一个"滚动位置 + 内容规模"的键:
+ *
+ * - [Scrolled]: 列表可继续前滚时只认滚动位置。对照 archive 只在 `onScrolled` 里判
+ *   (`findLastVisibleItemPosition() >= lm.itemCount - 2`): 新页 append 改变内容规模时
+ *   不重复判定, 否则视口停在末几项会"不滚动也连拉多页"。
+ * - [Resized]: 列表已无法前滚 (整页被一次性显示完) 时滚动位置恒为 (0, 0), 键永不变化,
+ *   改用内容规模——每拉回一页就再判一次, 直到书源到底。
+ *
+ * 只取滚动位置时, 宽屏/大屏一次性显示完整页 → 键恒为 (0, 0) → snapshotFlow 不发射
+ * → 下一页永远不加载 (原版在同样场景也不触发, 但它只在手机窄屏跑, 桌面端天生宽屏);
+ * 只取内容规模时, 窄屏又会因每页 append 而重复判定。两者必须分开。
+ */
+private sealed interface ExplorePreloadSignal {
+    data class Scrolled(
+        val firstVisibleItemIndex: Int,
+        val firstVisibleItemScrollOffset: Int,
+    ) : ExplorePreloadSignal
+
+    data class Resized(val totalItemsCount: Int) : ExplorePreloadSignal
+}
 
 /**
  * 发现结果页展示状态 (KMP 共享)。
@@ -177,11 +205,11 @@ interface ExploreShowUiActions {
     /** footer 点击 (错误时弹详情+重试, 否则触发加载下一页) */
     fun onFooterClick()
 
-    /** 触底预加载 (对齐原 findLastVisibleItemPosition >= itemCount - 2) */
+    /** 触底预加载 (末项进入倒数第 [PRELOAD_THRESHOLD] 项时触发) */
     fun onScrollToBottom()
 
-    /** 书籍点击/长按 (补 notShelf type 后进详情, 宿主实现跳转) */
-    fun onBookClick(book: SearchBook, longClick: Boolean)
+    /** 书籍点击/长按 (补 notShelf type 后进详情, 宿主实现跳转); [sharedToken] = 被点封面自签的配对 token */
+    fun onBookClick(book: SearchBook, longClick: Boolean, sharedToken: String?)
 
     /** 查询书籍是否在书架 (绿点/徽标渲染用) */
     fun isInBookshelf(book: SearchBook): Boolean
@@ -324,13 +352,28 @@ private fun ResultArea(
     LaunchedEffect(state.scrollTopEpoch) {
         if (state.scrollTopEpoch > 0) gridState.animateScrollToItem(0)
     }
-    // 触底预加载 (对齐原 findLastVisibleItemPosition >= itemCount - 2)
+    // 触底预加载: 判据统一为"末项 (含 footer) 进入倒数第 PRELOAD_THRESHOLD 项"。
+    // 宽屏整页一次性显示完时末项必然可见, 该判据天然成立, 无需另开"填不满就续拉"的分支。
+    // 重判信号分可前滚/不可前滚两种形态 (理由见 [ExplorePreloadSignal]);
+    // 重复触发由 ExploreShowScreenModel.footerHasMore / footerLoading 与 VM 的
+    // "去重后无增长即到底"兜底拦住, 不会无限连拉。
     LaunchedEffect(gridState) {
         snapshotFlow {
-            gridState.layoutInfo.totalItemsCount to
-                (gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1)
-        }.collect { (total, last) ->
-            if (total > 0 && last >= total - 2) actions.onScrollToBottom()
+            if (gridState.canScrollForward) {
+                ExplorePreloadSignal.Scrolled(
+                    firstVisibleItemIndex = gridState.firstVisibleItemIndex,
+                    firstVisibleItemScrollOffset = gridState.firstVisibleItemScrollOffset,
+                )
+            } else {
+                ExplorePreloadSignal.Resized(gridState.layoutInfo.totalItemsCount)
+            }
+        }.collect {
+            val layout = gridState.layoutInfo
+            if (layout.totalItemsCount <= 0) return@collect
+            val last = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            if (last >= layout.totalItemsCount - PRELOAD_THRESHOLD) {
+                actions.onScrollToBottom()
+            }
         }
     }
     FastScrollLazyVerticalGrid(
@@ -340,41 +383,33 @@ private fun ResultArea(
         contentPadding = navPad,
     ) {
         items(books, key = { it.bookUrl }, contentType = { "exploreBook" }) { book ->
-            when {
-                // 复合身份与 BookInfo 路由一致；伪 URL 条目无人匹配，登记无害。
-                isVideo && cols >= 1 -> ContainerTransformCard(
-                    ContainerTransformIdentity(book.bookUrl, book.origin)
-                ) {
-                    videoItemSlot(
+            // 共享配对身份按条目下发: 被点的封面就是出发端 (页转场 token 自签, 点击时交给导航),
+            // 因此同屏重复的封面 (同书/同 URL) 也不会互相抢正身
+            val binding = rememberSharedCoverSourceBinding(book.bookUrl)
+            CompositionLocalProvider(LocalSharedCoverBinding provides binding) {
+                when {
+                    isVideo && cols >= 1 -> videoItemSlot(
                         book,
                         actions.isInBookshelf(book),
-                        { actions.onBookClick(book, false) },
-                        { actions.onBookClick(book, true) },
+                        { actions.onBookClick(book, false, binding.pageToken) },
+                        { actions.onBookClick(book, true, binding.pageToken) },
                     )
-                }
 
-                spanCount == 1 -> ContainerTransformCard(
-                    ContainerTransformIdentity(book.bookUrl, book.origin)
-                ) {
-                    ExploreListItem(
+                    spanCount == 1 -> ExploreListItem(
                         book = book,
                         isVideoStyle = cols == 0 && isVideo,
                         inBookshelf = actions.isInBookshelf(book),
                         coverSlot = coverSlot,
-                        onClick = { actions.onBookClick(book, false) },
-                        onLongClick = { actions.onBookClick(book, true) },
+                        onClick = { actions.onBookClick(book, false, binding.pageToken) },
+                        onLongClick = { actions.onBookClick(book, true, binding.pageToken) },
                     )
-                }
 
-                else -> ContainerTransformCard(
-                    ContainerTransformIdentity(book.bookUrl, book.origin)
-                ) {
-                    ExploreGridItem(
+                    else -> ExploreGridItem(
                         book = book,
                         inBookshelf = actions.isInBookshelf(book),
                         coverSlot = coverSlot,
-                        onClick = { actions.onBookClick(book, false) },
-                        onLongClick = { actions.onBookClick(book, true) },
+                        onClick = { actions.onBookClick(book, false, binding.pageToken) },
+                        onLongClick = { actions.onBookClick(book, true, binding.pageToken) },
                     )
                 }
             }
@@ -438,9 +473,8 @@ private fun ExploreListItem(
     onLongClick: () -> Unit,
 ) {
     val colors = AppTheme.colors
-    // 0.75f: 16:9 视频封面按 3/4 高度收窄, 对齐 applyCoverHeight
-    val coverHeight = AppConfigProviders.get().bookshelfCoverHeight
-        .let { if (isVideoStyle) (it * 0.75f).toInt() else it }
+    // 高度与书架列表档同源 (shelfCoverHeightDp): 视频样式收窄系数只在那里维护
+    val coverHeight = shelfCoverHeightDp(isVideoStyle)
     Row(
         Modifier
             .fillMaxWidth()

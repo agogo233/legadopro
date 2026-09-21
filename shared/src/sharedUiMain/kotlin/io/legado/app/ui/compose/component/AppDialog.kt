@@ -53,7 +53,7 @@ import androidx.compose.ui.window.DialogProperties
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.ui.compose.platform.BackLayerHandler
 import io.legado.app.ui.compose.platform.LocalOverlayTopInset
-import io.legado.app.ui.compose.platform.LocalTransitionFrozenStatusBarHeightPx
+import io.legado.app.ui.compose.platform.LocalStatusBarPaddingEnabled
 import io.legado.app.ui.compose.platform.PlatformDialogDim
 import io.legado.app.ui.compose.platform.platformStatusBarPadding
 import io.legado.app.ui.compose.platform.rememberVisibleStatusBarHeightPx
@@ -150,7 +150,7 @@ internal fun WithWindowTextMenu(content: @Composable () -> Unit) {
 fun AppDialog(
     onDismissRequest: () -> Unit,
     properties: DialogProperties = AppDialogSizes.properties(),
-    /** 背景暗化: 原版 BaseDialogFragment 默认保留 dim, 个别对话框 (PaddingConfigDialog) 清 FLAG_DIM_BEHIND */
+    /** 背景暗化: 原版 BaseDialogFragment 默认保留 dim */
     dim: Boolean = true,
     content: @Composable () -> Unit,
 ) {
@@ -200,17 +200,26 @@ fun AppDialog(
                 }
             }
             val p = progress.value
-            // 不套 fillMaxSize: 对话框窗口是 wrap_content, 撑满会占掉整个可用空间;
-            // Box 尺寸跟随内容, 缩放/淡入只作用于内容框本身
+            val topInset = LocalOverlayTopInset.current
+            // 不套 fillMaxSize: 对话框层 bounds 跟随内容尺寸 (CMP 桌面 rememberDialogMeasurePolicy
+            // 把 layer.boundsInWindow 设为内容实测尺寸; Android 窗口 wrap_content), 铺满后
+            // dismissOnClickOutside 的"外部"永远不存在, 外点关闭失效。保持 wrap 内容 +
+            // padding(top = inset): 内容中心下移到可用区中心 (与铺满+padding 视觉等价),
+            // 平台外点关闭天然可用。顶部 inset 条带虽归入层内不响应外点, 但恰是 Windows
+            // native 控制条的物理覆盖区, 本就点不到; 移动端 inset=0 零影响
             Box(
-                Modifier.graphicsLayer {
-                    val scale = dialogSpec.enterScaleFrom + (1f - dialogSpec.enterScaleFrom) * p
-                    scaleX = scale
-                    scaleY = scale
-                    alpha = if (dialogSpec.enterFadeIn) p else 1f
-                },
+                Modifier.then(if (topInset > 0.dp) Modifier.padding(top = topInset) else Modifier),
             ) {
-                content()
+                Box(
+                    Modifier.graphicsLayer {
+                        val scale = dialogSpec.enterScaleFrom + (1f - dialogSpec.enterScaleFrom) * p
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = if (dialogSpec.enterFadeIn) p else 1f
+                    },
+                ) {
+                    content()
+                }
             }
         }
     }
@@ -626,8 +635,8 @@ fun AppBottomSheetDialog(
  * 恒在画布之上的 native 子窗口, Linux 是 Column 里的自绘条), 而弹层是铺满整窗的 Popup 层 ——
  * 全屏后顶栏会被控制条盖住, 只能主动避让。移动端恒 0。
  *
- * 顶部 inset 归本骨架所有: 弹层内 [LocalTransitionFrozenStatusBarHeightPx] 提供 0
- * ("此处没有状态栏"), content 里的顶栏 (如 [AppTitleBar]) 不再自行叠加 —— 弹层贴底、
+ * 顶部 inset 归本骨架所有: 弹层内 [LocalStatusBarPaddingEnabled] 提供 false
+ * ("此处不叠加状态栏"), content 里的顶栏 (如 [AppTitleBar]) 不再自行叠加 —— 弹层贴底、
  * 顶部够不到状态栏, 自行避让只会凭空多出一层状态栏高的空白带。
  */
 @Composable
@@ -668,7 +677,7 @@ private fun BottomSheetScaffold(
                 ),
             contentAlignment = Alignment.BottomCenter,
         ) {
-            CompositionLocalProvider(LocalTransitionFrozenStatusBarHeightPx provides 0) {
+            CompositionLocalProvider(LocalStatusBarPaddingEnabled provides false) {
                 content()
             }
         }

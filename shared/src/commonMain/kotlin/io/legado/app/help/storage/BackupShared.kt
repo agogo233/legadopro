@@ -5,12 +5,14 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ThreadSafeDateFormat
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.dao.sortedByLocalizedOrder
+import io.legado.app.data.entities.ReadRecord
 import io.legado.app.help.AppWebDavShared
 import io.legado.app.help.DirectLinkUploadStoreProviders
 import io.legado.app.help.HomeTabHelpShared
 import io.legado.app.help.PinnedExploreHelp
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ReadBookConfigShared
 import io.legado.app.help.config.ThemeConfigProviders
@@ -58,8 +60,8 @@ object BackupShared {
     /** 备份工作目录名 (相对于 [AppFilesDirs.filesDir])。 */
     private const val BACKUP_DIR_NAME = "backup"
 
-    /** zip 内 coverCache 独立命名空间, 对应 [AppFilesDirs.get].coversDir。 */
-    private const val COVER_CACHE_DIR_NAME = "coverCache"
+    /** zip 内 oldCovers 独立命名空间，对应 [AppFilesDirs.get].coversDir。 */
+    private const val OLD_COVERS_DIR_NAME = "oldCovers"
 
     /** 备份 zip 临时文件名。 */
     private const val ZIP_FILE_NAME = "tmp_backup.zip"
@@ -116,6 +118,39 @@ object BackupShared {
         THEME_CONFIG_FILE_NAME,
         "config.json"
     )
+
+    /** autoBack 自身的互斥, 避免多入口并发触发自动备份。 */
+    private val autoBackMutex = Mutex()
+
+    /** 检查是否满足每日自动备份条件 (距上次备份超过 1 天)。 */
+    fun shouldAutoBackup(): Boolean {
+        val lastBackup = BackupRestoreHooks.get().getLastBackup()
+        return lastBackup + 86_400_000L < systemCurrentTimeMillis()
+    }
+
+    /**
+     * 自动备份 (距上次备份超过一天时触发, 云端已有当日备份则只更新时间戳)。
+     * 跨平台统一调度 (对照原版 Backup.autoBack)。
+     */
+    fun autoBack(
+        destinationPath: String? = PreferenceProviders.get().getStringOrNull(PreferKey.backupPath),
+    ) {
+        if (!shouldAutoBackup()) return
+        Coroutine.async {
+            autoBackMutex.withLock {
+                if (!shouldAutoBackup()) return@async
+                val backupZipFileName = nowZipFileName()
+                val hasRemote = runCatching { AppWebDavShared.hasBackUp(backupZipFileName) }.getOrDefault(false)
+                if (!hasRemote) {
+                    backupLocked(destinationPath)
+                } else {
+                    BackupRestoreHooks.get().setLastBackup(systemCurrentTimeMillis())
+                }
+            }
+        }.onError {
+            AppLog.put("自动备份失败\n${it.message}", it, tag = TAG)
+        }
+    }
 
     /**
      * 备份执行入口 (互斥锁保护)。
@@ -201,7 +236,7 @@ object BackupShared {
             writeListToJson(appDb.bookGroupDao.all(), "bookGroup.json")
             writeListToJson(appDb.bookSourceDao.all(), "bookSource.json")
             writeListToJson(appDb.replaceRuleDao.all(), "replaceRule.json")
-            writeListToJson(appDb.readRecordDao.all(), "readRecord.json")
+            writeReadRecords(appDb.readRecordDao.all(), "readRecord.json")
             writeListToJson(appDb.searchKeywordDao.all(), "searchHistory.json")
             writeListToJson(appDb.ruleSubDao.all(), "sourceSub.json")
             writeListToJson(appDb.txtTocRuleDao.all(), "txtTocRule.json")
@@ -300,21 +335,21 @@ object BackupShared {
             }
             // 图集目录随备份打包 (zip 内条目保留相对文件根结构): customImg/ (封面图集+
             // 主题背景图+启动图+阅读背景 novelBg 子目录) 与旧版兼容目录 bg/; 恢复时解回文件根。
-            // coversDir 是 coverCache/ 持久引用的物理目录, 必须映射为独立 zip 命名空间,
-            // 不能与 customImg/covers 混用。先复制进工作目录以固定 zip 条目名。
+            // coversDir 是持久引用的物理目录，映射为独立 zip 命名空间 oldCovers/，
+            // 避免与 customImg/covers 混用。复制进工作目录以固定 zip 条目名。
             val filesBase = AppFilesDirs.get().externalFilesDir ?: AppFilesDirs.get().filesDir
             val imageDirs = listOf("customImg", "bg").mapNotNull { dirName ->
                 val dir = filesBase + BackupFileOps.separator + dirName
                 if (BackupFileOps.exists(dir)) dir else null
             }
-            val coverCacheBackupDir = AppFilesDirs.get().coversDir
+            val oldCoversBackupDir = AppFilesDirs.get().coversDir
                 ?.takeIf { BackupFileOps.exists(it) }
                 ?.let { coversDir ->
-                    val stagedDir = workDirPath + BackupFileOps.separator + COVER_CACHE_DIR_NAME
+                    val stagedDir = workDirPath + BackupFileOps.separator + OLD_COVERS_DIR_NAME
                     copyDir(coversDir, stagedDir)
                     stagedDir
                 }
-            val pathsWithImages = paths + imageDirs + listOfNotNull(coverCacheBackupDir)
+            val pathsWithImages = paths + imageDirs + listOfNotNull(oldCoversBackupDir)
             // WebDav 始终使用带日期的文件名; onlyLatestBackup 仅控制本地副本名称
             val localFileName = localFileNameOverride ?: if (
                 PreferenceProviders.get().getBoolean(PreferKey.onlyLatestBackup, true)
@@ -409,7 +444,25 @@ object BackupShared {
         )
     }
 
-    /** 递归复制目录, 用于把平台 coversDir 映射到 zip 的 coverCache/ 命名空间。 */
+    /** 写入阅读记录为 1A+1C 紧凑 Map 结构 (区间融合 + 按书名归组)。空列表跳过。 */
+    private suspend fun writeReadRecords(records: List<ReadRecord>, fileName: String) {
+        currentCoroutineContext().ensureActive()
+        if (records.isEmpty()) {
+            AppLog.putDebug("阅读备份 $fileName 列表为空", tag = TAG)
+            return
+        }
+        val merged = ReadRecord.mergeIntervals(records)
+        val recordMap = merged.groupBy { it.bookName }.mapValues { (_, list) ->
+            list.map { listOf(it.startSec, it.endSec) }
+        }
+        AppLog.putDebug("阅读备份 $fileName 原始 ${records.size} 条, 合并后 ${merged.size} 条", tag = TAG)
+        BackupFileOps.writeText(
+            backupPath + BackupFileOps.separator + fileName,
+            GSON.toJson(recordMap)
+        )
+    }
+
+    /** 递归复制目录，用于把平台 coversDir 映射到 zip 的 oldCovers/ 命名空间。 */
     private fun copyDir(srcDir: String, dstDir: String) {
         BackupFileOps.listFiles(srcDir)?.forEach { entry ->
             val dst =

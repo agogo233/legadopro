@@ -76,8 +76,8 @@ import io.legado.app.ui.compose.component.rememberPullToRefreshState
 import io.legado.app.ui.compose.platform.rememberColor
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.platform.rememberString
-import io.legado.app.ui.compose.platform.transitionStatusBarHeight
-import io.legado.app.ui.compose.platform.transitionStatusBarPadding
+import io.legado.app.ui.compose.platform.platformStatusBarHeight
+import io.legado.app.ui.compose.platform.platformStatusBarPadding
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.utils.ColorUtils
@@ -160,6 +160,9 @@ import org.jetbrains.compose.resources.stringResource
  * 字段语义对照原 `BookInfoActivity` 同名字段:
  * - [book] / [bookTick] / [coverTick] / [inBookshelf] / [groupName] /
  *   [tocText] / [lastedTitle] / [wordCountText]: 与 Activity 同名字段一一对应
+ * - [refreshing]: 刷新中标志, 只驱动下拉指示器。**非**原版 upLoading 的等价物 ——
+ *   原版 `upLoading(true)` 只改 `tvToc` 文案 (archive BookInfoActivity:523-535),
+ *   下拉指示器在 `setOnRefreshListener` 开头就 `isRefreshing = false` (:616-619), 从不表达刷新中
  * - [isLandscape] / [useDevFeat] / [isDarkTheme] / [isEInkMode]: 由路由层计算后传入
  *   (useDevFeat = bookInfoHorizontalLayout && !isVideo && !isLandscape;
  *   isEInkMode 时模糊封面背景与取色均跳过, 回退固定色)
@@ -169,6 +172,8 @@ data class BookInfoUiState(
     val book: Book?,
     val bookTick: Int,
     val coverTick: Int,
+    /** 正在刷新 (下拉/菜单/F5/事件触发): 只驱动指示器, 不清已有文案 (与"未加载完"分开) */
+    val refreshing: Boolean,
     val inBookshelf: Boolean,
     val groupName: String,
     val tocText: String?,
@@ -280,7 +285,9 @@ fun BookInfoScreen(
     coverSlot: @Composable (Book?, Modifier) -> Unit,
     introImageSlot: @Composable (String, () -> Unit) -> Unit,
 ) {
-    state.bookTick // 读 tick: book 原地可变对象, post 时递增驱动重组
+    // 注: 本层不读 tick —— 本函数是否重组由调用方对 [state] 参数的比较决定, 体内再读一次
+    // tick 无法反向影响该比较 (旧实现的 `state.bookTick` 顶读是死代码, 已删);
+    // book 原地可变时的强制重组靠 tick 进入 [BookInfoUiState] 使新旧不等
     // 模糊封面背景显示时 (竖屏非 devFeat / 横屏左列), 顶栏与头部文字按封面取色;
     // 取色由 blur 背景的加载回调驱动 (LocalCoverLoaded 送来原图, 见 BookCoverPalette),
     // 未回调 (加载中/失败/E-Ink) 前 palette 为 null, 回退原有固定色
@@ -328,7 +335,7 @@ private fun PortraitLayout(
     introImageSlot: @Composable (String, () -> Unit) -> Unit,
 ) {
     val pullState = rememberPullToRefreshState()
-    val isRefreshing = state.tocText == null
+    val isRefreshing = state.refreshing
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
@@ -354,7 +361,7 @@ private fun PortraitLayout(
                         )
                     }
                     Column(Modifier.fillMaxWidth()) {
-                        Spacer(Modifier.height(transitionStatusBarHeight()))
+                        Spacer(Modifier.height(platformStatusBarHeight()))
                         Spacer(Modifier.height(56.dp)) // actionBarSize
                         if (state.useDevFeat) TopSectionHorizontal(state, coverSlot)
                         else TopSectionVertical(state, coverSlot, land = false)
@@ -414,7 +421,7 @@ private fun LandscapeLayout(
         }
         // 右半:下拉刷新 + 动作行/分类/简介 + 底部按钮
         val pullState = rememberPullToRefreshState()
-        val isRefreshing = state.tocText == null
+        val isRefreshing = state.refreshing
         Box(
             Modifier
                 .weight(1f)
@@ -435,7 +442,7 @@ private fun LandscapeLayout(
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 8.dp),
                 ) {
-                    Spacer(Modifier.height(transitionStatusBarHeight()))
+                    Spacer(Modifier.height(platformStatusBarHeight()))
                     ActionsRow(state, actions, Modifier)
                     KindsSection(state, actions, Modifier)
                     IntroSection(state, actions, introImageSlot, Modifier.padding(start = 8.dp, bottom = 8.dp))
@@ -466,7 +473,7 @@ private fun InfoTitleBar(
     Row(
         modifier
             .fillMaxWidth()
-            .transitionStatusBarPadding()
+            .platformStatusBarPadding()
             .height(DesignTokens.viewHeightMax),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -713,21 +720,25 @@ private fun InfoCover(
     val book = state.book
     // 对照原 View 版 onMeasure: 高固定 144dp, 宽按比例反推 (视频 16:9, 小说 3:4)
     val coverRatio = if (book?.isVideo == true) 16f / 9f else 3f / 4f
-    coverSlot(
-        book,
-        modifier
-            .height(144.dp)
-            .aspectRatio(coverRatio, matchHeightConstraintsFirst = true)
-            .clip(DesignTokens.shapeDefault)
-            .then(
-                if (cardBg) Modifier.background(AppTheme.colors.bottomBackground)
-                else Modifier
-            )
-            .combinedClickable(
-                onClick = { actions.onCoverClick() },
-                onLongClick = { actions.onCoverLongClick() },
-            )
-    )
+    // align/padding 留在父节点: 共享端点由 SharedBookCover 统一挂在它收到的链首,
+    // 与封面同一 LayoutNode 的 padding 会被算进共享元素的起止盒 (起手矩形比可见封面大 8dp)
+    Box(modifier) {
+        coverSlot(
+            book,
+            Modifier
+                .height(144.dp)
+                .aspectRatio(coverRatio, matchHeightConstraintsFirst = true)
+                .clip(DesignTokens.shapeSm)
+                .then(
+                    if (cardBg) Modifier.background(AppTheme.colors.bottomBackground)
+                    else Modifier
+                )
+                .combinedClickable(
+                    onClick = { actions.onCoverClick() },
+                    onLongClick = { actions.onCoverLongClick() },
+                )
+        )
+    }
 }
 
 // ---- 动作行(作者/来源/分组/目录) ----

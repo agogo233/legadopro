@@ -13,7 +13,7 @@ interface ReadRecordDao {
     suspend fun all(): List<ReadRecord>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertSession(record: ReadRecord)
+    suspend fun insert(vararg record: ReadRecord)
 
     @Query("delete from readRecord")
     suspend fun clear()

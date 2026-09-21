@@ -66,6 +66,20 @@ internal object DesktopTaskbarDwm {
     private const val WM_DWMSENDICONICTHUMBNAIL = 0x0323
     private const val WM_DWMSENDICONICLIVEPREVIEWBITMAP = 0x0326
 
+    /**
+     * DWM 对 iconic 缩略图位图的接受上限 (物理像素)。
+     *
+     * WM_DWMSENDICONICTHUMBNAIL 的 lParam 报的是「请求尺寸」, 但它**可以大于 DWM 自己接受的
+     * 上限**, 照交必被拒: 实测 (Win11 build 26200) 同一个普通窗口交它请求的 200x105 返回 S_OK,
+     * 强行改交 300x158 就返回 E_INVALIDARG。本应用主窗口是 PerMonitorV2 DPI 感知, DWM 报给它的
+     * 是物理像素 300x158 —— 照交就是任务栏卡片不显示的根因。
+     *
+     * 上限取 200x106: 实测被接受的最大读数, 与 Windows 经典缩略图尺寸 200x120 同量级。
+     * 交小图不损观感: DWM 会自己把它放大到预览框尺寸。
+     */
+    private const val THUMBNAIL_MAX_W = 200
+    private const val THUMBNAIL_MAX_H = 106
+
     // ==================== 字体缓存 ====================
 
     private val normalTypeface: Typeface? by lazy {
@@ -223,6 +237,10 @@ internal object DesktopTaskbarDwm {
             DesktopWindowChromeNative.removeMessageHandler(messageHandler)
             hooked = false
         }
+        // 渲染/封面执行器随托盘一起结束 (uninstall 只在应用退出路径调用, 窗口重建路径当前不可达):
+        // 留着会在进程收尾期间继续跑投递进来的绘制/取图任务
+        renderExecutor.shutdown()
+        coverExecutor.shutdown()
     }
 
     /** 会话终结时清空卡片内容 (封面/文案/进度与加载去重状态), 下次会话从干净状态开始。 */
@@ -356,16 +374,24 @@ internal object DesktopTaskbarDwm {
 
     // ==================== DWM 消息 ====================
 
+    /** 把 DWM 报的请求尺寸按比例钳进 [THUMBNAIL_MAX_W]x[THUMBNAIL_MAX_H] (保持宽高比)。 */
+    private fun clampThumbnailSize(w: Int, h: Int): Pair<Int, Int> {
+        if (w <= THUMBNAIL_MAX_W && h <= THUMBNAIL_MAX_H) return w to h
+        val scale = minOf(THUMBNAIL_MAX_W.toFloat() / w, THUMBNAIL_MAX_H.toFloat() / h)
+        return (w * scale).toInt().coerceAtLeast(1) to (h * scale).toInt().coerceAtLeast(1)
+    }
+
     private val messageHandler: (Int, Long, Long) -> Boolean = ::handleWindowMessage
 
     private fun handleWindowMessage(msg: Int, wparam: Long, lparam: Long): Boolean {
         when (msg) {
             WM_DWMSENDICONICTHUMBNAIL -> {
                 if (!iconicEnabled) return false
-                val w = ((lparam ushr 16) and 0xFFFF).toInt()
-                val h = (lparam and 0xFFFF).toInt()
-                if (w <= 0 || h <= 0) return false
-                enqueueRender(live = false, thumbnailSize = w to h)
+                val reqW = ((lparam ushr 16) and 0xFFFF).toInt()
+                val reqH = (lparam and 0xFFFF).toInt()
+                if (reqW <= 0 || reqH <= 0) return false
+                // 不能照交 DWM 报的尺寸: 它可能大于 DWM 自己接受的上限 (见 [THUMBNAIL_MAX_W])
+                enqueueRender(live = false, thumbnailSize = clampThumbnailSize(reqW, reqH))
                 return true
             }
 

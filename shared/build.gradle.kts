@@ -1,3 +1,4 @@
+import io.legado.buildlogic.generateCNamesAliases
 import org.jetbrains.kotlin.gradle.plugin.KotlinDependencyHandler
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
@@ -91,62 +92,31 @@ val nativeInteropSourcePatterns = listOf(
 )
 val nativeInteropSourceRoot = file("src/nativeMain/kotlin")
 
-// cinterop 对不完整 typedef (如 typedef struct JSContext JSContext; 仅前向声明) 只生成
-// cnames.structs.* 包别名, 顶层类型名靠这里生成的 typealias 补齐。iOS/鸿蒙各 stage 任务共用。
-fun generateCNamesAliases(outputRoot: File) {
-    val quickJsAliases = outputRoot.resolve(
-        "io/legado/app/napi/quickjs/CNamesAliases.kt"
-    )
-    quickJsAliases.parentFile.mkdirs()
-    quickJsAliases.writeText(
-        """
-        @file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
-
-        package io.legado.app.napi.quickjs
-
-        typealias JSContext = cnames.structs.JSContext
-        typealias JSRuntime = cnames.structs.JSRuntime
-        """.trimIndent() + "\n"
-    )
-    val mbedTlsAliases = outputRoot.resolve(
-        "io/legado/app/nativecrypto/mbedtls/CNamesAliases.kt"
-    )
-    mbedTlsAliases.parentFile.mkdirs()
-    mbedTlsAliases.writeText(
-        """
-        @file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
-
-        package io.legado.app.nativecrypto.mbedtls
-
-        typealias mbedtls_md_info_t = cnames.structs.mbedtls_md_info_t
-        """.trimIndent() + "\n"
-    )
-}
+// generateCNamesAliases 已上移 build-logic (任务动作在配置缓存下不得分发脚本方法)
 
 val stageNativeInteropForIos = if (enableIosTarget) {
     tasks.register<Sync>("stageNativeInteropForIos") {
+        // 配置缓存: staged 输出目录与生成函数在配置期定死, doLast 不引用 layout/脚本方法
+        val stagedDir = layout.buildDirectory.dir("generated/nativeInterop/iosLeaf").get().asFile
         from(nativeInteropSourceRoot) {
             include(*nativeInteropSourcePatterns.toTypedArray())
         }
-        into(layout.buildDirectory.dir("generated/nativeInterop/iosLeaf"))
+        into(stagedDir)
         doLast {
-            generateCNamesAliases(
-                layout.buildDirectory.dir("generated/nativeInterop/iosLeaf").get().asFile
-            )
+            generateCNamesAliases(stagedDir)
         }
     }
 } else null
 fun registerOhosInteropStage(taskName: String, outputDirName: String): TaskProvider<Sync>? =
     if (enableOhosTarget) {
         tasks.register<Sync>(taskName) {
+            val stagedDir = layout.buildDirectory.dir(outputDirName).get().asFile
             from(nativeInteropSourceRoot) {
                 include(*nativeInteropSourcePatterns.toTypedArray())
             }
-            into(layout.buildDirectory.dir(outputDirName))
+            into(stagedDir)
             doLast {
-                generateCNamesAliases(
-                    layout.buildDirectory.dir(outputDirName).get().asFile
-                )
+                generateCNamesAliases(stagedDir)
             }
         }
     } else null
@@ -438,7 +408,7 @@ fun KotlinDependencyHandler.sharedJvmAndroidDeps() {
 kotlin {
     jvm()
 
-    androidLibrary {
+    android {
         namespace = "io.legado.shared"
         compileSdk = 37
         minSdk = 24
@@ -547,7 +517,7 @@ kotlin {
                 api("org.jetbrains.compose.components:components-resources:$composeVersion")
             }
         }
-        val sharedUiMain by creating {
+        val sharedUiMain = create("sharedUiMain") {
             dependsOn(commonMain.get())
             dependencies {
                 implementation("org.jetbrains.compose.runtime:runtime:$composeVersion")
@@ -560,7 +530,7 @@ kotlin {
         }
         // 鸿蒙无变体三方库隔离层: coil3-compose / reorderable / multiplatformMarkdown。
         // fork 生态补齐这些库的 ohosArm64 变体后, 本源集即可并回 sharedUiMain 删除。
-        val nonOhosUiMain by creating {
+        val nonOhosUiMain = create("nonOhosUiMain") {
             dependsOn(sharedUiMain)
             dependencies {
                 implementation(libs.reorderable)
@@ -573,7 +543,7 @@ kotlin {
         // 传递解析, fork 版本按目标编译期解析, 本源集无自身依赖故不落 fork 重写范围),
         // 承载只依赖 Skia 的跨端实现 (如 DefaultCoverBaker)。
         // Android 无 skiko (Android Compose 走 android.graphics), 不参与本层。
-        val skikoUiMain by creating {
+        val skikoUiMain = create("skikoUiMain") {
             dependsOn(sharedUiMain)
         }
         androidMain {
@@ -738,7 +708,7 @@ kotlin {
             // (2026-08-16 实测), 不再声明 ohosX64Main 编译单元。
         }
 
-        val jvmAndAndroidTest by creating {
+        val jvmAndAndroidTest = create("jvmAndAndroidTest") {
             dependsOn(commonTest.get())
             dependencies {
                 implementation(libs.junit)
@@ -763,8 +733,9 @@ tasks.matching {
     it.name == "copyDebugComposeResourcesToAndroidAssets" ||
         it.name == "copyReleaseComposeResourcesToAndroidAssets"
 }.configureEach {
+    val outputsToClear = outputs.files
     doFirst {
-        outputs.files.forEach { output -> project.delete(output) }
+        outputsToClear.forEach { output -> output.deleteRecursively() }
     }
 }
 
@@ -796,6 +767,11 @@ if (enableOhosTarget) {
     tasks.matching { it.name == "compileKotlinOhosArm64" }.configureEach {
         deriveOhosRoomImpl?.let { dependsOn(it) }
         verifyOhosRoomDerived?.let { dependsOn(it) }
+        // CPF fork CMP 1.9.2 的 sharedBounds/SharedTransitionLayout 仍带
+        // @ExperimentalSharedTransitionApi (官方 1.11 已转正), 而 sharedUiMain 是四端共享源码,
+        // 不能为鸿蒙单独加 @OptIn —— 只在这一条编译上开 opt-in。
+        (this as? org.jetbrains.kotlin.gradle.tasks.KotlinNativeCompile)?.compilerOptions?.optIn
+            ?.add("androidx.compose.animation.ExperimentalSharedTransitionApi")
     }
 }
 

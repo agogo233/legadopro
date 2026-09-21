@@ -139,7 +139,6 @@ object PreferKey {
     const val shrinkDatabase = "shrinkDatabase"
     const val batchChangeSourceDelay = "batchChangeSourceDelay"
     const val defaultHomePage = "defaultHomePage"
-    const val showBookshelfFastScroller = "showBookshelfFastScroller"
     const val bookshelfListShowKind = "bookshelfListShowKind"
     const val bookshelfListShowIntro = "bookshelfListShowIntro"
     const val bookshelfListIntroLines = "bookshelfListIntroLines"
@@ -159,7 +158,6 @@ object PreferKey {
     const val devFeat = "devFeat"
     const val bookInfoHorizontalLayout = "bookInfoHorizontalLayout"
     const val disableMangaPageAnim = "disableMangaPageAnim"
-    const val containerTransformAnim = "containerTransformAnim"
     const val autoCheckNewBackup = "autoCheckNewBackup"
 
     const val cPrimary = "colorPrimary"
