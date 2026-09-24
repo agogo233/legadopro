@@ -121,7 +121,6 @@
     <string name="add_book_source">Adicionar fonte de livro</string>
     <string name="copy_source">Copiar a fonte</string>
     <string name="paste_source">Colar a fonte</string>
-    <string name="check_update">Verificar por atualizações</string>
     <string name="share">Compartilhar</string>
     <string name="flow_sys">Adaptar do sistema</string>
     <string name="add">Adicionar</string>
@@ -146,7 +145,6 @@
     <string name="dark_theme">Modo escuro</string>
     <string name="welcome">Página de boas-vindas</string>
     <string name="download_count">Baixado %1$d/%2$d</string>
-    <string name="download_start">Iníciar o download</string>
     <string name="import_select_book">Importar livro(s) selecionado(s)</string>
     <string name="threads_num_title">Número de tarefas simultâneas</string>
     <string name="change_icon">Alterar o ícone</string>
@@ -768,8 +766,6 @@
     <string name="start_from">Começar</string>
     <string name="daily_chapters">Cap. por dia</string>
     <string name="start_chapter">Início</string>
-    <string name="update_to_variant_title">检查更新查找版本</string>
-    <string name="update_to_variant_summary">检查更新时查找其他签名版本</string>
     <string name="default_version">当前</string>
     <string name="official_version">正式版</string>
     <string name="beta_release_version">测试版</string>

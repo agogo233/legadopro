@@ -367,7 +367,7 @@ private fun runDesktopApp() = application {
     // 阶段1 核心子集 (无 UI 依赖的 provider 注册) 已下沉 :desktop-core 的
     // DesktopCore.registerCoreProviders() —— 与 headless 入口共用同一注册序列, 保证两种入口
     // 的数据/配置环境等价。包含: AppLog/AppString/AndroidId/Toaster/NotificationProgress/
-    // UpdateBookCallback/config+语言/AppUpdate/AppFilesDir/HTTP+jsoup/
+    // UpdateBookCallback/config+语言/AppFilesDir/HTTP+jsoup/
     // DataStorage+BookImageStorage/HttpTTS 播放器工厂/JS 引擎/DefaultDataResource/数据库/
     // BookStorage/AppDb/BookHelp/ReadBookPlatform/CoverStorage。
     // remember: 只在首组合执行一次 (原实现非 remember 的注册函数本就幂等, 收敛后行为等价);

@@ -18,15 +18,11 @@ import kotlinx.coroutines.flow.asStateFlow
  * @param updateLogSummary  更新日志条目 summary (如 "版本 3.25.070226")
  * @param contributorsUrl   贡献者页面 URL (平台各异: Android 读 R.string, 桌面端硬编码)
  * @param telegramGroupUrl  Telegram 群链接 (平台各异)
- * @param showCheckUpdate   是否显示"检查更新"入口 (未接入更新能力的端隐藏)
- * @param checkingUpdate    正在检查更新 (入口置灰)
  */
 data class AboutUiState(
     val updateLogSummary: String = "",
     val contributorsUrl: String = "",
     val telegramGroupUrl: String = "",
-    val showCheckUpdate: Boolean = true,
-    val checkingUpdate: Boolean = false,
 )
 
 /**
@@ -37,7 +33,6 @@ data class AboutUiState(
  *
  * - [onShare]: 顶栏分享按钮 (替代原 Activity 内 `share(...)`)
  * - [onOpenUrl]: 打开外链 (贡献者 / Telegram, URL 由 state 传入)
- * - [onCheckUpdate]: 检查更新
  * - [onShowCrashLogs]: 显示崩溃日志
  * - [onSaveLog]: 保存日志 (Android: copy logs/crash/logcat 到 backupPath; 桌面: JFileChooser 导出)
  * - [onCreateHeapDump]: 创建堆转储 (Android: CrashHandler.doHeapDump; 桌面: HotSpotDiagnosticMXBean)
@@ -47,7 +42,6 @@ data class AboutUiState(
 interface AboutUiActions {
     fun onShare()
     fun onOpenUrl(url: String)
-    fun onCheckUpdate()
     fun onShowCrashLogs()
     fun onSaveLog()
     fun onCreateHeapDump()
@@ -104,19 +98,5 @@ class AboutScreenModel : ScreenModel {
 
         /** 触发彩蛋所需的连点次数。 */
         const val HEADER_EASTER_EGG_CLICKS = 5
-    }
-
-    /**
-     * 检查更新: 四端同一条链 ([checkUpdateAndPrompt]), 进行中置灰入口
-     * (对照原版 AppUpdate.check 的 WaitDialog: 本端用条目置灰代替转圈弹窗)。
-     */
-    suspend fun checkUpdate(latestText: String, failedLabel: String) {
-        if (_state.value.checkingUpdate) return
-        _state.value = _state.value.copy(checkingUpdate = true)
-        try {
-            checkUpdateAndPrompt(silent = false, latestText = latestText, failedLabel = failedLabel)
-        } finally {
-            _state.value = _state.value.copy(checkingUpdate = false)
-        }
     }
 }

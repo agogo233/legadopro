@@ -331,10 +331,6 @@
     <string name="clear_webview_data_summary">清除内置浏览器所有数据</string>
     <string name="shrink_database">压缩数据库</string>
     <string name="shrink_database_summary">减小数据库文件的大小</string>
-    <string name="auto_check_update">自动检查更新</string>
-    <string name="check_update">检查更新</string>
-    <string name="update_to_variant_title">检查更新查找版本</string>
-    <string name="update_to_variant_summary">检查更新时查找其他签名版本</string>
     <string name="pref_cronet_summary">使用 Cronet 网络组件</string>
     <string name="server_config">服务器配置</string>
     <string name="create">新建</string>
@@ -942,8 +938,6 @@
     <string name="rule_sub_load_failed">规则订阅界面获取数据失败
 %1$s</string>
     <string name="input_valid_url">请输入有效的 URL</string>
-    <string name="check_update_failed">检查更新失败
-%1$s</string>
     <string name="desktop_install_mode_not_portable">[legado-desktop] install mode = %1$s (portable.root not set, 下游走 portable.txt 标记/系统数据目录)</string>
     <string name="image_decode_failed_bytes">image.decode: 无法解码图片字节(%1$s bytes)</string>
     <string name="image_encode_unsupported_format">image.encode: 不支持的格式 %1$s，仅 png/jpg/webp</string>
@@ -1391,18 +1385,6 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
         <item>explore</item>
         <item>my</item>
     </string-array>
-    <string-array name="default_app_variant">
-        <item>当前</item>
-        <item>正式版</item>
-        <item>测试版</item>
-        <item>共存版</item>
-    </string-array>
-    <string-array name="default_app_variant_value">
-        <item>default_version</item>
-        <item>official_version</item>
-        <item>beta_release_version</item>
-        <item>beta_releaseA_version</item>
-    </string-array>
     <string-array name="screen_direction_title">
         <item>跟随系统</item>
         <item>竖向</item>
@@ -1565,11 +1547,9 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="screen_portrait">竖向</string>
     <string name="screen_unspecified">跟随系统</string>
     <string name="can_not_open">无法打开</string>
-    <string name="is_latest_version">已是最新版本</string>
     <string name="img_cover">封面</string>
     <string name="book">书</string>
     <string name="welcome">启动页</string>
-    <string name="download_start">开始下载</string>
     <string name="import_select_book">导入选择书籍</string>
     <string name="start_read">开始阅读</string>
     <string name="content">内容</string>

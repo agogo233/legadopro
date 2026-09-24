@@ -27,15 +27,13 @@ import java.util.jar.Manifest
  * # 与 app 端的差异
  *
  * - app 端 versionCode 为 Long (`PackageManager.longVersionCode`); 桌面端用 Int (无大版本号需求)
- * - app 端 AppInfo 还含 appVariant (签名校验, 桌面端无签名); 桌面端不暴露
  *
  * @see io.legado.app.constant.AppConstAndroid.kt (app 端 appInfo 来源)
  */
 object DesktopAppInfo {
 
     /**
-     * 应用版本名 (如 "1.0.0"), 供 About 页显示 + shared 检查更新链路
-     * ([io.legado.app.help.update.AppUpdateEnvironment] / [io.legado.desktop.help.registerDesktopAppUpdate]) 版本比对。
+     * 应用版本名 (如 "1.0.0"), 供 About 页显示。
      *
      * 读取优先级:
      * 1. `META-INF/MANIFEST.MF` 的 `Implementation-Version` (jpackage 产物 / Gradle jar task 写入)

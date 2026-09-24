@@ -120,8 +120,6 @@
     <string name="add_book_source">新建書源</string>
     <string name="copy_source">拷貝源</string>
     <string name="paste_source">粘帖源</string>
-    <string name="check_update">檢查更新</string>
-    <string name="is_latest_version">已是最新版本</string>
     <string name="share">分享</string>
     <string name="flow_sys">跟隨系統</string>
     <string name="add">添加</string>
@@ -146,7 +144,6 @@
     <string name="dark_theme">深色模式</string>
     <string name="welcome">啟動頁</string>
     <string name="download_count">已下載 %1$d/%2$d</string>
-    <string name="download_start">開始下載</string>
     <string name="import_select_book">導入選擇書輯</string>
     <string name="threads_num_title">更新/搜尋線程數，太多會卡頓</string>
     <string name="change_icon">切換圖標</string>
@@ -778,8 +775,6 @@
     <string name="start_from">起始日期</string>
     <string name="daily_chapters">日更章數</string>
     <string name="start_chapter">開始篇章</string>
-    <string name="update_to_variant_title">檢查更新尋找版本</string>
-    <string name="update_to_variant_summary">檢查更新時尋找其他簽名版本</string>
     <string name="default_version">目前</string>
     <string name="official_version">正式版</string>
     <string name="beta_release_version">測試版</string>

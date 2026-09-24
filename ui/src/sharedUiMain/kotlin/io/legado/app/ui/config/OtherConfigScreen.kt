@@ -11,7 +11,6 @@ import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.add_to_text_context_menu_s
 import legado.ui.generated.resources.add_to_text_context_menu_t
 import legado.ui.generated.resources.audio_play_wake_lock
-import legado.ui.generated.resources.auto_check_update
 import legado.ui.generated.resources.bitmap_cache_size
 import legado.ui.generated.resources.book_info_delete_alert_summary
 import legado.ui.generated.resources.book_info_delete_alert_title
@@ -24,8 +23,6 @@ import legado.ui.generated.resources.clear_webview_data_summary
 import legado.ui.generated.resources.click_book_open_read
 import legado.ui.generated.resources.click_book_open_read_summary
 import legado.ui.generated.resources.custom_page_key
-import legado.ui.generated.resources.default_app_variant
-import legado.ui.generated.resources.default_app_variant_value
 import legado.ui.generated.resources.default_home_page
 import legado.ui.generated.resources.default_home_page_value
 import legado.ui.generated.resources.ignore_audio_focus_summary
@@ -55,8 +52,6 @@ import legado.ui.generated.resources.show_add_to_shelf_alert_title
 import legado.ui.generated.resources.shrink_database
 import legado.ui.generated.resources.shrink_database_summary
 import legado.ui.generated.resources.threads_num_title
-import legado.ui.generated.resources.update_to_variant_summary
-import legado.ui.generated.resources.update_to_variant_title
 import legado.ui.generated.resources.user_agent
 import legado.ui.generated.resources.web_port_title
 import legado.ui.generated.resources.web_service_wake_lock
@@ -120,8 +115,6 @@ fun OtherConfigScreen(
     val languageValues = stringArrayResource(Res.array.language_value)
     val homePageEntries = stringArrayResource(Res.array.default_home_page)
     val homePageValues = stringArrayResource(Res.array.default_home_page_value)
-    val variantEntries = stringArrayResource(Res.array.default_app_variant)
-    val variantValues = stringArrayResource(Res.array.default_app_variant_value)
 
     val titleLanguage = stringResource(Res.string.language)
     val titleHomePage = stringResource(Res.string.default_home_page)
@@ -154,9 +147,6 @@ fun OtherConfigScreen(
     val summaryAddToShelfAlert = stringResource(Res.string.show_add_to_shelf_alert_summary)
     val titleBookInfoDeleteAlert = stringResource(Res.string.book_info_delete_alert_title)
     val summaryBookInfoDeleteAlert = stringResource(Res.string.book_info_delete_alert_summary)
-    val titleUpdateToVariant = stringResource(Res.string.update_to_variant_title)
-    val summaryUpdateToVariant = stringResource(Res.string.update_to_variant_summary)
-    val titleAutoCheckUpdate = stringResource(Res.string.auto_check_update)
     val titleWebPort = stringResource(Res.string.web_port_title)
     val titleCleanCache = stringResource(Res.string.clear_cache)
     val summaryCleanCache = stringResource(Res.string.clear_cache_summary)
@@ -309,19 +299,6 @@ fun OtherConfigScreen(
                 prefKey = PreferKey.bookInfoDeleteAlert,
                 title = titleBookInfoDeleteAlert,
                 summary = summaryBookInfoDeleteAlert,
-                defaultValue = true,
-            )
-            listPreference(
-                prefKey = PreferKey.updateToVariant,
-                title = titleUpdateToVariant,
-                summary = summaryUpdateToVariant,
-                entries = variantEntries,
-                values = variantValues,
-                defaultValue = "default_version",
-            )
-            switchPreference(
-                prefKey = PreferKey.autoCheckUpdate,
-                title = titleAutoCheckUpdate,
                 defaultValue = true,
             )
             preference(

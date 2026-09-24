@@ -331,10 +331,6 @@
     <string name="clear_webview_data_summary">Clear all data in WebView</string>
     <string name="shrink_database">Shrink database</string>
     <string name="shrink_database_summary">Reduce the size of the database file</string>
-    <string name="auto_check_update">Auto check for updates</string>
-    <string name="check_update">Check for Updates</string>
-    <string name="update_to_variant_title">Check update for variant versions</string>
-    <string name="update_to_variant_summary">Check for other signature versions when updating</string>
     <string name="pref_cronet_summary">use Cronet access network</string>
     <string name="server_config">Server Configuration</string>
     <string name="create">Create</string>
@@ -938,7 +934,6 @@
     <string name="deep_link_type_not_supported">This legado:// import type is not supported yet: %1$s</string>
     <string name="rule_sub_load_failed">Failed to load data in the rule subscription screen\n%1$s</string>
     <string name="input_valid_url">Enter a valid URL</string>
-    <string name="check_update_failed">Failed to check for updates\n%1$s</string>
     <string name="desktop_install_mode_not_portable">[legado-desktop] install mode = %1$s (portable.root not set, falls back to portable.txt marker/system data directory)</string>
     <string name="image_decode_failed_bytes">image.decode: failed to decode image bytes (%1$s bytes)</string>
     <string name="image_encode_unsupported_format">image.encode: unsupported format %1$s, only png/jpg/webp</string>
@@ -1323,18 +1318,6 @@
         <item>explore</item>
         <item>my</item>
     </string-array>
-    <string-array name="default_app_variant">
-        <item>Current</item>
-        <item>Official</item>
-        <item>Beta</item>
-        <item>Coexist</item>
-    </string-array>
-    <string-array name="default_app_variant_value">
-        <item>default_version</item>
-        <item>official_version</item>
-        <item>beta_release_version</item>
-        <item>beta_releaseA_version</item>
-    </string-array>
     <string-array name="screen_direction_title">
         <item>Follow system</item>
         <item>Portrait</item>
@@ -1497,11 +1480,9 @@
     <string name="screen_portrait">Portrait</string>
     <string name="screen_unspecified">Follow system</string>
     <string name="can_not_open">Open failed</string>
-    <string name="is_latest_version">Already latest version</string>
     <string name="img_cover">Cover</string>
     <string name="book">Book</string>
     <string name="welcome">Welcome page</string>
-    <string name="download_start">Download start</string>
     <string name="import_select_book">Import selected book(s)</string>
     <string name="start_read">Start reading</string>
     <string name="content">Content</string>

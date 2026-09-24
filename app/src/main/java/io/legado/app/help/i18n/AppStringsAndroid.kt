@@ -87,9 +87,9 @@ private val warmKeys = listOf(
     "action_download", "read_aloud", "web_service", "cannot_empty",
     // ---- 快捷方式 ----
     "bookshelf", "last_read",
-    // ---- 启动协议 / 更新 / 退出 ----
+    // ---- 启动协议 / 退出 ----
     "privacy_policy", "agree", "refuse", "double_click_exit",
-    "is_latest_version", "check_update", "restore", "webdav_after_local_restore_confirm",
+    "restore", "webdav_after_local_restore_confirm",
     // ---- 核心权限提示与通用对话框 ----
     "notification_permission_rationale", "ignore_battery_permission_rationale",
     "dialog_title", "dialog_setting", "dialog_cancel", "cancel", "ok",

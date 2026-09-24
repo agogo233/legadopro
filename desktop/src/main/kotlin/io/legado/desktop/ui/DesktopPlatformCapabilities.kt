@@ -295,8 +295,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         if (!clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) return null
         clipboard.getData(DataFlavor.stringFlavor) as? String
     }.getOrNull()
-        }
-    }
 
     // 按 bookUrl 查 DB 解析 BookRef, 供 deep link / 文件关联的路由导航
     override suspend fun resolveBookRef(bookUrl: String): BookRef? =
@@ -350,9 +348,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     }
 
     // ===== 关于页 =====
-    // 检查更新四端统一走 shared: AboutRoute → AboutScreenModel.checkUpdate →
-    // AppUpdateManager (环境由 registerDesktopAppUpdate 注册, 见 DesktopAppUpdate.kt),
-    // 无平台分支
 
     // 崩溃日志: 与 app 端同走 shared OverlayContentHost 的 "crash_logs" key
     // (数据源 = DesktopPlatformServices.crashLogs, 写入方见 DesktopCrashHandler)

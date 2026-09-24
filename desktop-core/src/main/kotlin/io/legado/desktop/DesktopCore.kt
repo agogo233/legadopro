@@ -65,7 +65,6 @@ import io.legado.desktop.help.config.registerDesktopPasswordProvider
 import io.legado.desktop.help.initDesktopDefaultData
 import io.legado.desktop.help.log.registerDesktopAppLogHost
 import io.legado.desktop.help.registerDesktopAndroidId
-import io.legado.desktop.help.registerDesktopAppUpdate
 import io.legado.desktop.help.registerDesktopFileCacheProvider
 import io.legado.desktop.help.registerDesktopRegexErrorHandler
 import io.legado.desktop.help.source.DesktopSourceHelpAccessor
@@ -242,9 +241,6 @@ object DesktopCore {
     fun registerRestProviders() {
         // 以下分段 timed 打点 (2026-09 启动归因): 阶段1 总耗时实测 277~299ms, 但不清楚钱具体
         // 在哪一步 (Room 开库/加载 sqliteJni? OkHttp+TLS? JS 引擎?), 不拆就没法判断该拿哪段开刀。
-        // 注册桌面端更新能力 (AppUpdateEnvironment, 薄壳转发 shared AppUpdateManager):
-        // 依赖 PreferenceProviders (上方 registerDesktopConfig) + DesktopAppInfo, 无其他依赖
-        registerDesktopAppUpdate()
         // 注册桌面端 AppFilesDir (~/.legado/files), 供 BackupShared/RestoreShared 用
         registerDesktopAppFilesDir()
         // HTTP 层 (OkHttp + CookieJarBridge, 独立): 提前到阶段1, 与 JS 引擎同批就绪,
@@ -334,7 +330,7 @@ object DesktopCore {
             // 未注册时 CacheManager 文件层抛 IllegalStateException (不再静默 no-op),
             // 且须在 JS 引擎之前注册, 否则首次 JS 文件缓存调用即崩
             registerDesktopFileCacheProvider()
-            // 0.5 文件下载器 (shared Download 编排: 更新弹窗"下载"等入口; 此前从未注册,
+            // 0.5 文件下载器 (shared Download 编排; 此前从未注册,
             // FileDownloaders.get() 抛 IllegalStateException 且在协程内被吞, 表现为点了下载无反应)
             registerDesktopFileDownloader()
             // 1. 备份相关 (依赖 PreferenceProviders, 已同步注册)

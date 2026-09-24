@@ -53,7 +53,6 @@ fun rememberString(key: String, vararg formatArgs: Any): String {
  * ### StringArray key (string-array)
  * - `language` / `language_value`                语言选项 (OtherConfigScreen)
  * - `default_home_page` / `default_home_page_value`  默认主页 (OtherConfigScreen)
- * - `default_app_variant` / `default_app_variant_value`  默认变体 (OtherConfigScreen)
  * - `screen_direction_title` / `screen_direction_value`  屏幕方向 (MoreConfigScreen)
  * - `screen_time_out` / `screen_time_out_value`          屏幕超时 (MoreConfigScreen)
  * - `double_page_title` / `double_page_value`            双页模式 (MoreConfigScreen)

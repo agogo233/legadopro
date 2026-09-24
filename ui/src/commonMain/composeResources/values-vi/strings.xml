@@ -120,7 +120,6 @@
     <string name="add_book_source">Thêm nguồn sách</string>
     <string name="copy_source">Sao chép nguồn</string>
     <string name="paste_source">Dán nguồn</string>
-    <string name="check_update">Kiểm tra cập nhật</string>
     <string name="share">Chia sẻ</string>
     <string name="flow_sys">Theo hệ thống</string>
     <string name="add">Thêm</string>
@@ -145,7 +144,6 @@
     <string name="dark_theme">Chế độ tối</string>
     <string name="welcome">Trang chào mừng</string>
     <string name="download_count">Đã tải %1$d/%2$d</string>
-    <string name="download_start">Bắt đầu tải</string>
     <string name="import_select_book">Nhập sách đã chọn</string>
     <string name="threads_num_title">Số luồng đồng thời</string>
     <string name="change_icon">Thay đổi biểu tượng</string>
@@ -767,8 +765,6 @@
     <string name="start_from">Bắt đầu từ</string>
     <string name="daily_chapters">Chương hàng ngày</string>
     <string name="start_chapter">Chương bắt đầu</string>
-    <string name="update_to_variant_title">Kiểm tra cập nhật tìm phiên bản</string>
-    <string name="update_to_variant_summary">Kiểm tra cập nhật khi tìm các phiên bản có chữ ký khác</string>
     <string name="default_version">Hiện tại</string>
     <string name="official_version">Phiên bản chính thức</string>
     <string name="beta_release_version">Phiên bản beta</string>

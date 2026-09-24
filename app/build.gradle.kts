@@ -64,7 +64,7 @@ val name = "legado"
 val version = providers.gradleProperty("appVersion").orNull ?: "3.${releaseTime()}"
 
 // 共存构建 (CI 传 -PcoexistBuild=true): 包名后缀与 APK 文件名后缀同源,
-// 与原包名版本可同时安装, 且 releaseA 字样是应用内更新识别渠道变体的依据 (AppReleaseInfo)
+// 与原包名版本可同时安装
 val coexistBuild = providers.gradleProperty("coexistBuild").orNull == "true"
 
 // -Parm64Only=true: 只出 arm64-v8a 单 ABI 包 (CI 用); 不带参数保持 arm64-v8a + armeabi-v7a

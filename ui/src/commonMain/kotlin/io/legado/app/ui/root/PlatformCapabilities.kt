@@ -212,7 +212,6 @@ interface PlatformCapabilities {
 
     // 关于页平台能力 (各端按需 override, 未实现端统一给出明确提示)
     // 对照原版 archive 分支 AboutFragment.onPreferenceTreeClick 各分支
-    // ("检查更新" 不在此列: 四端已统一走 shared AppUpdateManager, 无平台分支)
 
     /** 显示崩溃日志 (对照 onShowCrashLogs / showDialogFragment<CrashLogsDialog>) */
     fun showCrashLogs() = unsupported("查看崩溃日志")

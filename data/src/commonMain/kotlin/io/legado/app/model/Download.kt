@@ -12,7 +12,7 @@ import io.legado.app.help.service.ServiceLaunchers
  *   (见 `shared/src/androidMain/.../ServiceLauncher.android.kt`)
  * - 桌面端 [ServiceLaunchers] actual 实现用 [io.legado.app.help.file.FileDownloader] 写文件
  *
- * app 端原 Download object 已删除, 2 个调用点 (WebViewUtil / UpdateDialog) 改为
+ * app 端原 Download object 已删除, 调用点 (WebViewUtil) 改为
  * 调用 `Download.start(url, fileName)` (去掉 context 参数), 由 commonMain 本 object 提供。
  */
 object Download {

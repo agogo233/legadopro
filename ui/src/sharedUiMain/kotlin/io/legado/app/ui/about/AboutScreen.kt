@@ -6,7 +6,6 @@ import io.legado.app.ui.compose.preference.PreferenceScreen
 import io.legado.app.ui.compose.preference.preference
 import io.legado.app.ui.compose.preference.preferenceCategory
 import legado.ui.generated.resources.Res
-import legado.ui.generated.resources.check_update
 import legado.ui.generated.resources.contributors
 import legado.ui.generated.resources.contributors_summary
 import legado.ui.generated.resources.crash_log
@@ -47,7 +46,6 @@ fun AboutScreen(
     val summaryContributors = stringResource(Res.string.contributors_summary)
     val titleTelegram = stringResource(Res.string.join_telegram_group)
     val titleUpdateLog = stringResource(Res.string.update_log)
-    val titleCheckUpdate = stringResource(Res.string.check_update)
     val titleOther = stringResource(Res.string.other)
     val titleCrashLog = stringResource(Res.string.crash_log)
     val titleSaveLog = stringResource(Res.string.save_log)
@@ -71,13 +69,6 @@ fun AboutScreen(
             title = titleUpdateLog,
             summary = state.updateLogSummary,
         )
-        if (state.showCheckUpdate) {
-            preference(
-                title = titleCheckUpdate,
-                enabled = !state.checkingUpdate,
-                onClick = { actions.onCheckUpdate() },
-            )
-        }
 
         preferenceCategory(titleOther)
         preference(

@@ -51,7 +51,6 @@ import io.legado.app.model.AudioPlayShared
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.about.CrashLogItem
 import io.legado.app.ui.about.CrashLogsDialog
-import io.legado.app.ui.about.UpdateDialogOverlayContent
 import io.legado.app.ui.association.DeepLinkImportType
 import io.legado.app.ui.association.OpenUrlConfirmOverlayContent
 import io.legado.app.ui.book.changecover.ChangeCoverDialog
@@ -779,9 +778,6 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         // 校验设置 (对照 app 端 CheckSourceConfig Fragment)
         "check_source_config" -> CheckSourceConfigOverlayDialogContent(overlay, navigator)
 
-        // 更新弹窗 (对照原版 UpdateDialog; payload=IntentData key 携带 UpdateCheckInfo)
-        "updateDialog" -> UpdateDialogOverlayContent(overlay, navigator)
-
         // 跳转确认 (对照 app 端 OpenUrlConfirmDialog; payload=IntentData key 携带 OpenUrlConfirmPayload)
         "openUrlConfirm" -> OpenUrlConfirmOverlayContent(overlay, navigator)
 
@@ -831,7 +827,7 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         "sourceFilterRuleExport" ->
             RuleExportDialogContent(overlay, navigator, "exportSourceFilterRule.json")
 
-        // 导出分发 (上传 URL / 保存到文件, 对照 app 端 HandleFileContract.EXPORT) + 导出成功
+        // 导出分发 (保存到文件, 对照 app 端 HandleFileContract.EXPORT) + 导出成功
         "exportDispatch" -> ExportDispatchDialogContent(overlay, navigator)
         "exportSuccess" -> ExportSuccessDialogContent(overlay, navigator)
 

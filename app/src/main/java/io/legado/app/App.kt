@@ -71,7 +71,6 @@ import io.legado.app.help.tts.registerAndroidSystemTtsEngine
 import io.legado.app.help.ui.registerAndroidOpenUrlProvider
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.ui.registerAndroidUserAgentProvider
-import io.legado.app.help.update.registerAndroidAppUpdate
 import io.legado.app.model.BookCoverShared
 import io.legado.app.model.CacheBook
 import io.legado.app.model.fileBook.registerAndroidFileBookProviders
@@ -177,9 +176,6 @@ class App : Application() {
         // 供 shared jvmAndAndroidMain 的 RegexReplacerImpl 在替换超时分支调用;
         // 须在 registerAndroidWebBookProviders 之前 (任何 RegexReplacers.get().replace 之前)
         registerAndroidRegexErrorHandler()
-        // 注册 AppUpdateEnvironment (平台/版本号/渠道/ABI), 供 shared AppUpdateManager 检查更新;
-        // 关于页入口以 AppUpdateManager.isAvailable() 为 gate, 不注册就不显示"检查更新"
-        registerAndroidAppUpdate()
         // 注册 CronetProvider (桥接 app 端 Cronet object 与 AppConfig.isCronet);
         // 须在 registerAndroidWebBookProviders 之前 (OkHttpClientProviders 注册后,
         // shared okHttpClient 首次 lazy 初始化会读 CronetProviders.get())

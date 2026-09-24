@@ -16,7 +16,6 @@ import androidx.compose.ui.Modifier
 import io.legado.app.help.FileUtilsCommon
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.toast.Toasters
-import io.legado.app.help.update.AppUpdateManager
 import io.legado.app.ui.about.AboutHeaderCard
 import io.legado.app.ui.about.AboutScreen
 import io.legado.app.ui.about.AboutScreenModel
@@ -31,7 +30,6 @@ import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.widget.dialog.MdDocDialog
-import io.legado.app.ui.widget.dialog.WaitDialog
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,12 +37,10 @@ import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.about
 import legado.ui.generated.resources.app_share_description
-import legado.ui.generated.resources.check_update
 import legado.ui.generated.resources.contributors_url
 import legado.ui.generated.resources.donate_qrcode
 import legado.ui.generated.resources.donate_thanks
 import legado.ui.generated.resources.ic_share
-import legado.ui.generated.resources.is_latest_version
 import legado.ui.generated.resources.share
 import legado.ui.generated.resources.telegram_group_url
 import legado.ui.generated.resources.version
@@ -55,9 +51,8 @@ import org.jetbrains.compose.resources.stringResource
  * 关于页 shared 路由入口 (四端唯一实现; app 端原 AboutActivity/AboutFragment 已删)。
  * 通过 [ScreenModelStore] 复用 [AboutScreenModel], 渲染 [AboutScreen]。
  *
- * 检查更新与内置文档 (许可证/免责声明/隐私政策) 四端同一条链, 无平台分支:
- * 前者 [AboutScreenModel.checkUpdate] → AppUpdateManager, 后者 [MdDocDialog] 读
- * composeResources。真正平台专属的只剩崩溃日志/保存日志/堆转储, 经
+ * 内置文档 (许可证/免责声明/隐私政策) 四端同一条链, 无平台分支:
+ * 经 [MdDocDialog] 读 composeResources。真正平台专属的只剩崩溃日志/保存日志/堆转储, 经
  * [PlatformCapabilityProviders] 委托各端实现。
  *
  * 页面外壳对照原版 activity_about.xml 自上而下: TitleBar (menu_share_it → 分享按钮)
@@ -83,10 +78,6 @@ fun AboutRoute(
     val strAbout = stringResource(Res.string.about)
     val strShare = stringResource(Res.string.share)
     val strAppShareDescription = stringResource(Res.string.app_share_description)
-    // 对照原版 AppUpdate.check 的两条 toast: R.string.is_latest_version 与
-    // getString(R.string.check_update) + 换行 + 异常信息
-    val strLatestVersion = stringResource(Res.string.is_latest_version)
-    val strCheckFailed = stringResource(Res.string.check_update)
     val strDonateThanks = stringResource(Res.string.donate_thanks)
     val strDonateQr = stringResource(Res.string.donate_qrcode)
     LaunchedEffect(Unit) {
@@ -96,9 +87,6 @@ fun AboutRoute(
                 updateLogSummary = if (versionName.isEmpty()) "" else "$strVersion $versionName",
                 contributorsUrl = strContributorsUrl,
                 telegramGroupUrl = strTelegramGroupUrl,
-                // 入口 gate: 已注册 AppUpdateEnvironment 的端才显示 (当前 Android + desktop;
-                // iOS/鸿蒙未注册, 与原版一致 —— 原版也只有 Android 有这个入口)
-                showCheckUpdate = AppUpdateManager.isAvailable(),
             )
         )
     }
@@ -115,12 +103,6 @@ fun AboutRoute(
         // 分享关于页: 内容与 app 端 share(app_share_description, app_name) 一致 (subject 由平台 share 自行处理)
         override fun onShare() {
             PlatformServiceProviders.get().sharing.shareText(strAppShareDescription)
-        }
-
-        // 检查更新: 四端同一条 shared 链路 (AppUpdateManager 检测 → updateDialog Overlay),
-        // 进行中置灰入口 (代替原版 AppUpdate.check 的 WaitDialog)
-        override fun onCheckUpdate() {
-            scope.launch { screenModel.checkUpdate(strLatestVersion, strCheckFailed) }
         }
 
         // 显示崩溃日志: 委托平台能力 (app: CrashLogsDialog Fragment; desktop: 共享 CrashLogsDialog)
@@ -177,11 +159,6 @@ fun AboutRoute(
         AboutHeaderCard(onHeaderClick = screenModel::onHeaderClick)
         AboutScreen(state = state, actions = actions)
     }
-
-    // 检查更新等待框 (对照原版 AppUpdate.check 的 WaitDialog.from(activity).show() +
-    // onFinally dismissSafe): 转圈期间不响应返回键与点击外部, 检测协程跑完自行消失
-    // (原版 WaitDialog 只在设了 onCancelListener 的场景才可取消, 检查更新没设)
-    WaitDialog(visible = state.checkingUpdate, onDismissRequest = {})
 
     // 隐私政策/许可证/免责声明 (对照原版 AboutFragment.showMdFile: 读内置 md 后弹 MD 对话框)
     mdDoc?.let { (title, path) ->

@@ -66,8 +66,8 @@ fun WaitDialogContent(
  * - `dismissOnClickOutside = false` 对齐原版 `setCanceledOnTouchOutside(false)`
  * - `dismissOnBackPress = true` 对齐原版默认返回键关闭
  *
- * 四端共用 (原 app 端命令式 WaitDialog 类 + dialogMap 单例已删: 它唯一的调用方
- * AppUpdate.check 已下沉 shared, 等待态由调用方自己的 state 驱动本函数)。
+ * 四端共用 (原 app 端命令式 WaitDialog 类 + dialogMap 单例已删),
+ * 等待态由调用方自己的 state 驱动本函数。
  *
  * @param visible 是否显示
  * @param message 提示文案 (默认取 i18n key "loading")
