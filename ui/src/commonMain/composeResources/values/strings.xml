@@ -135,7 +135,6 @@
     <string name="default_font">Default font</string>
     <string name="other_folder">Other folder</string>
     <string name="system_typeface">System typeface</string>
-    <string name="font_scan_empty">No font files found. Use "Other folder" to pick a font directory.</string>
     <string name="bookshelf">Bookshelf</string>
     <string name="bookshelf_empty">The bookshelf is still empty. Search for books or add them from discovery!</string>
     <string name="book_local">Import books</string>
