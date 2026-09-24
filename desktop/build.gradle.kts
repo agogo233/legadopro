@@ -178,7 +178,7 @@ val mediaRuntimeOnly = configurations.create("mediaRuntimeOnly")
 
 dependencies {
     // 引入 shared 模块 jvm target (传递 commonMain + jvmMain 全部 API)
-    implementation(project(":shared"))
+    implementation(project(":ui"))
     // 无 UI 核心 (从本模块机械抽取, 见 desktop-core/build.gradle.kts 头注释):
     // Main.kt 的阶段1/阶段3 provider 注册核心子集与运行时环境初始化改调 DesktopCore
     implementation(project(":desktop-core"))
@@ -619,8 +619,11 @@ val mergeDependencyProguardRules = tasks.register("mergeDependencyProguardRules"
     group = "compose desktop distribution"
     description =
         "提取依赖 jar 自带 consumer 规则与 META-INF/services 实现类, 合成 ProGuard 规则文件"
-    // 只捕获 Provider<FileCollection>: Configuration 本身不得被任务动作引用 (配置缓存约束)
-    val runtimeClasspathFiles = configurations.named("runtimeClasspath").map { it.files }
+    // 只捕获 Provider<FileCollection>: Configuration 本身不得被任务动作引用 (配置缓存约束)。
+    // 取 artifactView 的 FileCollection 而非 Configuration.files: 后者是裸 Set<File>, 丢掉
+    // 产出任务依赖, Gradle 9.6 判为隐式依赖并直接失败 (本任务在 release 链上, 便携 zip 必踩)。
+    val runtimeClasspathFiles = configurations.named("runtimeClasspath")
+        .map { it.incoming.artifactView { }.files }
     val rulesOutFile = dependencyConsumerRulesFile.get().asFile
     inputs.files(runtimeClasspathFiles)
     outputs.file(rulesOutFile)

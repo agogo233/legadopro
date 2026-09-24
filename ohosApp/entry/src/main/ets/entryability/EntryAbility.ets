@@ -18,7 +18,7 @@ import { initTtsBridge, handleTtsCommand } from '../bridge/TtsBridgeHandler';
 import { handleCryptoRequest } from '../bridge/CryptoBridgeHandler';
 import { handleHttpRequest } from '../bridge/HttpBridgeHandler';
 import { initFilePickerBridge, handleFilePickerRequest } from '../bridge/FilePickerBridgeHandler';
-import { handlePasteboardRequest } from '../bridge/PasteboardBridgeHandler';
+import { initPasteboardBridge, handlePasteboardRequest } from '../bridge/PasteboardBridgeHandler';
 import { handleNetworkRequest } from '../bridge/NetworkBridgeHandler';
 import { handleTextCodecRequest } from '../bridge/TextCodecBridgeHandler';
 // 后台 WebView 桥接处理器 (隐藏 Web 组件 + runJavaScript 取源码, 书源 webView 规则)
@@ -255,6 +255,7 @@ export default class EntryAbility extends UIAbility {
     // 读写纯文本, 完成后调 legado.pasteboardCallback(requestId, resultJson) 回送结果
     // 唤醒 KMP 侧 CompletableDeferred。未注册时 KMP 侧降级 println / 返回 null。
     registerSafely((): void => {
+      initPasteboardBridge(this.context);
       legado.registerPasteboardCallback((json: string): void => {
         handlePasteboardRequest(json, (requestId: number, resultJson: string): void => {
           legado.pasteboardCallback(requestId, resultJson);
@@ -404,8 +405,8 @@ export default class EntryAbility extends UIAbility {
     }, '[Legado] share tsfn callback registered via napi', '[Legado] registerShareCallback failed: ');
 
     // Keyboard tsfn 回调注册 (KMP → ArkTS 跨线程 dispatch, 软键盘显隐/避让, 同 Window 模式 fire-and-forget)
-    // KMP OhosPlatformServices.keyboard.hideSoftInput/showSoftInput/setSoftInputPolicy
-    // → OhosNativeBridge.hideSoftInput/showSoftInput/setKeyboardAvoidMode 经 tsfn dispatch 到此回调,
+    // KMP OhosPlatformServices.keyboard.hideSoftInput/setSoftInputPolicy
+    // → OhosNativeBridge.hideSoftInput/setKeyboardAvoidMode 经 tsfn dispatch 到此回调,
     // ArkTS 侧 KeyboardBridgeHandler 调 @ohos.inputMethod / UIContext。
     // 未注册时 KMP 侧降级 println。
     registerSafely((): void => {
