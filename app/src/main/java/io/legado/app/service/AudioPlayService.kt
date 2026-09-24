@@ -69,8 +69,9 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
         var isRun = false
             private set
 
-        /** 运行中的实例 (onCreate 置, onDestroy 清)。 */
+        /** 运行中的实例 (onCreate 主线程置, onSessionEnd 可能后台线程清)。 */
         @JvmStatic
+        @Volatile
         private var instance: AudioPlayService? = null
 
         /** 是否暂停 ([MediaButtonReceiver] 据此决定播放/暂停切换)。 */
