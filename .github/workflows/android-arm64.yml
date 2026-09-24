@@ -82,6 +82,21 @@ jobs:
           # appBenchmarkRelease 注册 copy 任务, 宽 find 会把它们扫进来导致下方 count 误判
           find app/build/outputs/renamed-apks/appRelease -name "*.apk" -exec mv {} apk/ \;
 
+      - name: Dump generated compose resources (diagnostic)
+        # 诊断用: 打印 compose 资源生成产物与新文案落点, 编译失败时也执行,
+        # 用于核对 Res 字符串属性是否真正生成 (不参与构建判定, 恒 exit 0)
+        if: always()
+        run: |
+          echo "=== files under resourceGenerator ==="
+          find ui/build -path "*resourceGenerator*" -type f 2>/dev/null | sed 's|^|GEN |' | head -60
+          echo "=== ui/build files containing font_scan_empty ==="
+          grep -rlI "font_scan_empty" ui/build 2>/dev/null | sed 's|^|HIT |' | head -20
+          echo "=== ui/build files containing other_folder ==="
+          grep -rlI "other_folder" ui/build 2>/dev/null | sed 's|^|REF |' | head -5
+          echo "=== source xml occurrences ==="
+          grep -rn "font_scan_empty" ui/src/commonMain/composeResources/ 2>/dev/null | sed 's|^|SRC |'
+          true
+
       - name: Verify single arm64 APK
         # 恰好 1 个产物: arm64Only 未生效会出 3 个 (arm64 + armv7 + universal), 当场拦住
         run: |
