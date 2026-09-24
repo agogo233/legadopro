@@ -124,7 +124,10 @@ val options by lazy {
     dnsSvcb.put("enable_insecure", true)
     dnsSvcb.put("use_alpn", true)
     options.put("UseDnsHttpsSvcb", dnsSvcb)
-    options.put("AsyncDNS", JSONObject("{'enable':true}"))
+    //编程式构造, 不依赖 org.json 对单引号字符串的宽松解析 (非标准 JSON)
+    val asyncDns = JSONObject()
+    asyncDns.put("enable", true)
+    options.put("AsyncDNS", asyncDns)
     options.toString()
 }
 
