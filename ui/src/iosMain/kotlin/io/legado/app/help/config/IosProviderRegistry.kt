@@ -25,12 +25,7 @@ import io.legado.app.help.http.registerNativeHttpProvider
 import io.legado.app.help.http.registerSharedCookieJarBridge
 import io.legado.app.help.media.registerIosMediaNotificationController
 import io.legado.app.help.notification.registerIosNotificationProgress
-<<<<<<< HEAD
-import io.legado.app.help.registerNativeDefaultDataResourceProvider
-=======
 import io.legado.app.help.registerComposeDefaultDataResourceProvider
-import io.legado.app.help.registerNativeDirectLinkUploadProviders
->>>>>>> upstream/master
 import io.legado.app.help.registerNativeExploreKindsCacheProvider
 import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider

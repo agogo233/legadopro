@@ -175,18 +175,7 @@ fun registerOhosProviders() {
     // 2.3.1 阅读配置 provider (readConfig.json / shareReadConfig.json, 供 BackupShared 备份/恢复)
     ReadBookConfigProviders.register(ReadBookConfigShared(PreferenceProviders.get()))
 
-<<<<<<< HEAD
-    // 2.4 默认数据 provider (composeResources files/defaultData, 供 DefaultDataShared 装载默认规则)
-    // 注: native 实现依赖 composeResources, 随 :ui 的 NativeDefaultDataResourceProvider.native.kt
-    // 下沉, 由 :ui 侧在 registerOhosProviders() 之前注册 (见 ui MainOhos.kt)。
-=======
-    // 2.4 默认数据 provider 由 :ui 侧在 registerOhosProviders() 之前注册
-    // (见 ui MainOhos.kt; core 序列里的 directLinkUpload 依赖它已就绪)
-    // 2.4.5 直链上传配置 provider (Store 落 {filesDir}/directLinkUploadRule.json + Defaults 读默认数据,
-    // 须在 AppFilesDirs + DefaultDataResourceProvider 之后; 供备份/恢复与直链上传配置用)
-    registerNativeDirectLinkUploadProviders()
-
->>>>>>> upstream/master
+    // 2.4 默认数据 provider 由 :ui 侧在 registerOhosProviders() 之前注册 (见 ui MainOhos.kt)
     // 2.5 HTTP provider (napi 桥接 @ohos.net.http, 注册到 OkHttpClientProviders + OkHttpProxyClientProviders)
     // 必须在数据库/书籍缓存之前: BookImageStorage/FileDownloader 取 OkHttpClient,
     // AnalyzeUrlCore 取 OkHttpProxyClient; 未注册时这些调用抛 IllegalStateException

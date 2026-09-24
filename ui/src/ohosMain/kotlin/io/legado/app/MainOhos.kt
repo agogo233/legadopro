@@ -65,14 +65,8 @@ fun MainArkUIViewController(env: napi_env): napi_value {
 @Composable
 fun MainOhos() {
     // provider 注册 (首次组合时执行一次, 幂等)
-<<<<<<< HEAD
-    // 注: AppString / 默认数据 provider 的 native 实现依赖 composeResources (legado.ui.generated
-    // .resources.Res), 随 :ui 下沉, 须在 registerOhosProviders() 之前注册。
-=======
     // 注: AppString / 默认数据 provider 的实现在 :ui commonMain (经 composeResources
-    // 生成的 Res 取数), 须在 registerOhosProviders() 之前注册 (core 序列里的
-    // directLinkUpload 依赖 DefaultDataResourceProvider)。
->>>>>>> upstream/master
+    // 生成的 Res 取数), 须在 registerOhosProviders() 之前注册。
     remember {
         registerComposeSyncStringProvider()
         registerNativeAppStringProvider()
