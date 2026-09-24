@@ -10,6 +10,7 @@ import io.legado.app.help.book.AndroidContentProcessorDeps.toastOnUi
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.runBlocking
 import java.lang.ref.WeakReference
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * ContentProcessor 安卓端入口 (WeakReference 缓存层)。
@@ -72,21 +73,26 @@ class ContentProcessor private constructor(
     )
 
     companion object {
-        private val processors = hashMapOf<String, WeakReference<ContentProcessor>>()
+        private val processors = ConcurrentHashMap<String, WeakReference<ContentProcessor>>()
 
         fun get(book: Book) = get(book.name, book.origin)
 
         fun get(bookName: String, bookOrigin: String): ContentProcessor {
-            val processorWr = processors[bookName + bookOrigin]
-            var processor: ContentProcessor? = processorWr?.get()
+            val key = bookName + bookOrigin
+            var processor: ContentProcessor? = processors[key]?.get()
             if (processor == null) {
+                // 弱引用缓存 miss (首次访问或旧引用被 GC): 构造新实例并覆盖旧 entry。
+                // ConcurrentHashMap.put 原子, 与 upReplaceRules 的弱一致遍历并发安全;
+                // 两线程同时 miss 各构造一个, 后写覆盖先写 (last-writer-wins, 与单线程语义一致)。
                 processor = ContentProcessor(bookName, bookOrigin)
-                processors[bookName + bookOrigin] = WeakReference(processor)
+                processors[key] = WeakReference(processor)
             }
             return processor
         }
 
         fun upReplaceRules() {
+            // ConcurrentHashMap.forEach 弱一致遍历, 不抛 ConcurrentModificationException,
+            // 与 get() 并发写入安全。
             processors.forEach {
                 it.value.get()?.upReplaceRules()
             }
