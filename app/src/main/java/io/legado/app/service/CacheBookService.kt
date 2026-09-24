@@ -177,7 +177,9 @@ class CacheBookService : BaseService() {
     private fun removeDownload(bookUrl: String?) {
         CacheBook.cacheBookMap[bookUrl]?.stop()
         postEvent(EventBus.UP_DOWNLOAD, "")
-        if (downloadJob == null && CacheBook.isRun) {
+        // download() 内部 cancel 旧 job 再起新 job; startProcessJob 是 join 全局单例循环,
+        // 重复调用不会中断下载本身, 直接重启调度 (原 downloadJob==null 检查存在 TOCTOU 竞态)。
+        if (CacheBook.isRun) {
             download()
             return
         }
