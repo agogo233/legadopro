@@ -25,7 +25,20 @@ class InputStreamDataSource(private val supplier: () -> InputStream) : BaseDataS
         this.dataSpec = dataSpec
         transferInitializing(dataSpec)
 
-        inputStream.skip(dataSpec.position)
+        // skip 可能少跳 (契约保证), 循环补齐; skip 返回 0 时退化逐字节 read,
+        // 请求越界才 EOF. 当前调用链 position 恒为 0 (此循环空转), 属防御性实现.
+        var remaining = dataSpec.position
+        while (remaining > 0) {
+            val skipped = inputStream.skip(remaining)
+            when {
+                skipped < 0 -> throw EOFException("skip past end of stream")
+                skipped == 0L -> {
+                    if (inputStream.read() == -1) throw EOFException("skip past end of stream")
+                    remaining--
+                }
+                else -> remaining -= skipped
+            }
+        }
 
         bytesRemaining = dataSpec.length
 

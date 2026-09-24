@@ -89,45 +89,48 @@ object Restore {
         if (!xmlFile.exists()) return null
         val configMap = mutableMapOf<String, Any?>()
         kotlin.runCatching {
-            val factory = XmlPullParserFactory.newInstance()
-            val parser = factory.newPullParser()
-            parser.setInput(xmlFile.inputStream(), "UTF-8")
-            var eventType = parser.eventType
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-                if (eventType == XmlPullParser.START_TAG) {
-                    val tag = parser.name
-                    if (tag != "map" && tag != "xml") {
-                        val name = parser.getAttributeValue(null, "name")
-                        if (name != null) {
-                            when (tag) {
-                                "string" -> configMap[name] = parser.nextText()
-                                "int" -> configMap[name] =
-                                    parser.getAttributeValue(null, "value")?.toInt()
+            // use 包裹: XmlPullParser 不会关闭输入流, 异常/正常路径都保证释放 fd
+            xmlFile.inputStream().use { input ->
+                val factory = XmlPullParserFactory.newInstance()
+                val parser = factory.newPullParser()
+                parser.setInput(input, "UTF-8")
+                var eventType = parser.eventType
+                while (eventType != XmlPullParser.END_DOCUMENT) {
+                    if (eventType == XmlPullParser.START_TAG) {
+                        val tag = parser.name
+                        if (tag != "map" && tag != "xml") {
+                            val name = parser.getAttributeValue(null, "name")
+                            if (name != null) {
+                                when (tag) {
+                                    "string" -> configMap[name] = parser.nextText()
+                                    "int" -> configMap[name] =
+                                        parser.getAttributeValue(null, "value")?.toInt()
 
-                                "boolean" -> configMap[name] =
-                                    parser.getAttributeValue(null, "value")?.toBoolean()
+                                    "boolean" -> configMap[name] =
+                                        parser.getAttributeValue(null, "value")?.toBoolean()
 
-                                "long" -> configMap[name] =
-                                    parser.getAttributeValue(null, "value")?.toLong()
+                                    "long" -> configMap[name] =
+                                        parser.getAttributeValue(null, "value")?.toLong()
 
-                                "float" -> configMap[name] =
-                                    parser.getAttributeValue(null, "value")?.toFloat()
+                                    "float" -> configMap[name] =
+                                        parser.getAttributeValue(null, "value")?.toFloat()
 
-                                "set" -> {
-                                    val set = mutableSetOf<String>()
-                                    val depth = parser.depth
-                                    while (!(parser.next() == XmlPullParser.END_TAG && parser.depth == depth)) {
-                                        if (parser.eventType == XmlPullParser.START_TAG && parser.name == "string") {
-                                            set.add(parser.nextText())
+                                    "set" -> {
+                                        val set = mutableSetOf<String>()
+                                        val depth = parser.depth
+                                        while (!(parser.next() == XmlPullParser.END_TAG && parser.depth == depth)) {
+                                            if (parser.eventType == XmlPullParser.START_TAG && parser.name == "string") {
+                                                set.add(parser.nextText())
+                                            }
                                         }
+                                        configMap[name] = set
                                     }
-                                    configMap[name] = set
                                 }
                             }
                         }
                     }
+                    eventType = parser.next()
                 }
-                eventType = parser.next()
             }
         }.onFailure {
             it.printOnDebug()
