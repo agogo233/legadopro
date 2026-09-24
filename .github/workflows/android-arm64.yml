@@ -87,12 +87,15 @@ jobs:
         # 用于核对 Res 字符串属性是否真正生成 (不参与构建判定, 恒 exit 0)
         if: always()
         run: |
-          echo "=== files under resourceGenerator ==="
-          find ui/build -path "*resourceGenerator*" -type f 2>/dev/null | sed 's|^|GEN |' | head -60
-          echo "=== ui/build files containing font_scan_empty ==="
-          grep -rlI "font_scan_empty" ui/build 2>/dev/null | sed 's|^|HIT |' | head -20
-          echo "=== ui/build files containing other_folder ==="
-          grep -rlI "other_folder" ui/build 2>/dev/null | sed 's|^|REF |' | head -5
+          K=ui/build/generated/compose/resourceGenerator/kotlin
+          echo "=== generated .kt under kotlin/ ==="
+          find $K -name '*.kt' 2>/dev/null | sort | sed 's|^|KT |'
+          echo "=== font_scan_empty context in .kt ==="
+          grep -rn -B2 -A4 "font_scan_empty" $K --include='*.kt' 2>/dev/null | sed 's|^|CH |' | head -40
+          echo "=== Res.kt nested objects ==="
+          find $K -name 'Res.kt' -exec sed -n '1,40p' {} \; 2>/dev/null | sed 's|^|RES |'
+          echo "=== other_folder chunk location (control) ==="
+          grep -rln "other_folder" $K --include='*.kt' 2>/dev/null | sed 's|^|CTRL |'
           echo "=== source xml occurrences ==="
           grep -rn "font_scan_empty" ui/src/commonMain/composeResources/ 2>/dev/null | sed 's|^|SRC |'
           true
