@@ -250,6 +250,8 @@ class ChangeBookSourceViewModelShared(
             searchCallback = null
         }
     }.map {
+        // distinctBy bookUrl: 多源同后端时会产生相同 bookUrl (含 ,{headers} 后缀),
+        // 不去重会让下游 LazyColumn key 冲突崩溃 (IllegalArgumentException: Key was already used)
         kotlin.runCatching {
             val comparator = if (platform.changeSourceLoadWordCount) {
                 wordCountComparator
@@ -259,7 +261,7 @@ class ChangeBookSourceViewModelShared(
             searchBooks.sortedWith(comparator)
         }.onFailure {
             AppLog.put("换源排序出错\n${it.message}", it)
-        }.getOrDefault(searchBooks)
+        }.getOrDefault(searchBooks).distinctBy { it.bookUrl }
     }.flowOn(IoDispatcher)
 
     /**
@@ -812,15 +814,19 @@ class ChangeBookSourceViewModelShared(
     }
 
     /**
-     * 按 bookUrl 在 searchBooks 中定位条目 (身份语义)。
+     * 按 origin+bookUrl 在 searchBooks 中定位条目 (身份语义)。
      *
      * SearchBook 已改 data class 结构相等, indexOf/remove(obj) 会因 originOrder 等字段被改写
-     * 而匹配不上 (置顶后再置底、刷新回填字数), 故一律走这里显式比 bookUrl。
+     * 而匹配不上 (置顶后再置底、刷新回填字数), 故一律走这里显式比对。
+     * 内部 searchBooks 未去重 (去重在 searchDataFlow 的 map 步骤), 不同 origin 可能持有
+     * 相同 bookUrl, 仅比 bookUrl 会命中错误源的条目。
      */
     private fun indexOfSearchBook(searchBook: SearchBook): Int =
-        searchBooks.indexOfFirst { it.bookUrl == searchBook.bookUrl }
+        searchBooks.indexOfFirst {
+            it.origin == searchBook.origin && it.bookUrl == searchBook.bookUrl
+        }
 
-    /** 按 bookUrl 移除条目, 语义对齐原 `searchBooks.remove(searchBook)` (只移除首个匹配)。 */
+    /** 按 origin+bookUrl 移除条目, 语义对齐原 `searchBooks.remove(searchBook)` (只移除首个匹配)。 */
     private fun removeSearchBook(searchBook: SearchBook) {
         val index = indexOfSearchBook(searchBook)
         if (index >= 0) searchBooks.removeAt(index)

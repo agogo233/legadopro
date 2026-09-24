@@ -36,7 +36,7 @@ data class SearchBook(
     override var tocHtml: String? = null
 
     // 不覆写 equals/hashCode: 只比 bookUrl 会让搜索/换源/发现列表整表判等, 字数与最新章
-    // 回填后发射被吞; 去重/定位处已显式改为按 bookUrl 比较 (注意 time 是构造参数)
+    // 回填后发射被吞; 去重按 bookUrl、定位按 origin+bookUrl 显式比较 (注意 time 是构造参数)
 
     override fun compareTo(other: SearchBook): Int {
         return other.originOrder - this.originOrder

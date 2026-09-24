@@ -757,7 +757,10 @@ fun ChangeSourceScreen(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            items(state.sources, key = { it.bookUrl }) { searchBook ->
+            // key 用 origin|bookUrl: 上游已按 bookUrl 去重, 这里再拼 origin 是防御性兜底,
+            // 避免任何漏网的同 bookUrl 不同源条目触发 LazyColumn 重复 key 崩溃
+            // (分隔符与 SearchScreen 的 "${origin}|${bookUrl}" 保持一致)
+            items(state.sources, key = { "${it.origin}|${it.bookUrl}" }) { searchBook ->
                 // 对照 app 端 Dialog.Content 第 228-242 行 SearchBookItem 完整回调
                 SearchBookItem(
                     book = searchBook,
