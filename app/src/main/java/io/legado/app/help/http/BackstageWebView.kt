@@ -165,11 +165,14 @@ class BackstageWebView(
 
         override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
             super.onPageStarted(view, url, favicon)
-            if (runnable == null) {
-                runnable = EvalJsRunnable(view, url, getJs())
-            }
-            mHandler.removeCallbacks(runnable!!)
-            mHandler.postDelayed(runnable!!, delayTime)
+            // 重定向会再次回调 onPageStarted (最终 URL): 旧 runnable 绑定的是中间 URL,
+            // 若复用会让 buildStrResponse 返回错误的 response.request.url。
+            // 先移除旧 runnable 已排队的回调 (含其 1s 重试), 再按最新 URL 重建,
+            // 与 SnifferWebClient 每次新建 LoadJsRunnable 的行为一致。
+            runnable?.let { mHandler.removeCallbacks(it) }
+            val newRunnable = EvalJsRunnable(view, url, getJs())
+            runnable = newRunnable
+            mHandler.postDelayed(newRunnable, delayTime)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
@@ -194,35 +197,42 @@ class BackstageWebView(
             var retry = 0
             private val mWebView: WeakReference<WebView> = WeakReference(webView)
             override fun run() {
+                // 身份守卫: 重定向后 onPageStarted 已把 outer.runnable 换成新实例,
+                // 旧实例的排队执行 (含 1s 重试) 直接丢弃, 避免旧 URL 的 JS 结果抢跑。
+                if (this !== runnable) return
                 mWebView.get()?.evaluateJavascript(mJavaScript) {
                     handleResult(it)
                 }
             }
 
-            private fun handleResult(result: String) = Coroutine.async {
-                if (result.isNotEmpty() && result != "null") {
-                    val content = EscapeUtils.unescapeJson(result)
-                        .replace(quoteRegex, "")
-                    try {
-                        val response = buildStrResponse(content)
-                        callback?.onResult(response)
-                    } catch (e: Exception) {
-                        callback?.onError(e)
+            private fun handleResult(result: String) {
+                // 在途 evaluateJavascript 回调可能晚于重定向到达: 旧实例直接丢弃
+                if (this !== runnable) return
+                Coroutine.async {
+                    if (result.isNotEmpty() && result != "null") {
+                        val content = EscapeUtils.unescapeJson(result)
+                            .replace(quoteRegex, "")
+                        try {
+                            val response = buildStrResponse(content)
+                            callback?.onResult(response)
+                        } catch (e: Exception) {
+                            callback?.onError(e)
+                        }
+                        mHandler.post {
+                            destroy()
+                        }
+                        return@async
                     }
-                    mHandler.post {
-                        destroy()
+                    if (retry > 30) {
+                        callback?.onError(NoStackTraceException("js执行超时"))
+                        mHandler.post {
+                            destroy()
+                        }
+                        return@async
                     }
-                    return@async
+                    retry++
+                    mHandler.postDelayed(this@EvalJsRunnable, 1000)
                 }
-                if (retry > 30) {
-                    callback?.onError(NoStackTraceException("js执行超时"))
-                    mHandler.post {
-                        destroy()
-                    }
-                    return@async
-                }
-                retry++
-                mHandler.postDelayed(this@EvalJsRunnable, 1000)
             }
 
             private fun buildStrResponse(content: String): StrResponse {
