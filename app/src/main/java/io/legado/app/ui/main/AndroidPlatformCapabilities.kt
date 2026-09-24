@@ -499,7 +499,7 @@ class AndroidPlatformCapabilities(
                     // 不再先转真实路径 —— scoped storage 下 java.io.File 读不到 SAF 授权目录,
                     // 而 RealPathUtil 对 tree URI 恒返回非 null 真实路径, 会遮蔽授权通道使列表恒空
                     val doc = DocumentFile.fromTreeUri(activity, fontPath.toUri())
-                        ?.let(::FileDoc.fromDocumentFile)
+                        ?.let { FileDoc.fromDocumentFile(it) }
                     doc?.list { !it.isDir && it.name.matches(fontRegex) }?.forEach {
                         items.add(FontItem(it.uri.toString(), it.name))
                     }
