@@ -50,13 +50,20 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
 
       - name: Gradle build-cache 共享
-        # 按 (OS, 分支) 共享 build-cache, 减少重复编译 shared 等公共模块
+        # 按 commit 存条目、前缀回退到分支最近条目: 跨 commit 复用热缓存, 同时避免
+        # 单一 (OS, 分支) 条目被多提交长期读写、弱输入声明任务命中陈旧条目
         uses: actions/cache@v5
         with:
           path: ~/.gradle/caches/build-cache-1
-          key: gradle-buildcache-${{ runner.os }}-${{ github.ref_name }}
+          key: gradle-buildcache-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             gradle-buildcache-${{ runner.os }}-
+
+      - name: 清除 :ui 陈旧生成物/增量状态
+        # 缓存回退可能带入上个 commit 的 ui/build (旧 compose 资源生成物 + 旧 Kotlin
+        # 增量编译状态), 导致 :ui:compileAndroidMain 看不见本 run 新生成的 Res 属性。
+        # 仅删生成物与增量状态, 其余中间产物保留。
+        run: rm -rf ui/build/generated/compose ui/build/kotlin
 
       - name: Release Apk Sign
         # 沿用仓库内公开的测试签名密钥 (与 test.yml.bak 同一做法): 密钥提交在仓库里且口令
