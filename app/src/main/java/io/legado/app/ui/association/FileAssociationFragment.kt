@@ -210,10 +210,12 @@ class FileAssociationFragment(private val isShellHost: Boolean = false) : Fragme
                                     doc = treeDoc.createFile(FileUtils.getMimeType(name), name)
                                         ?: throw InvalidBooksDirException("请重新设置书籍保存位置")
                                 }
-                                requireContext().contentResolver.openOutputStream(doc.uri)!!
-                                    .use { oStream ->
-                                        inputStream.copyTo(oStream)
-                                    }
+                                val oStream =
+                                    requireContext().contentResolver.openOutputStream(doc.uri)
+                                        ?: throw InvalidBooksDirException("请重新设置书籍保存位置")
+                                oStream.use {
+                                    inputStream.copyTo(it)
+                                }
                             }
                             viewModel.importBook(doc.uri)
                         }

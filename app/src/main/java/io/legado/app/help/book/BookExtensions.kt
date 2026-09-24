@@ -129,7 +129,8 @@ fun Book.removeLocalUriCache() {
 }
 
 fun Book.sync(oldBook: Book) {
-    val curBook = runBlocking { appDb.bookDao.getBook(oldBook.bookUrl) }!!
+    val curBook = runBlocking { appDb.bookDao.getBook(oldBook.bookUrl) }
+        ?: throw NoStackTraceException("未找到书籍: ${oldBook.bookUrl}")
     durChapterTime = curBook.durChapterTime
     durChapterPos = curBook.durChapterPos
     if (durChapterIndex != curBook.durChapterIndex) {
