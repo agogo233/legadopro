@@ -29,7 +29,7 @@ import io.legado.app.help.http.AndroidCookieStoreProvider.setCookie
  * 通过 [registerAndroidCookieStoreProvider] 在 App.onCreate 中调用一次
  * (紧跟 [CookieJarBridgeHolder.register] 之后)。
  *
- * 模式参考 [io.legado.app.help.DirectLinkUpload] (app 端 object 实现 Provider 后注册)。
+ * 模式参考 [ExploreKindsCacheProvider] (app 端 object 实现 Provider 后注册)。
  */
 object AndroidCookieStoreProvider : CookieStoreProvider {
 

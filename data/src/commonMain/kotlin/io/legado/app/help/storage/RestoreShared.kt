@@ -19,7 +19,6 @@ import io.legado.app.data.entities.Server
 import io.legado.app.data.entities.SourceFilterRule
 import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.data.entities.toBookSource
-import io.legado.app.help.DirectLinkUploadStoreProviders
 import io.legado.app.help.HomeTabHelpShared
 import io.legado.app.help.PinnedExploreHelp
 import io.legado.app.help.source.SourceHelp
@@ -29,7 +28,6 @@ import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ReadBookConfigShared
 import io.legado.app.help.file.AppFilesDirs
-import io.legado.app.help.ruleFileName
 import io.legado.app.help.storage.RestoreShared.restoreLocked
 import io.legado.app.help.storage.RestoreShared.restoreOldRecord
 import io.legado.app.model.fileBook.FileBook
@@ -113,7 +111,7 @@ object RestoreShared {
      * 步骤与原版逐项对应:
      * 1. 逐个 JSON 文件 → DAO 批量 insert (含阅读记录新旧格式)
      * 2. servers.json 解密 → serverDao
-     * 3. 直链上传规则 / 主题配置 / 阅读界面配置 (忽略项生效)
+     * 3. 主题配置 / 阅读界面配置 (忽略项生效)
      * 4. config.json (无则 config.xml) → prefs 写回
      * 5. 阅读配置项从 prefs 刷新 + 宿主 UI 钩子
      */
@@ -213,17 +211,6 @@ object RestoreShared {
         }
 
         currentCoroutineContext().ensureActive()
-
-        // 3.1 直链上传规则 (原版: ACache.put(ruleFileName, json) 原样写回)
-        runCatching {
-            val ruleFile = path + sep + ruleFileName
-            if (BackupFileOps.exists(ruleFile)) {
-                DirectLinkUploadStoreProviders.get()
-                    ?.putConfigJson(BackupFileOps.readText(ruleFile))
-            }
-        }.onFailure {
-            AppLog.put("恢复直链上传出错\n${it.message}", it, tag = TAG)
-        }
 
         // 3.2 主题配置: 覆盖 themeConfig.json 后重载 (原版 delete + copyTo + ThemeConfig.upConfig())
         runCatching {

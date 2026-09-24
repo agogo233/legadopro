@@ -7,7 +7,6 @@ import io.legado.app.data.AppDbProviders
 import io.legado.app.data.dao.sortedByLocalizedOrder
 import io.legado.app.data.entities.ReadRecord
 import io.legado.app.help.AppWebDavShared
-import io.legado.app.help.DirectLinkUploadStoreProviders
 import io.legado.app.help.HomeTabHelpShared
 import io.legado.app.help.PinnedExploreHelp
 import io.legado.app.help.config.AppConfigProviders
@@ -17,7 +16,6 @@ import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ReadBookConfigShared
 import io.legado.app.help.config.ThemeConfigProviders
 import io.legado.app.help.file.AppFilesDirs
-import io.legado.app.help.ruleFileName
 import io.legado.app.help.storage.BackupShared.backupLocked
 import io.legado.app.help.storage.BackupShared.backupPath
 import io.legado.app.help.storage.BackupShared.mutex
@@ -112,7 +110,6 @@ object BackupShared {
         "dictRule.json",
         "sourceFilterRule.json",
         "servers.json",
-        ruleFileName,
         ReadBookConfigShared.configFileName,
         ReadBookConfigShared.shareConfigFileName,
         THEME_CONFIG_FILE_NAME,
@@ -208,7 +205,7 @@ object BackupShared {
      * 步骤与原版逐项对应:
      * 1. 清空 backupPath 残留
      * 2. 逐个 DAO 导出为 JSON 写入 backupPath
-     * 3. servers.json 加密 / 阅读配置 / 主题配置 / 直链上传规则
+     * 3. servers.json 加密 / 阅读配置 / 主题配置
      * 4. dump 全量配置 → config.json
      * 5. zip 打包 → 复制到本地目录 → 上传 WebDav
      * 6. 清理临时文件, 再走宿主收尾钩子 (背景图上传)
@@ -256,7 +253,7 @@ object BackupShared {
 
             currentCoroutineContext().ensureActive()
 
-            // 3. 阅读界面配置 / 主题配置 / 直链上传规则 (与原版 ReadBookConfig + ThemeConfig + DirectLinkUpload 段一致)
+            // 3. 阅读界面配置 / 主题配置 (与原版 ReadBookConfig + ThemeConfig 段一致)
             // runCatching 只兜 provider 取值 (某平台未注册时跳过该项); 写盘失败不吞,
             // 与原版一致直接中止整个备份, 避免"备份成功但缺文件"
             val readBookConfig = runCatching { ReadBookConfigProviders.get() }
@@ -281,14 +278,6 @@ object BackupShared {
                     GSON.toJson(themeConfig.getConfigList())
                 )
             }
-            // get() 未注册即返回 null (等价原版 getConfig() 为 null 时跳过), 无需 runCatching
-            DirectLinkUploadStoreProviders.get()?.getConfig()?.let { rule ->
-                BackupFileOps.writeText(
-                    workDirPath + BackupFileOps.separator + ruleFileName,
-                    GSON.toJson(rule)
-                )
-            }
-
             currentCoroutineContext().ensureActive()
 
             // 4. config.json dump 全量配置 (过滤忽略项, 显式忽略废弃的 useZhLayout, webDavPassword 加密, 与原版一致)

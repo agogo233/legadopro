@@ -24,8 +24,5 @@
 # 书源 JS 反射调用 QueryTTF 的公开方法（字体反混淆）, 等价原 @Keep。
 -keep class io.legado.app.model.analyzeRule.QueryTTF { *; }
 
-# DirectLinkUploadRule 原 @Keep（GSON 反射读写直链上传规则配置 directLinkUploadRule.json）。
--keep class io.legado.app.help.DirectLinkUploadRule { *; }
-
 # RemoteBook 原 @Keep（GSON 反射读写远程书信息）。
 -keep class io.legado.app.model.remote.RemoteBook { *; }

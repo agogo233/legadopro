@@ -59,7 +59,6 @@ import io.legado.app.help.i18n.androidAppString
 import io.legado.app.help.i18n.registerAndroidAppStringProvider
 import io.legado.app.help.i18n.warmAppStringCache
 import io.legado.app.help.image.registerAndroidBookImageLoader
-import io.legado.app.help.registerAndroidDirectLinkUploadProviders
 import io.legado.app.help.registerAndroidFileCacheProvider
 import io.legado.app.help.service.UpdateBookCallbacks
 import io.legado.app.help.service.registerAndroidServiceLauncher
@@ -250,7 +249,6 @@ class App : Application() {
         // 旧版 SP 主页设置/收藏迁移 (e8b2c5837d 改存 filesDir JSON 后旧数据弃读, 见 LegacyHomeSpMigration);
         // 须在 registerAndroidAppFilesDir (onCreate 早段) 之后、Home 首次 load 之前
         migrateLegacyHomeSp(defaultSharedPreferences)
-        registerAndroidDirectLinkUploadProviders()
         // 注册 help 引导版本标记存储 (委托 "local" prefs, 与原版 LocalConfig 同存储)
         registerAndroidLocalConfigStore()
         // 注册备份/恢复的 Android 钩子 (SAF 复制解压 / config.xml 旧格式 / 主题与图标刷新)

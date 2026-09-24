@@ -66,7 +66,6 @@ import io.legado.desktop.help.initDesktopDefaultData
 import io.legado.desktop.help.log.registerDesktopAppLogHost
 import io.legado.desktop.help.registerDesktopAndroidId
 import io.legado.desktop.help.registerDesktopAppUpdate
-import io.legado.desktop.help.registerDesktopDirectLinkUploadProviders
 import io.legado.desktop.help.registerDesktopFileCacheProvider
 import io.legado.desktop.help.registerDesktopRegexErrorHandler
 import io.legado.desktop.help.source.DesktopSourceHelpAccessor
@@ -338,11 +337,9 @@ object DesktopCore {
             // 0.5 文件下载器 (shared Download 编排: 更新弹窗"下载"等入口; 此前从未注册,
             // FileDownloaders.get() 抛 IllegalStateException 且在协程内被吞, 表现为点了下载无反应)
             registerDesktopFileDownloader()
-            // 1. 备份/直链相关 (依赖 PreferenceProviders, 已同步注册)
+            // 1. 备份相关 (依赖 PreferenceProviders, 已同步注册)
             // - PasswordProvider: 供 BackupAES 无参构造经 PasswordProviders 反向获取 password
-            // - DirectLinkUploadProviders: 供 BackupShared/RestoreShared 备份恢复 directLinkUploadRule.json
             registerDesktopPasswordProvider()
-            registerDesktopDirectLinkUploadProviders()
             // - BackupRestoreHooks: 备份/恢复的平台收尾 (lastBackup 时间戳 + 恢复完成提示);
             //   zip 复制/解压走 shared 默认文件分支, 桌面端无 SAF
             registerDesktopBackupRestoreHook()

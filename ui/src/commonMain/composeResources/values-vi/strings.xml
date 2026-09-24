@@ -144,8 +144,8 @@
     <string name="select_cancel_count">Hủy chọn tất cả (%1$d/%2$d)</string>
     <string name="dark_theme">Chế độ tối</string>
     <string name="welcome">Trang chào mừng</string>
-    <string name="download_start">Bắt đầu tải</string>
     <string name="download_count">Đã tải %1$d/%2$d</string>
+    <string name="download_start">Bắt đầu tải</string>
     <string name="import_select_book">Nhập sách đã chọn</string>
     <string name="threads_num_title">Số luồng đồng thời</string>
     <string name="change_icon">Thay đổi biểu tượng</string>
@@ -552,9 +552,6 @@
     <string name="respondTime">Thời gian phản hồi: %1$d ms</string>
     <string name="export_success">xuất thành công</string>
     <string name="path">đường dẫn</string>
-    <string name="direct_link_upload_rule">Quy tắc tải lên liên kết trực tiếp</string>
-    <string name="direct_link_upload_rule_summary">Được sử dụng để tạo URL liên kết trực tiếp khi xuất nguồn sách, danh sách sách</string>
-    <string name="direct_link_upload_config">Cấu hình tải lên liên kết trực tiếp</string>
     <string name="copy_play_url">Sao chép URL phát</string>
     <string name="set_source_variable">Đặt biến nguồn</string>
     <string name="set_book_variable">Đặt biến sách</string>
@@ -736,7 +733,6 @@
     <string name="export_chapter_index">Chỉ mục phần cần xuất</string>
     <string name="shrink_database">Thu nhỏ cơ sở dữ liệu</string>
     <string name="shrink_database_summary">Giảm kích thước của tệp cơ sở dữ liệu</string>
-    <string name="is_compress">Có nén không</string>
     <string name="sort_desc">Thứ tự giảm dần</string>
     <string name="test">Kiểm tra</string>
     <string name="result_analyzed">Đã phân tích</string>

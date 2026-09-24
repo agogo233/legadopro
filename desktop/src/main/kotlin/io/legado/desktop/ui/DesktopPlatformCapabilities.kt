@@ -8,7 +8,6 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.DirectLinkUploadRule
 import io.legado.app.help.RssToolbarActions
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.tryParesExportFileName
@@ -296,40 +295,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         if (!clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) return null
         clipboard.getData(DataFlavor.stringFlavor) as? String
     }.getOrNull()
-
-    override fun testDirectLinkUpload(
-        rule: DirectLinkUploadRule,
-        onSuccess: (String) -> Unit,
-        onError: (String) -> Unit,
-    ) {
-        scope.launch {
-            runCatching {
-                io.legado.desktop.help.DesktopDirectLinkUpload.upLoad(
-                    "test.json", "{}", "application/json", rule,
-                )
-            }.onSuccess { onSuccess(it) }
-                .onFailure { onError(it.localizedMessage ?: it.toString()) }
-        }
-    }
-
-    override fun upLoadFile(
-        fileName: String,
-        file: Any,
-        contentType: String,
-        onResult: (String?) -> Unit
-    ) {
-        scope.launch {
-            runCatching {
-                io.legado.desktop.help.DesktopDirectLinkUpload.upLoad(
-                    fileName, file, contentType
-                )
-            }.onSuccess { url ->
-                withContext(Dispatchers.Main) { onResult(url) }
-            }.onFailure { error ->
-                AppLog.put("上传文件失败\n${error.message}", error)
-                Toasters.get().toast("上传文件失败\n${error.message}")
-                withContext(Dispatchers.Main) { onResult(null) }
-            }
         }
     }
 
@@ -709,7 +674,7 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         scope.launch { onSelected(FileDialogs.pickDirectory("选择书籍目录")?.absolutePath) }
     }
 
-    // 书源校验设置 / 直链上传配置: shared 已有对话框实现, 与 app 端同走 overlay
+    // 书源校验设置: shared 已有对话框实现, 与 app 端同走 overlay
     // onDismiss 契约同 app 端: 等 overlay 入栈再等其出栈
     override fun showCheckSourceConfigDialog(onDismiss: () -> Unit) {
         val navigator = AppNavigatorProviders.get()
@@ -719,11 +684,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
             withContext(Dispatchers.Main) { onDismiss() }
         }
         navigator.showOverlay(AppOverlay.Dialog("check_source_config"))
-    }
-
-    override fun showDirectLinkUploadConfigDialog() {
-        AppNavigatorProviders.get()
-            .showOverlay(AppOverlay.Dialog("direct_link_upload_config"))
     }
 
     /**

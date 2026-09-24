@@ -340,8 +340,6 @@
     <string name="create">新建</string>
     <string name="text_default">默认</string>
     <string name="name">名称</string>
-    <string name="direct_link_upload_rule">直链上传规则</string>
-    <string name="direct_link_upload_rule_summary">用于导出书源书单时生成直链 URL</string>
     <string name="check_source_config">校验设置</string>
     <string name="check_source_timeout">单个书源校验超时（秒）</string>
     <string name="check_source_item">校验项目</string>
@@ -974,8 +972,6 @@
     <string name="desktop_cookie_set_error">桌面端设置 cookie 出错 domain=%1$s cookie=%2$s</string>
     <string name="download_jslib_failed">下载jsLib-%1$s失败</string>
     <string name="native_book_format_not_supported">iOS/鸿蒙端暂不支持解析 %1$s 格式本地书 (pdf/cbz 解析器未下沉)</string>
-    <string name="upload_url_not_configured">上传url未配置</string>
-    <string name="download_url_rule_not_configured">下载地址规则未配置</string>
     <string name="upload_failed_with_body">上传失败,%1$s</string>
     <string name="desktop_backstage_webview_unsupported">桌面端不支持 BackstageWebView (依赖 android.webkit.WebView), 请改用 HTTP 路径或选用不依赖 webView 的书源</string>
     <string name="book_info_copied">已复制书籍信息</string>
@@ -1009,10 +1005,7 @@
     <string name="import_bookshelf">导入书单</string>
     <string name="importing_book">导入中...</string>
     <string name="url_import">URL 导入</string>
-    <string name="upload_url_empty">上传Url不能为空</string>
-    <string name="download_url_rule_empty">下载Url规则不能为空</string>
     <string name="summary_empty">注释不能为空</string>
-    <string name="copy_rule_failed">复制规则失败</string>
     <string name="clear_all_cache_failed">清缓存失败
 %1$s</string>
     <string name="shrink_database_failed">收缩数据库失败
@@ -1311,7 +1304,6 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="full_screen">全屏</string>
     <string name="import_default_rule">导入默认规则</string>
     <string name="upload_url">上传 URL</string>
-    <string name="is_compress">是否压缩</string>
     <string name="test">测试</string>
     <string name="summary">注释</string>
     <string name="import_str">导入</string>
@@ -1631,7 +1623,6 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="cronet_enabled">Cronet 已启用</string>
     <string name="cronet_download_failed">Cronet 下载失败</string>
     <string name="path">路径</string>
-    <string name="direct_link_upload_config">直链上传配置</string>
     <string name="open_fun">打开方式</string>
     <string name="use_browser_open">是否使用外部浏览器打开？</string>
     <string name="open_sys_dir_picker_error">打开系统文件夹选择器出错，将自动打开应用文件夹选择器</string>

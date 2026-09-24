@@ -28,8 +28,6 @@ import legado.ui.generated.resources.default_app_variant
 import legado.ui.generated.resources.default_app_variant_value
 import legado.ui.generated.resources.default_home_page
 import legado.ui.generated.resources.default_home_page_value
-import legado.ui.generated.resources.direct_link_upload_rule
-import legado.ui.generated.resources.direct_link_upload_rule_summary
 import legado.ui.generated.resources.ignore_audio_focus_summary
 import legado.ui.generated.resources.ignore_audio_focus_title
 import legado.ui.generated.resources.language
@@ -89,7 +87,6 @@ fun OtherConfigScreen(
     onUserAgent: () -> Unit,
     onBookTreeUri: () -> Unit,
     onCheckSource: () -> Unit,
-    onUploadRule: () -> Unit,
     onBitmapCacheSize: () -> Unit,
     onPreDownloadNum: () -> Unit,
     onWebPort: () -> Unit,
@@ -142,8 +139,6 @@ fun OtherConfigScreen(
     val summaryPublishLyric = stringResource(Res.string.publish_lyric_summary)
     val titleBookTree = stringResource(Res.string.book_tree_uri_t)
     val titleCheckSource = stringResource(Res.string.check_source_config)
-    val titleUploadRule = stringResource(Res.string.direct_link_upload_rule)
-    val summaryUploadRule = stringResource(Res.string.direct_link_upload_rule_summary)
     val summaryCronet = stringResource(Res.string.pref_cronet_summary)
     val titleBitmapCache = stringResource(Res.string.bitmap_cache_size)
     val titlePreDownload = stringResource(Res.string.pre_download)
@@ -245,11 +240,6 @@ fun OtherConfigScreen(
                 title = titleCheckSource,
                 summary = checkSourceSummary,
                 onClick = onCheckSource,
-            )
-            preference(
-                title = titleUploadRule,
-                summary = summaryUploadRule,
-                onClick = onUploadRule,
             )
             // Cronet: 只有 Android 注册了 CronetProvider, 其余端拨了无效
             if (showCronet) {

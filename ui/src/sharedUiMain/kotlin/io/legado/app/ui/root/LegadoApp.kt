@@ -67,7 +67,6 @@ import io.legado.app.ui.bookshelf.LocalBookCoverSlot
 import io.legado.app.ui.bookshelf.toCoverBook
 import io.legado.app.ui.browser.WebViewSheetContent
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
-import io.legado.app.ui.compose.component.AppSelectorDialog
 import io.legado.app.ui.compose.platform.LocalEventBusProvider
 import io.legado.app.ui.compose.platform.LocalThemeStoreProvider
 import io.legado.app.ui.compose.platform.PlatformBackHandler
@@ -80,7 +79,6 @@ import io.legado.app.ui.config.BookshelfLayoutConfigDialog
 import io.legado.app.ui.config.BottomNavConfigDialog
 import io.legado.app.ui.config.CheckSourceConfigDialog
 import io.legado.app.ui.config.DefaultCoverGalleryOverlayDialogContent
-import io.legado.app.ui.config.DirectLinkUploadConfigDialog
 import io.legado.app.ui.config.MODE_EDIT_PREFS
 import io.legado.app.ui.config.ThemeCustomizeDialog
 import io.legado.app.ui.config.ThemeListDialog
@@ -781,12 +779,6 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         // 校验设置 (对照 app 端 CheckSourceConfig Fragment)
         "check_source_config" -> CheckSourceConfigOverlayDialogContent(overlay, navigator)
 
-        // 直链上传配置 (对照 app 端 DirectLinkUploadConfig Fragment)
-        "direct_link_upload_config" -> DirectLinkUploadConfigOverlayDialogContent(
-            overlay,
-            navigator
-        )
-
         // 更新弹窗 (对照原版 UpdateDialog; payload=IntentData key 携带 UpdateCheckInfo)
         "updateDialog" -> UpdateDialogOverlayContent(overlay, navigator)
 
@@ -1161,46 +1153,6 @@ private fun CheckSourceConfigOverlayDialogContent(
         onDismiss = { navigator.dismissOverlay(overlay.key) },
         onToast = { msg -> io.legado.app.help.toast.Toasters.get().toast(msg) },
     )
-}
-
-// 直链上传配置对话框 (对照 app 端 DirectLinkUploadConfig Fragment 壳)
-// 平台能力通过 PlatformServices/PlatformCapabilities 注入
-@Composable
-private fun DirectLinkUploadConfigOverlayDialogContent(
-    overlay: AppOverlay.Dialog,
-    navigator: AppNavigator,
-) {
-    val platform = PlatformCapabilityProviders.get()
-    var selectorItems by remember { mutableStateOf<List<String>?>(null) }
-    var selectorCallback by remember { mutableStateOf<((Int) -> Unit)?>(null) }
-
-    DirectLinkUploadConfigDialog(
-        onDismiss = { navigator.dismissOverlay(overlay.key) },
-        onToast = { msg -> io.legado.app.help.toast.Toasters.get().toast(msg) },
-        onGetClip = { platform.getClipboardText() },
-        onSetClip = { text -> platform.copyToClipboard(text) },
-        onSelector = { items, callback ->
-            if (items.isNotEmpty()) {
-                selectorItems = items
-                selectorCallback = callback
-            }
-        },
-        // 平台未实现时由 PlatformCapabilities.unsupported 默认实现提示
-        onTest = { rule, onSuccess, onError ->
-            platform.testDirectLinkUpload(rule, onSuccess, onError)
-        },
-    )
-
-    selectorItems?.let { items ->
-        AppSelectorDialog(
-            onDismissRequest = {
-                selectorItems = null
-                selectorCallback = null
-            },
-            items = items,
-            onItemSelected = { index -> selectorCallback?.invoke(index) },
-        )
-    }
 }
 
 // 通用 Sheet: AppBottomSheetDialog 承载 (项目统一底部弹层: 0.7 锚点高, 顶栏等

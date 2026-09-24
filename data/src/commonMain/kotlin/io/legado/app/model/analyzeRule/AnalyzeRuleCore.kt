@@ -940,7 +940,7 @@ open class AnalyzeRuleCore(
     /**
      * 释放 AnalyzeRule 持有的 native 资源。
      *
-     * 仅 [topScopeRef] 需显式 close: 当 source 为 null (DictRule/DirectLinkUpload 等无书源构造) 时,
+     * 仅 [topScopeRef] 需显式 close: 当 source 为 null (DictRule 等无书源构造) 时,
      * evalJS 会走 [JsEngines.get().getRuntimeScope] 自建 scope 并缓存到 [topScopeRef],
      * 该 scope 不在 SharedJsScope 的 LruCache 中, 无显式释放路径会泄漏 native QuickJs 实例。
      *

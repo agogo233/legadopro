@@ -22,7 +22,7 @@ import kotlin.concurrent.Volatile
  *   app 端 [io.legado.app.help.http.CookieManager] 保留 Android 专属方法不动。
  *
  * # 模式参考
- * - [io.legado.app.help.DirectLinkUploadStoreProviders] (interface + Registry 注入先例)
+ * - [PasswordProviders] (interface + Registry 注入先例)
  * - [CookieJarBridgeHolder] (同包同模式, OkHttp 层注入)
  *
  * # 注册时机
@@ -126,8 +126,7 @@ interface CookieStoreProvider {
  * 行为与 app 端一致, 仅多一层 provider 间接。
  * 未注册时 [get] 返回 null (调用方应处理 null, 与 [CookieJarBridgeHolder.get] 一致)。
  *
- * 模式参考 [io.legado.app.help.DirectLinkUploadStoreProviders] /
- * [CookieJarBridgeHolder]。
+ * 模式参考 [PasswordProviders] / [CookieJarBridgeHolder]。
  */
 object CookieStoreProviders {
 

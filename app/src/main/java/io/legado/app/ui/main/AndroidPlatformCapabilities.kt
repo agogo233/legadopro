@@ -71,7 +71,6 @@ import io.legado.app.exception.InvalidBooksDirException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.CrashHandler
-import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.IntentData
 import io.legado.app.help.IntentHelp
 import io.legado.app.help.LauncherIconHelp
@@ -404,43 +403,6 @@ class AndroidPlatformCapabilities(
     }
 
     override fun getClipboardText(): String? = getClipText()
-
-    override fun upLoadFile(
-        fileName: String,
-        file: Any,
-        contentType: String,
-        onResult: (String?) -> Unit
-    ) {
-        activity.lifecycleScope.launch(IO) {
-            runCatching {
-                DirectLinkUpload.upLoad(fileName, file, contentType)
-            }.onSuccess { url ->
-                withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(url) }
-            }.onFailure { error ->
-                AppLog.put("上传文件失败\n${error.localizedMessage}", error)
-                activity.toastOnUi(error.localizedMessage ?: error.toString())
-                withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(null) }
-            }
-        }
-    }
-
-    override fun testDirectLinkUpload(
-        rule: io.legado.app.help.DirectLinkUploadRule,
-        onSuccess: (String) -> Unit,
-        onError: (String) -> Unit,
-    ) {
-        activity.lifecycleScope.launch(IO) {
-            runCatching {
-                DirectLinkUpload.upLoad("test.json", "{}", "application/json", rule)
-            }.onSuccess { result ->
-                withContext(kotlinx.coroutines.Dispatchers.Main) { onSuccess(result) }
-            }.onFailure { error ->
-                withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    onError(error.localizedMessage ?: error.toString())
-                }
-            }
-        }
-    }
 
     // 起停走 Android Service 壳; 运行态/地址由 PlatformCapabilities 默认实现回读 WebServerManager
     override fun setWebService(enabled: Boolean) {
@@ -1842,14 +1804,6 @@ class AndroidPlatformCapabilities(
             navigator.overlays.first { it.none { o -> o.key == "check_source_config" } }
             onDismiss()
         }
-    }
-
-    // 对照 OtherConfigHost.onUploadRule: showDialogFragment<DirectLinkUploadConfig>
-    // 迁 Compose Overlay: 原 showDialogFragment<DirectLinkUploadConfig>() 已由
-    // shared OverlayContentHost 的 "direct_link_upload_config" key 接管
-    override fun showDirectLinkUploadConfigDialog() {
-        AppNavigatorProviders.get()
-            .showOverlay(AppOverlay.Dialog("direct_link_upload_config"))
     }
 
     // 对照 ConfigViewModel.clearWebViewData: 删 webview 目录 + toast + delay + restart

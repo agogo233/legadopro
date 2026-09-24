@@ -340,8 +340,6 @@
     <string name="create">Create</string>
     <string name="text_default">Default</string>
     <string name="name">Name</string>
-    <string name="direct_link_upload_rule">Straight chain upload rule</string>
-    <string name="direct_link_upload_rule_summary">Used to generate direct link url when exporting book source, book list</string>
     <string name="check_source_config">Check setting</string>
     <string name="check_source_timeout">Single book source check timeout (seconds)</string>
     <string name="check_source_item">Check item</string>
@@ -962,8 +960,6 @@
     <string name="desktop_cookie_set_error">Failed to set cookie on desktop domain=%1$s cookie=%2$s</string>
     <string name="download_jslib_failed">Failed to download jsLib-%1$s</string>
     <string name="native_book_format_not_supported">Parsing local %1$s books is not supported on this platform yet (pdf/cbz parsers not ported)</string>
-    <string name="upload_url_not_configured">Upload URL not configured</string>
-    <string name="download_url_rule_not_configured">Download URL rule not configured</string>
     <string name="upload_failed_with_body">Upload failed: %1$s</string>
     <string name="desktop_backstage_webview_unsupported">BackstageWebView is not supported on desktop (depends on android.webkit.WebView). Use HTTP paths or book sources that do not rely on WebView instead</string>
     <string name="book_info_copied">Book info copied</string>
@@ -989,10 +985,7 @@
     <string name="import_bookshelf">Import the list of books</string>
     <string name="importing_book">Importing...</string>
     <string name="url_import">URL import</string>
-    <string name="upload_url_empty">Upload URL cannot be empty</string>
-    <string name="download_url_rule_empty">Download URL rule cannot be empty</string>
     <string name="summary_empty">Summary cannot be empty</string>
-    <string name="copy_rule_failed">Failed to copy rule</string>
     <string name="clear_all_cache_failed">Failed to clear cache\n%1$s</string>
     <string name="shrink_database_failed">Failed to shrink the database\n%1$s</string>
     <string name="more">More</string>
@@ -1243,7 +1236,6 @@
     <string name="full_screen">full screen</string>
     <string name="import_default_rule">Import default rules</string>
     <string name="upload_url">upload url</string>
-    <string name="is_compress">Compressed or not</string>
     <string name="test">Test</string>
     <string name="summary">summary</string>
     <string name="import_str">Import</string>
@@ -1563,7 +1555,6 @@
     <string name="cronet_enabled">Cronet enabled</string>
     <string name="cronet_download_failed">Cronet download failed</string>
     <string name="path">path</string>
-    <string name="direct_link_upload_config">Direct link upload configuration</string>
     <string name="open_fun">open function</string>
     <string name="use_browser_open">Is it opened in an external browser?</string>
     <string name="open_sys_dir_picker_error">Error opening system folder selector, automatically open application folder selector</string>

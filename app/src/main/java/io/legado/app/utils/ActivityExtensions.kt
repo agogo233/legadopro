@@ -227,9 +227,6 @@ fun AppCompatActivity.showHelp(fileName: String) {
  */
 fun Activity.showExportSuccess(uri: Uri) {
     alert(androidAppString("export_success")) {
-        if (uri.toString().isAbsUrl()) {
-            setMessage(io.legado.app.help.DirectLinkUpload.getSummary())
-        }
         editTextView(hint = androidAppString("path"), text = uri.toString())
         okButton {
             sendToClip(uri.toString())
@@ -242,9 +239,6 @@ fun Activity.showExportSuccess(uri: Uri) {
  */
 fun androidx.fragment.app.Fragment.showExportSuccess(uri: Uri) {
     alert(androidAppString("export_success")) {
-        if (uri.toString().isAbsUrl()) {
-            setMessage(io.legado.app.help.DirectLinkUpload.getSummary())
-        }
         editTextView(hint = androidAppString("path"), text = uri.toString())
         okButton {
             requireContext().sendToClip(uri.toString())

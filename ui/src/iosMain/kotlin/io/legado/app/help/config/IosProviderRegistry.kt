@@ -26,7 +26,6 @@ import io.legado.app.help.http.registerSharedCookieJarBridge
 import io.legado.app.help.media.registerIosMediaNotificationController
 import io.legado.app.help.notification.registerIosNotificationProgress
 import io.legado.app.help.registerNativeDefaultDataResourceProvider
-import io.legado.app.help.registerNativeDirectLinkUploadProviders
 import io.legado.app.help.registerNativeExploreKindsCacheProvider
 import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider
@@ -136,10 +135,6 @@ fun registerIosProviders() {
 
     // 2.6 默认数据 provider (composeResources files/defaultData, 供 DefaultDataShared 装载默认规则)
     registerNativeDefaultDataResourceProvider()
-
-    // 2.7 直链上传配置 provider (Store 落 {filesDir}/directLinkUploadRule.json + Defaults 读默认数据,
-    // 须在 AppFilesDirs + DefaultDataResourceProvider 之后; 供备份/恢复与直链上传配置用)
-    registerNativeDirectLinkUploadProviders()
 
     // 3. HTTP provider (Ktor CIO 包装, 注册到 OkHttpClientProviders + OkHttpProxyClientProviders)
     // 必须在数据库/书籍缓存之前: BookImageStorage/FileDownloader/IosBookCover 取 OkHttpClient,

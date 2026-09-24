@@ -63,7 +63,7 @@ import org.jetbrains.compose.resources.stringResource
  * 点击型交互由 Route 直接执行：
  * - UA 编辑/图片缓存/预下载/Web 端口/线程数/自定义翻页按键: 用 shared 端 Compose 弹窗实现
  *   (对照 app 端 alert DSL / showNumberPicker / PageKeyDialog)
- * - 本地密码/SAF 选目录/CheckSourceConfig/DirectLinkUploadConfig: 通过 [PlatformCapabilityProviders] 注入
+ * - 本地密码/SAF 选目录/CheckSourceConfig: 通过 [PlatformCapabilityProviders] 注入
  *   (对照 app 端 LocalConfig.password / HandleFileContract / showDialogFragment)
  * - 清缓存/收缩数据库: 下沉到 [ConfigActionsShared] (纯 Kotlin, 跨平台)
  * - 清 WebView 数据: 通过 [PlatformCapabilityProviders] 注入 (Android WebView 专属)
@@ -179,7 +179,6 @@ fun OtherConfigRoute(
                     screenModel.updateCheckSourceSummary(CheckSourceShared.summary)
                 }
             },
-            onUploadRule = { platform.showDirectLinkUploadConfigDialog() },
             onBitmapCacheSize = { showBitmapCachePicker = true },
             onPreDownloadNum = { showPreDownloadPicker = true },
             onWebPort = { showWebPortPicker = true },

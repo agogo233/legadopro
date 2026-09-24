@@ -154,14 +154,7 @@ class HandleFileDialog : BaseComposeDialogFragment(), FilePickerDialog.CallBack 
         HandleFileContract.DIR_SYS -> getDirActions(true)
         HandleFileContract.DIR -> getDirActions()
         HandleFileContract.FILE -> getFileActions()
-        HandleFileContract.EXPORT -> arrayListOf(
-            SelectItem(
-                androidAppString("upload_url"),
-                111
-            )
-        ).apply {
-            addAll(getDirActions())
-        }
+        HandleFileContract.EXPORT -> getDirActions()
 
         HandleFileContract.IMAGE -> getImageActions()
         else -> arrayListOf()
@@ -211,12 +204,6 @@ class HandleFileDialog : BaseComposeDialogFragment(), FilePickerDialog.CallBack 
                     mode = HandleFileContract.FILE,
                     allowExtensions = allowExtensions
                 )
-            }
-
-            111 -> getFileData()?.let { fileData ->
-                viewModel.upload(fileData.name, fileData.data, fileData.type) { url ->
-                    deliverResult(url.toUri())
-                }
             }
 
             112 -> showInputDirectoryDialog()

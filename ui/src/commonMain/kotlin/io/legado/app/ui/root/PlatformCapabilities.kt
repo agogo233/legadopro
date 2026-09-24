@@ -8,7 +8,6 @@ import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.Review
-import io.legado.app.help.DirectLinkUploadRule
 import io.legado.app.help.RssToolbarActions
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.toast.Toasters
@@ -145,17 +144,6 @@ interface PlatformCapabilities {
     fun copyToClipboard(text: String) = unsupported("copyToClipboard")
 
     fun getClipboardText(): String? = null
-
-    // 导出分发: 上传文件到直链上传规则接口并解析直链 (对照 app 端 HandleFileViewModel.upload → DirectLinkUpload.upLoad)
-    // onResult 传 null 表失败 (失败提示由实现内 toast, 对照原版 errorLiveData → toastOnUi)
-    fun upLoadFile(fileName: String, file: Any, contentType: String, onResult: (String?) -> Unit) =
-        unsupported("上传文件")
-
-    fun testDirectLinkUpload(
-        rule: DirectLinkUploadRule,
-        onSuccess: (String) -> Unit,
-        onError: (String) -> Unit,
-    ) = unsupported("测试直链上传")
 
     // Web 服务: 启停服务 (Android 起 Service 壳, 其余端直接调 WebServerManager)
     fun setWebService(enabled: Boolean) = unsupported("setWebService")
@@ -611,9 +599,6 @@ interface PlatformCapabilities {
 
     /** 显示校验设置 Dialog (对照 app 端 showDialogFragment<CheckSourceConfig>), dismiss 后回调 onDismiss */
     fun showCheckSourceConfigDialog(onDismiss: () -> Unit = {}) = unsupported("书源校验设置")
-
-    /** 显示直链上传规则 Dialog (对照 app 端 showDialogFragment<DirectLinkUploadConfig>) */
-    fun showDirectLinkUploadConfigDialog() = unsupported("直链上传配置")
 
     /** 清理 WebView 数据 (对照 app 端 viewModel.clearWebViewData: 删 webview 目录 + toast + 重启) */
     fun clearWebViewData() = unsupported("清理 WebView 数据")

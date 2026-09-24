@@ -41,8 +41,7 @@ object ReadBookConfigProviders {
      * 获取已注册实例, 未注册抛出 [IllegalStateException]。
      *
      * 调用方 (如 [io.legado.app.help.storage.BackupShared]) 应在 runCatching 中
-     * 调用本方法, 未注册时跳过相关备份项 (与 app 端 DirectLinkUpload.getConfig()
-     * 为 null 时跳过 directLinkUploadRule.json 的行为一致)。
+     * 调用本方法, 未注册时跳过相关备份项。
      */
     fun get(): ReadBookConfigShared =
         impl ?: error("ReadBookConfigProviders not registered")
