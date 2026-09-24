@@ -58,6 +58,7 @@ import io.legado.app.utils.ColorUtils
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
+import legado.ui.generated.resources.font_scan_empty
 import legado.ui.generated.resources.other_folder
 import org.jetbrains.compose.resources.stringResource
 
