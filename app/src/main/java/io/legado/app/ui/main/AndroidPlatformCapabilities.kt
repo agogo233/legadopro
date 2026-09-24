@@ -495,20 +495,30 @@ class AndroidPlatformCapabilities(
         if (!fontPath.isNullOrBlank()) {
             runCatching {
                 if (fontPath.isContentScheme()) {
-                    // SAF 目录: 优先转真实路径 (对照原版 RealPathUtil 分支), 失败则扫 DocumentFile
-                    val realPath = RealPathUtil.getPath(activity, fontPath.toUri())
-                    if (realPath != null) {
-                        scanFontDir(items, File(realPath), fontRegex)
-                    } else {
-                        DocumentFile.fromTreeUri(activity, fontPath.toUri())?.listFiles()?.forEach {
-                            if (it.name?.matches(fontRegex) == true) {
-                                items.add(FontItem(it.uri.toString(), it.name.orEmpty()))
-                            }
+                    // SAF 目录: 走授权通道 (SAF 持久权限) 查子列表 (对照原版 FileDoc.list content 分支);
+                    // 不再先转真实路径 —— scoped storage 下 java.io.File 读不到 SAF 授权目录,
+                    // 而 RealPathUtil 对 tree URI 恒返回非 null 真实路径, 会遮蔽授权通道使列表恒空
+                    val doc = DocumentFile.fromTreeUri(activity, fontPath.toUri())
+                        ?.let(::FileDoc.fromDocumentFile)
+                    doc?.list { !it.isDir && it.name.matches(fontRegex) }?.forEach {
+                        items.add(FontItem(it.uri.toString(), it.name))
+                    }
+                    if (items.isEmpty()) {
+                        // 授权通道无结果 (无权限 / URI 非有效 tree): 兜底扫真实路径
+                        // (仅在已授予"所有文件访问权限"等场景可读)
+                        val realPath = RealPathUtil.getPath(activity, fontPath.toUri())
+                        if (realPath != null) {
+                            scanFontDir(items, File(realPath), fontRegex)
+                        }
+                        if (items.isEmpty()) {
+                            AppLog.put("字体目录(SAF通道)未扫到字体: $fontPath")
                         }
                     }
                 } else {
                     scanFontDir(items, File(fontPath), fontRegex)
                 }
+            }.onFailure {
+                AppLog.put("字体目录扫描失败: $fontPath", it)
             }
         }
         // 对照 getLocalFonts: externalFiles/font

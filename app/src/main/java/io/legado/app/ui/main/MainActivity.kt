@@ -75,6 +75,7 @@ import io.legado.app.ui.book.manga.MangaReaderScreenModel
 import io.legado.app.ui.book.read.AndroidReaderPlatformProvider
 import io.legado.app.ui.book.read.ReaderPlatformProviders
 import io.legado.app.ui.book.read.ReaderScreenModelRegistry
+import io.legado.app.ui.book.read.page.loadAndroidTypeface
 import io.legado.app.ui.book.read.page.provider.AndroidTextMeasurer
 import io.legado.app.ui.book.read.page.provider.TextMeasurerProviders
 import io.legado.app.ui.book.read.refreshReaderImage
@@ -928,7 +929,8 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
 
 /**
  * 度量字体：[fontPath] = `ReadBookConfig.textFont`，与绘制侧 `loadReaderFontFamily`
- * （同为 `Typeface.createFromFile`）读同一文件；空路径 / 加载失败一并回落 SANS_SERIF。
+ * 共用 [loadAndroidTypeface]（普通路径 `createFromFile` / SAF content URI 走授权通道）
+ * 读同一字体；空路径 / 加载失败一并回落 SANS_SERIF。
  *
  * [weight]（100..900，由 [ReaderFontWeights] 产出，标题与正文不同档）只作用于默认字体：
  * 自定义字体在绘制侧只注册了一个 `Font`，`FontWeight` 对它不起作用，
@@ -936,7 +938,7 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
  */
 private fun readerMeasureTypeface(fontPath: String, weight: Int): Typeface {
     if (fontPath.isNotEmpty()) {
-        return runCatching { Typeface.createFromFile(fontPath) }.getOrDefault(Typeface.SANS_SERIF)
+        return loadAndroidTypeface(fontPath) ?: Typeface.SANS_SERIF
     }
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         Typeface.create(Typeface.SANS_SERIF, weight, false)

@@ -131,11 +131,15 @@ private fun ReadStyleContent(
 
     // 字体列表: 平台扫描注入 (对照 app 端 FontSelectDialog.loadFontFiles; 未实现端空列表)
     var fontItems by remember { mutableStateOf(emptyList<FontItem>()) }
+    // 扫描完成门控: 首帧扫描未完成前不判空, 避免空列表提示闪现
+    var fontItemsScanned by remember { mutableStateOf(false) }
     fun rescanFontItems() {
         scope.launch {
-            fontItems = withContext(IoDispatcher) {
+            val items = withContext(IoDispatcher) {
                 PlatformCapabilityProviders.get().scanFontItems()
             }
+            fontItems = items
+            fontItemsScanned = true
         }
     }
     LaunchedEffect(Unit) {
@@ -273,6 +277,17 @@ private fun ReadStyleContent(
                 actions.onPostConfig(listOf(ReadConfigChange.STYLE, ReadConfigChange.LOAD_CONTENT))
             },
             onDismiss = { showFontSelect = false },
+            // 列表为空且扫描已完成 (未选目录 / 选目录后未扫到字体): 提示经「其它目录」选择字体文件夹
+            extraTopContent = if (fontItemsScanned && fontItems.isEmpty()) {
+                {
+                    Text(
+                        text = stringResource(Res.string.font_scan_empty),
+                        color = colors.secondaryText,
+                        fontSize = 13.sp,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    )
+                }
+            } else null,
             // "其它目录"入口: 走平台目录选择能力 (Android SAF OpenDocumentTree / iOS·鸿蒙文档选择器),
             // 选完写 fontFolder pref + 重扫列表 (对照 app 端 FontSelectDialog.openFolder → AppConfig.fontFolder)
             topBarTrailing = {

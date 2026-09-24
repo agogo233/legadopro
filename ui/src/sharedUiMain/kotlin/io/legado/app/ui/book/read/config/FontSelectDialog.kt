@@ -71,7 +71,7 @@ val fontFileRegex: Regex = Regex("(?i).*\\.[ot]tf")
  * @param onDismiss 关闭回调
  * @param widthFraction 对话框宽度占比（透传 AppAlertDialog；桌面端传 0.8f 避免占满）
  * @param topBarTrailing 顶部按钮行尾部槽（桌面端注入"其它目录"按钮）
- * @param extraTopContent 顶部按钮行与列表之间的附加内容槽（桌面端注入扫描失败提示）
+ * @param extraTopContent 顶部按钮行与列表之间的附加内容槽（调用方注入列表为空时的引导提示等）
  * @param fontPreview 字体行预览槽（桌面端注入 FontFamily(Font(file)) 预览文本）
  */
 @Composable
