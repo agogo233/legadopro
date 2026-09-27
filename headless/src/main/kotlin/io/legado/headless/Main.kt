@@ -35,7 +35,7 @@ private const val TAG = "legado-headless"
  * # 依赖与架构
  * - 依赖边界: 依赖 :desktop-core + :core; headless 经 build.gradle.kts 的 runtimeClasspath
  *   彻底排除了 Compose UI / Skiko / Markdown 等渲染库, 仅保留轻量的 components-resources
- *   用于读取字符串与静态 JSON 资源; jvmGetString 已解耦至纯资源工具层, 避免字节码符号连带加载。
+ *   用于读取字符串与静态 JSON 资源; syncGetString 已解耦至纯资源工具层, 避免字节码符号连带加载。
  * - 单实例守卫 (SingleInstanceGuard) 因 java.awt/javax.swing import (bindWindow 窗口前置)
  *   留在 :desktop, 本期 headless 不做单实例互斥 —— 同时启动多个实例会争抢同一 SQLite 库,
  *   部署时需自行保证单进程 (systemd/任务计划等幂等拉起方式)。

@@ -31,6 +31,7 @@ import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.appDialogSize
+import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
@@ -161,7 +162,7 @@ fun ChangeCoverDialog(
                         .fillMaxWidth()
                         .weight(1f),
                 ) {
-                    items(items, key = { it.bookUrl }) { item ->
+                    items(items, key = { "${it.origin}|${it.bookUrl}|${it.coverUrl}" }) { item ->
                         CoverItem(item, coverSlot = coverSlot) {
                             // 由回调携带结果并关闭 Overlay，避免结果关闭后再次 dismiss 同一实例
                             onCoverSelected(item.coverUrl ?: "")
@@ -194,6 +195,7 @@ private fun CoverItem(
 ) {
     Column(
         Modifier
+            .listItemFocus()
             .fillMaxWidth()
             .clickable(onClick = onClick)
     ) {
@@ -202,7 +204,7 @@ private fun CoverItem(
             item,
             Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
+                .padding(DesignTokens.spacingMd)
                 .aspectRatio(3f / 4f)
         )
         // 源名: 对照 tv_name (marginTop=arco_spacing_default(8dp), 12sp, maxLines=2, 居中省略)
@@ -215,8 +217,8 @@ private fun CoverItem(
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .padding(top = 8.dp, bottom = 12.dp)
+                .padding(horizontal = DesignTokens.spacingMd)
+                .padding(top = DesignTokens.spacingDefault, bottom = DesignTokens.spacingMd)
         )
     }
 }

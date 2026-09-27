@@ -306,7 +306,7 @@ private fun ReadStyleContent(
                                 rescanFontItems()
                             }
                         }
-                        .padding(vertical = 8.dp, horizontal = 12.dp),
+                        .padding(vertical = DesignTokens.spacingDefault, horizontal = DesignTokens.spacingMd),
                 )
             },
         )
@@ -380,7 +380,7 @@ private fun ReadStylePreviewSlot(
 
     Box(
         modifier = Modifier
-            .padding(horizontal = 8.dp)
+            .padding(horizontal = DesignTokens.spacingDefault)
             .size(48.dp)
             .clip(shape)
             .background(backgroundColor)

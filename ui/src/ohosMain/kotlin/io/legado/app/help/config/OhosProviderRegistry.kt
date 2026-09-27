@@ -14,6 +14,8 @@ import io.legado.app.help.storage.registerNativeBackupRestoreHook
 import io.legado.app.help.book.registerNativeBookImageStorage
 import io.legado.app.help.book.registerNativeContentProcessorAccessor
 import io.legado.app.help.book.registerNativeLocalBookLocator
+import io.legado.app.help.crash.OhosCrashHandler
+import io.legado.app.help.crash.refreshNativeCrashLogPaths
 import io.legado.app.help.file.registerOhosAppFilesDir
 import io.legado.app.help.log.registerNativeAppLogHost
 import io.legado.app.help.file.registerNativeFileDownloader
@@ -40,6 +42,7 @@ import io.legado.app.help.toast.registerOhosToaster
 import io.legado.app.help.tts.OhosHttpTtsPlayer
 import io.legado.app.help.tts.TtsEngineProvider
 import io.legado.app.help.tts.registerOhosSystemTtsEngine
+import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.help.ui.registerOhosOpenUrlProvider
 import io.legado.app.help.ui.registerNativeUserAgentProvider
 import io.legado.app.model.fileBook.BitmapProviders
@@ -132,6 +135,10 @@ fun registerOhosProviders() {
     // 0. 主线程 id 捕获 (任何 JS eval / webView 调用之前, EntryAbility.onCreate 在主线程执行本函数)
     registerOhosMainThread()
 
+    // 0.1 崩溃捕获 (未捕获异常钩子 + 信号处理器) 必须在最前: 本函数内任一 provider 注册抛异常
+    // 都会中断整条链, 而后面未注册的 provider 后续会硬崩 —— 捕获装在链首才能留下现场
+    OhosCrashHandler.install()
+
     // 0.5 屏幕尺寸 provider (sharedUiMain AppDialogSizes 兜底取 ScreenInfoProviders.get(),
     // 未注册时 error 导致所有对话框崩溃; 数据由 EntryAbility.onWindowStageCreate 经
     // legado.registerScreenSize 注入, 未注入时回退默认尺寸)
@@ -140,17 +147,22 @@ fun registerOhosProviders() {
     // 1. 文件系统目录 (其他 provider 持久化依赖)
     registerOhosAppFilesDir()
 
+    // 1.01 崩溃日志落盘路径补齐 (崩溃捕获装在链首时只有回退路径, 文件目录一就绪重建一次)
+    refreshNativeCrashLogPaths()
+
     // 1.05 napi 桥 + Toaster (须在 AppLog 宿主之前: AppLog.put(toast = true) 的 toast 出口走
     // Toasters, 晚注册则初始化期的提示直接抛; OhosToaster 仅依赖 OhosNativeBridge)
     registerOhosNativeBridge()
     registerOhosToaster()
 
-    // 1.05.5 AppString provider (help/i18n appString 通道: model/help 层异常与翻页边界提示等
-    // 同步文案; 未注册时 fallback 返回 key 名, 运行期可见为 "no_prev_page" 之类原始 key。
-    // 零平台依赖顺序无关, 只须在任何 appString 调用之前)。
-    // 注: native 实现依赖 composeResources (legado.ui.generated.resources.Res),
-    // 随 :ui 的 ComposeResourceDefaultDataProvider 下沉, 由 :ui 侧在
-    // registerOhosProviders() 之前注册 (见 ui MainOhos.kt)。
+    // 1.05.5 字符串通道 (syncGetString 与 appString 同源同一份实现: model/help 层异常、
+    // 翻页边界提示、Toaster 按钮文案等; 未注册时两条通道均返回 key 名, 运行期可见为
+    // "no_prev_page" 之类原始 key。实现依赖 composeResources (legado.ui.generated.resources.Res),
+    // 由 :ui 侧提供, 故注册点写在本函数内而不在 :ui 的 Compose 组合期 —— 外部启动请求
+    // (EntryAbility 的 want.uri) 在本函数返回后即可能取串, 等首帧组合才注册会落到 key 名兜底。
+    // 排在 1.06 Preference 之前与平台无关, 只须在任何取值调用之前)
+    registerComposeStringProviders()
+
     // 1.06 Preference provider (须在 AppLog 宿主之前: 宿主的 recordLog 门直读 PreferenceProviders,
     // 晚注册则这中间的 AppLog.put 全按 recordLog=false 走, 不落盘)
     registerOhosPreferenceProvider()
@@ -241,7 +253,8 @@ fun registerOhosProviders() {
     // 音频页封面/模糊背景/书架封面此前因未注册恒占位)
     registerOhosBookImageLoader()
 
-    // 6.6 本地书 accessor (FileBookProviders: epub 走 nativeMain EpubFile, txt/pdf/cbz 明确抛异常)
+    // 6.6 本地书 accessor + cbz 容器工厂 (FileBookProviders: epub 走 nativeMain EpubFile,
+    // cbz 走 commonMain CbzFile + NativeZipFileWrapperFactory, pdf 仍明确抛异常)
     // 须在 BookStorage/LocalBookLocator/BitmapProviders 之后, 任何 FileBook 调用之前
     registerNativeFileBookAccessor()
 

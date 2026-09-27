@@ -34,11 +34,11 @@ import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.LocalBookLocators
-import io.legado.app.help.config.AndroidReadConfigProviders
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReadBookConfigProviders
+import io.legado.app.help.config.ReadBookConfigShared
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.help.config.ThemeConfig.applyDayNight
 import io.legado.app.help.config.ThemeConfig.applyDayNightInit
@@ -56,7 +56,6 @@ import io.legado.app.help.http.registerAndroidCookieStoreProvider
 import io.legado.app.help.http.registerAndroidCronetProvider
 import io.legado.app.help.http.registerSharedCookieJarBridge
 import io.legado.app.help.i18n.androidAppString
-import io.legado.app.help.i18n.registerAndroidAppStringProvider
 import io.legado.app.help.i18n.warmAppStringCache
 import io.legado.app.help.image.registerAndroidBookImageLoader
 import io.legado.app.help.registerAndroidFileCacheProvider
@@ -86,6 +85,7 @@ import io.legado.app.service.WebService
 import io.legado.app.ui.book.changesource.registerAndroidChangeBookSourcePlatform
 import io.legado.app.ui.book.manage.registerAndroidBookshelfManagePlatform
 import io.legado.app.ui.browser.configureWebViewStartUpMode
+import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.ui.main.AndroidUpdateBookCallback
 import io.legado.app.ui.platform.registerSharedAppContext
 import io.legado.app.utils.LogUtils
@@ -147,7 +147,7 @@ class App : Application() {
         // 非正确性前提); 须在 Locale.setDefault 之后 — attachBaseContext 的
         // AppContextWrapper.wrap 已设置
         warmAppStringCache()
-        registerAndroidAppStringProvider()
+        registerComposeStringProviders()
         registerAndroidAppLogHost()
         // 注册 ScreenInfoProvider (供 SystemUtils.screenWidthPx/screenHeightPx 委托读取),
         // 须在任何 SystemUtils 屏幕尺寸访问之前 (PdfFile 渲染等)
@@ -250,10 +250,10 @@ class App : Application() {
         // 注册备份/恢复的 Android 钩子 (SAF 复制解压 / config.xml 旧格式 / 主题与图标刷新)
         registerAndroidBackupRestoreHook()
         // 注册 ReadBookConfigProviders: app 端 ReadBookConfig 已收敛为薄壳, 全部转发到这里
-        // 注册的 ReadBookConfigShared 实例 (shared UI / BackupShared 也共用同一实例)。
+        // 注册的 ReadBookConfigShared 实例 (shared UI / BackupShared / ReadConfigProviders() 也共用同一实例)。
         // 须在 registerAndroidAppFilesDir + registerAndroidWebBookProviders(AppConfigProviders) 之后。
         ReadBookConfigProviders.register(
-            AndroidReadConfigProviders().readBookConfig
+            ReadBookConfigShared(PreferenceProviders.get())
         )
         CrashHandler(this)
         oldConfig = Configuration(resources.configuration)

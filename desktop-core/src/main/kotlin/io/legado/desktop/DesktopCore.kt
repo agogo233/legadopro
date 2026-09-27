@@ -28,7 +28,6 @@ import io.legado.app.help.file.desktopResolveStoredRef
 import io.legado.app.help.file.registerDesktopAppFilesDir
 import io.legado.app.help.file.registerDesktopFileDownloader
 import io.legado.app.help.http.OkHttpClientProviders
-import io.legado.app.help.i18n.registerAppStringProvider
 import io.legado.app.help.notification.registerDesktopNotificationProgress
 import io.legado.app.help.registerComposeDefaultDataResourceProvider
 import io.legado.app.help.service.DesktopUpdateBookCallback
@@ -42,7 +41,7 @@ import io.legado.app.help.toast.registerDesktopToaster
 import io.legado.app.help.tts.TtsEngineProvider
 import io.legado.app.model.fileBook.ZipFileWrapperFactoryProviders
 import io.legado.app.ui.book.changecover.CoverStorageServiceProviders
-import io.legado.app.ui.compose.platform.jvmGetString
+import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.web.registerDesktopWebServerPlatform
 import io.legado.app.web.utils.registerComposeWebAssetSource
 import io.legado.app.web.utils.registerDesktopWebStrings
@@ -115,9 +114,10 @@ var restartMainClass: String = "io.legado.desktop.MainKt"
  * # 调用顺序 (与原 Main.kt 三阶段结构一一对应)
  * 1. [initRuntimeEnvironment] — 便携模式 + quickjs native 定位 (main 最前, 早于一切 provider)
  * 2. [DesktopCrashHandler.install] — 崩溃日志 (紧跟 1, 落盘目录依赖 legado.portable.root)
- * 3. [registerCoreProviders] — 阶段1 同步注册核心子集 (原 application{} 内注册块)
- * 4. [registerSecondaryCoreProviders] — 阶段3 异步注册核心子集 (原 registerSecondaryProviders)
- * 5. [startupBackgroundTasks] — 阶段3 尾部启动期异步任务 (adjustSortNumber/默认数据/清理/WebDav)
+ * 3. [registerEarlyProviders] — 阶段1 同步注册核心子集 (原 application{} 内注册块)
+ * 4. [registerRestProviders] — 阶段1 余下重注册 (HTTP/JS/Room/存储/封面)
+ * 5. [registerSecondaryCoreProviders] — 阶段3 异步注册核心子集 (原 registerSecondaryProviders)
+ * 6. [startupBackgroundTasks] — 阶段3 尾部启动期异步任务 (adjustSortNumber/默认数据/清理/WebDav)
  */
 object DesktopCore {
 
@@ -193,17 +193,16 @@ object DesktopCore {
      * UI 绑定项 (AppUserModelId/ScreenInfo/TrayNotifier.uiSender/PlatformCapabilities/
      * PlatformServices/系统 TTS 引擎/BookImageLoader) 留在 :desktop Main.kt 原位置注册。
      *
-     * @return 构造好的 [ReadBookConfigShared] (供 :desktop 阶段2 构造 LocalReadConfigProviders
-     *   注入 Compose; 必须与全局 ReadBookConfigProviders 同实例, 否则配置写读分家)。
-     *   headless 不消费该返回值, 但注册本身必须执行 (备份格式兼容性补齐)。
+     * @return 构造好的 [ReadBookConfigShared] (已注册到 ReadBookConfigProviders;
+     *   headless 不消费该返回值, 但注册本身必须执行 (备份格式兼容性补齐))。
      */
     fun registerEarlyProviders(): ReadBookConfigShared {
         // 注册桌面端 Host 类 provider (启动期最早, 让 shared commonMain 调用 AppLog/appString 时有输出)
         // - AppLogHost: 桥接到 println, 未注册时 AppLog 副作用 (write/toast/debugPrint) 静默 no-op
-        // - AppStringProvider: key → strings.xml 同步查表 (jvmGetString, runBlocking 桥接),
-        //   未注册时 appString fallback 返回 key 名; 须先于任何 appString 调用
         registerDesktopAppLogHost()
-        registerAppStringProvider { key, args -> jvmGetString(key.name, *args) }
+        // 字符串通道 (syncGetString 与 appString, 同源同一份实现): 未注册时两者均 fallback
+        // 返回 key 名, 故须先于任何取值调用; 桌面与 headless 两条入口共用本函数
+        registerComposeStringProviders()
         // 注入机器标识到 AndroidIdHolder (对照 app 端 JsEnginesAndroid 注入 ANDROID_ID)。
         // 默认值 "null" 只有 4 字符, BaseSource 登录信息 AES 密钥取前 16 字节会越界被吞,
         // 表现为桌面端书源登录信息无法持久化; 必须在任何 getLoginInfo/putLoginInfo 之前注入
@@ -222,7 +221,6 @@ object DesktopCore {
         // 备份格式兼容性: 注册桌面端 config provider
         // - PreferenceProvider + AppConfigAccessor
         // - ReadBookConfigProviders + ThemeConfigProviders (备份格式兼容性补齐, 供 BackupShared 用)
-        // 接住返回值: 必须与全局 ReadBookConfigProviders 同实例, 否则配置写读分家
         val desktopReadBookConfig = registerDesktopConfig()
         // 应用内语言 (PreferKey.language → JVM 默认 Locale):
         // 必须在 registerDesktopConfig 之后 (要读 pref)

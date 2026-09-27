@@ -49,6 +49,7 @@ import io.legado.app.model.commitBackgroundImage
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppRadioButton
+import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.AppSlider
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.AppUnderlineTextField
@@ -428,7 +429,7 @@ fun ThemeCustomizeDialog(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 48.dp)
+                                .heightIn(min = DesignTokens.viewHeightXl)
                                 .clickable(onClick = { pickBgImage() }),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -470,7 +471,7 @@ fun ThemeCustomizeDialog(
                                 value = bgBlur,
                                 max = 25,
                                 onValueChange = { bgBlur = it },
-                                modifier = Modifier.weight(1f).padding(start = 8.dp),
+                                modifier = Modifier.weight(1f).padding(start = DesignTokens.spacingDefault),
                             )
                             Text(
                                 text = bgBlur.toString(),
@@ -487,7 +488,7 @@ fun ThemeCustomizeDialog(
                     ) {
                         Spacer(Modifier.weight(1f))
                         AppTextButton(text = stringResource(Res.string.cancel), onClick = onDismiss)
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(DesignTokens.spacingDefault))
                         AppTextButton(text = stringResource(Res.string.ok)) {
                             when (mode) {
                                 MODE_EDIT_PREFS -> saveToPrefs()
@@ -553,7 +554,8 @@ private fun ColorRow(label: String, color: Int, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
+            .heightIn(min = DesignTokens.viewHeightXl)
+            .listItemFocus()
             .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {

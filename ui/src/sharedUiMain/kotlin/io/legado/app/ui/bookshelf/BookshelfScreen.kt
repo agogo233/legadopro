@@ -34,7 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
@@ -50,7 +49,9 @@ import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.model.BookCoverShared.CoverRatio
 import io.legado.app.ui.compose.component.AppScrollTabRow
+import io.legado.app.ui.compose.component.pagerPageFocus
 import io.legado.app.ui.compose.platform.platformStatusBarPadding
+import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.OnRouteLifecycle
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.LocalEInk
@@ -325,21 +326,23 @@ fun BookshelfScreen(
                 key = { index -> groups.getOrNull(index)?.groupId ?: index.toLong() },
             ) { page ->
                 val group = groups.getOrNull(page) ?: return@HorizontalPager
-                GroupBooksPage(
-                    group = group,
-                    spec = layoutSpec,
-                    externalScrollState = scrollState,
-                    initialGroupId = initialGroupId,
-                    scrollStates = pageScrollStates,
-                    viewModel = viewModel,
-                    configTick = configTick,
-                    books = booksCache[group.groupId],
-                    onBookClick = stableOnBookClick,
-                    onBookLongClick = stableOnBookLongClick,
-                    bookCoverSlot = bookCoverSlot,
-                    groupCoverSlot = groupCoverSlot,
-                    onRefresh = stableOnRefresh,
-                )
+                Box(Modifier.fillMaxSize().pagerPageFocus(pagerState, page)) {
+                    GroupBooksPage(
+                        group = group,
+                        spec = layoutSpec,
+                        externalScrollState = scrollState,
+                        initialGroupId = initialGroupId,
+                        scrollStates = pageScrollStates,
+                        viewModel = viewModel,
+                        configTick = configTick,
+                        books = booksCache[group.groupId],
+                        onBookClick = stableOnBookClick,
+                        onBookLongClick = stableOnBookLongClick,
+                        bookCoverSlot = bookCoverSlot,
+                        groupCoverSlot = groupCoverSlot,
+                        onRefresh = stableOnRefresh,
+                    )
+                }
             }
         }
     }
@@ -494,7 +497,7 @@ internal fun BookshelfTopBar(
                 tabCount = groups.size,
                 selectedIndex = selectedIndex,
                 indicatorColor = colors.accent,
-                modifier = Modifier.weight(1f).padding(start = 16.dp),
+                modifier = Modifier.weight(1f).padding(start = DesignTokens.spacingLg),
             ) { index ->
                 val group = groups[index]
                 val title = if (showGroupCount) {
@@ -533,7 +536,7 @@ internal fun BookshelfTopBarContainer(
         Row(
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp),
+                .heightIn(min = DesignTokens.viewHeightXl),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             content()
@@ -551,7 +554,7 @@ internal fun RowScope.BookshelfTitleText(title: String) {
         fontSize = 20.sp,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.weight(1f).padding(start = 16.dp),
+        modifier = Modifier.weight(1f).padding(start = DesignTokens.spacingLg),
     )
 }
 
@@ -567,9 +570,9 @@ internal fun GroupTab(
     val colors = AppTheme.colors
     Box(
         Modifier
-            .heightIn(min = 48.dp)
+            .heightIn(min = DesignTokens.viewHeightXl)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = DesignTokens.spacingDefault),
         contentAlignment = Alignment.Center,
     ) {
         Text(

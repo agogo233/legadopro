@@ -8,10 +8,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
-import io.legado.app.ui.compose.platform.jvmGetString
+import io.legado.app.ui.compose.platform.syncGetString
+import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.desktop.media.DesktopMediaRuntime
 
 /**
@@ -32,15 +32,15 @@ fun DesktopMediaRuntimeHost() {
 
         DesktopMediaRuntime.Phase.NeedConfirm -> AppAlertDialog(
             onDismissRequest = { DesktopMediaRuntime.dismiss() },
-            title = jvmGetString("media_runtime_title"),
-            message = jvmGetString("media_runtime_need_download"),
+            title = syncGetString("media_runtime_title"),
+            message = syncGetString("media_runtime_need_download"),
             okButton = AlertButton(
-                text = jvmGetString("action_download"),
+                text = syncGetString("action_download"),
                 dismissOnClick = false,
                 onClick = { DesktopMediaRuntime.startInstall() },
             ),
             cancelButton = AlertButton(
-                text = jvmGetString("cancel"),
+                text = syncGetString("cancel"),
                 onClick = { DesktopMediaRuntime.dismiss() },
             ),
             widthFraction = 0.5f,
@@ -49,10 +49,10 @@ fun DesktopMediaRuntimeHost() {
         DesktopMediaRuntime.Phase.Downloading -> AppAlertDialog(
             // 下载中禁外点关闭: 半截安装靠 .part + sha1 标记兜住, 但用户不该误以为关框就是取消安装
             onDismissRequest = {},
-            title = jvmGetString("media_runtime_title"),
-            message = jvmGetString("media_runtime_downloading", state.progressText),
+            title = syncGetString("media_runtime_title"),
+            message = syncGetString("media_runtime_downloading", state.progressText),
             content = {
-                Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                Column(Modifier.fillMaxWidth().padding(top = DesignTokens.spacingDefault)) {
                     LinearProgressIndicator(
                         progress = if (state.totalBytes > 0) state.percent / 100f else 0f,
                         modifier = Modifier.fillMaxWidth(),
@@ -64,15 +64,15 @@ fun DesktopMediaRuntimeHost() {
 
         DesktopMediaRuntime.Phase.Failed -> AppAlertDialog(
             onDismissRequest = { DesktopMediaRuntime.dismiss() },
-            title = jvmGetString("media_runtime_title"),
-            message = jvmGetString("media_runtime_download_failed", state.message.orEmpty()),
+            title = syncGetString("media_runtime_title"),
+            message = syncGetString("media_runtime_download_failed", state.message.orEmpty()),
             okButton = AlertButton(
-                text = jvmGetString("retry"),
+                text = syncGetString("retry"),
                 dismissOnClick = false,
                 onClick = { DesktopMediaRuntime.startInstall() },
             ),
             cancelButton = AlertButton(
-                text = jvmGetString("cancel"),
+                text = syncGetString("cancel"),
                 onClick = { DesktopMediaRuntime.dismiss() },
             ),
             widthFraction = 0.5f,

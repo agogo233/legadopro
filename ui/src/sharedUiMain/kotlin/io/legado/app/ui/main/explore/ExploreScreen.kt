@@ -61,6 +61,7 @@ import io.legado.app.ui.compose.component.AppFilletTextButton
 import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.GridPackLayout
 import io.legado.app.ui.compose.component.estimateGridHeight
+import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.toGridPackSpec
 import io.legado.app.ui.compose.platform.rememberNavigationBarPaddingValues
 import io.legado.app.ui.compose.platform.platformStatusBarPadding
@@ -122,7 +123,7 @@ import org.jetbrains.compose.resources.stringResource
 private const val EXPAND_DURATION_MS = 220
 
 /** 分类网格单行最小高度 (GridPackLayout rowUnitMinHeight; 原 tv.minimumHeight = viewHeight.large) */
-private val KIND_ROW_MIN_HEIGHT = 40.dp
+private val KIND_ROW_MIN_HEIGHT = DesignTokens.viewHeightLarge
 
 /**
  * 展开动画结束后的单次复查缓冲: 覆盖展开动画晚一帧开始 (animateIn 翻转) + 帧渲染余量。
@@ -265,10 +266,10 @@ fun ExploreScreen(
                 state = state.listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
-                    start = 12.dp,
-                    end = 12.dp,
+                    start = DesignTokens.spacingMd,
+                    end = DesignTokens.spacingMd,
                     bottom = navBarBottom
-                ), // space.md
+                ),
             ) {
                 if (pinned.isNotEmpty()) {
                     item(key = "__pinned__", contentType = "pinned") {
@@ -396,11 +397,11 @@ private suspend fun ensureExpandedItemVisible(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PinnedSection(pinned: List<PinnedExplore>, actions: ExploreUiActions) {
-    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+    Column(Modifier.fillMaxWidth().padding(top = DesignTokens.spacingXs)) {
         Text(
             text = stringResource(Res.string.favorite),
             color = AppTheme.colors.secondaryText,
-            modifier = Modifier.padding(start = 4.dp), // space.xs
+            modifier = Modifier.padding(start = DesignTokens.spacingXs),
         )
         FlowRow(Modifier.fillMaxWidth()) {
             pinned.forEach { pin ->
@@ -439,8 +440,16 @@ private fun ExploreSourceItem(
         label = "exploreArrow",
     )
 
-    // 对照 item_explore_source.xml: 外层 paddingTop=4dp (arco_spacing_xs)
-    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+    // 对照 item_explore_source.xml: 外层 paddingTop=4dp (arco_spacing_xs)。
+    // 原版根 LinearLayout 才是 bg_item_focused_on_tv 的宿主 (含下方分类展开区), 而 ll_title
+    // 另有一层 bg_find_book_group 叠在它上面; 点击则挂在 ll_title 上 (原 ExploreAdapter 对
+    // llTitle 设 setOnClickListener), 故焦点在根、点击在内层 Row。
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .listItemFocus()
+            .padding(top = DesignTokens.spacingXs),
+    ) {
         // ll_title: bg_find_book_group (transparent10 填充+8dp 圆角) + padding 8dp
         // 外层 Box 承载下拉菜单: DropdownMenu 锚点取本 Box 左上角, 复刻原 PopupMenu(view=llTitle) 左侧弹出
         Box {
@@ -453,7 +462,7 @@ private fun ExploreSourceItem(
                         onClick = { actions.onToggleExpand(item) },
                         onLongClick = { showMenu = true },
                     )
-                    .padding(8.dp), // arco_spacing_default
+                    .padding(DesignTokens.spacingDefault),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -470,7 +479,7 @@ private fun ExploreSourceItem(
                     CircularProgressIndicator(
                         color = colors.accent,
                         strokeWidth = 1.dp,
-                        modifier = Modifier.padding(end = 4.dp).size(20.dp),
+                        modifier = Modifier.padding(end = DesignTokens.spacingXs).size(20.dp),
                     )
                 }
                 // 原 iv_status: 20dp、tint secondaryText
@@ -491,7 +500,7 @@ private fun ExploreSourceItem(
         }
         // 分类区外框: 恒定 paddingTop=4dp (对照原 FrameLayout - GridLayout 收起仅 gone,
         // 外框始终占 4dp)。收起态相邻项间距 = 本项尾 4dp + 下项根 paddingTop 4dp = 8dp
-        Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Column(Modifier.fillMaxWidth().padding(top = DesignTokens.spacingXs)) {
             val kindContent: @Composable () -> Unit = {
                 val data = current ?: shown
                 if (data != null && data.second.isNotEmpty()) {
@@ -639,8 +648,8 @@ private fun ExploreTitleBar(
     Box(Modifier.fillMaxWidth().then(if (eInk) Modifier else Modifier.platformStatusBarPadding())) {
         Row(
             // 有返回箭头时 IconButton 自带 48dp 宽度, 去掉 12dp 起始留白
-            Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                .padding(start = if (onBack == null) 12.dp else 0.dp),
+            Modifier.fillMaxWidth().heightIn(min = DesignTokens.viewHeightMax)
+                .padding(start = if (onBack == null) DesignTokens.spacingMd else 0.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (onBack != null) {

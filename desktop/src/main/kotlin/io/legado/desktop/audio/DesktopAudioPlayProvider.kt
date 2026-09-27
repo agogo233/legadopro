@@ -9,11 +9,12 @@ import io.legado.app.model.audio.AudioPlayAnalyzeRuleFactory
 import io.legado.app.model.audio.AudioPlaySession
 import io.legado.app.model.audio.LyricPublisher
 import io.legado.app.model.audio.NowPlayingSessionHost
-import io.legado.app.ui.compose.platform.jvmGetString
+import io.legado.app.ui.compose.platform.syncGetString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * 桌面端 AudioPlay 宿主 (对应 app 端 AudioPlayService 的平台部分)。
@@ -57,13 +58,16 @@ class DesktopAudioPlayProvider : NowPlayingSessionHost() {
             chapter = AudioPlayShared.durChapter,
             coroutineContext = currentCoroutineContext(),
         ).resolveMedia()
+        // 解析直链要走书源 JS 与网络, 期间可能已被取消 (退出播放页/切章): 取消后不该再动引擎,
+        // 否则会白建一个引擎实例 (未装媒体组件时还会弹出下载确认)
+        currentCoroutineContext().ensureActive()
         controller.setSource(mediaUrl, headers, positionMs.toLong())
         controller.prepare()
     }
 
     /** mpv 的报错文案走桌面本地化字符串。 */
     override fun playerErrorMessage(error: Throwable): String =
-        jvmGetString("desktop_audio_play_error", error.message ?: "")
+        syncGetString("desktop_audio_play_error", error.message ?: "")
 
     /** SMTC 首次播放时激活 (幂等)。 */
     override fun onSessionStart() {

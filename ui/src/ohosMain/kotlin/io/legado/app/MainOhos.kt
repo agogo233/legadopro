@@ -10,9 +10,7 @@ import androidx.compose.ui.window.ComposeArkUIViewController
 import io.legado.app.help.config.LocalReadConfigProviders
 import io.legado.app.help.config.ReadConfigProviders
 import io.legado.app.help.config.registerOhosProviders
-import io.legado.app.help.registerNativeAppStringProvider
 import io.legado.app.help.registerComposeDefaultDataResourceProvider
-import io.legado.app.ui.compose.platform.registerComposeSyncStringProvider
 import io.legado.app.ui.browser.LocalWebViewSlot
 import io.legado.app.ui.browser.OhosWebViewSlot
 import io.legado.app.ui.OhosPlatformCapabilities
@@ -65,13 +63,10 @@ fun MainArkUIViewController(env: napi_env): napi_value {
 @Composable
 fun MainOhos() {
     // provider 注册 (首次组合时执行一次, 幂等)
-    // 注: AppString / 默认数据 provider 的实现在 :ui commonMain (经 composeResources
-    // 生成的 Res 取数), 须在 registerOhosProviders() 之前注册。
-    remember {
-        registerComposeSyncStringProvider()
-        registerNativeAppStringProvider()
-        registerComposeDefaultDataResourceProvider()
-    }
+    // 注: 字符串通道与默认数据 provider 的实现都在 :ui commonMain (经 composeResources
+    // 生成的 Res 取数), 字符串通道随 registerOhosProviders() 注册 (外部启动请求可能早于
+    // 首帧组合取串), 默认数据 provider 须在其之前注册。
+    remember { registerComposeDefaultDataResourceProvider() }
     remember { registerOhosProviders() }
     // 注册平台能力 (供 shared LegadoApp 经 PlatformCapabilityProviders.get() 取能力)
     remember { PlatformCapabilityProviders.register(OhosPlatformCapabilities) }
@@ -93,7 +88,8 @@ fun MainOhos() {
     val eventBusProvider = remember { SharedEventBusProvider() }
 
     // 阅读页注入点: 未注入时 LocalReadConfigProviders 取值即 error,
-    // 阅读页与 EffectiveReplaces 路由会崩 (默认值为 error 而非兜底实现)
+    // 阅读页与 EffectiveReplaces 路由会崩 (默认值为 error 而非兜底实现);
+    // 实例来自全局注册 (须在 registerOhosProviders 之后), 与设置弹窗读写同一份配置
     val readConfigProviders = remember { ReadConfigProviders() }
 
     CompositionLocalProvider(

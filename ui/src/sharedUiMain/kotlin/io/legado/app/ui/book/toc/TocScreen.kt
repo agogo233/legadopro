@@ -60,6 +60,7 @@ import io.legado.app.ui.compose.component.AppTitleBar
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
 import io.legado.app.ui.compose.component.FastScrollLazyVerticalGrid
 import io.legado.app.ui.compose.component.OverflowMenu
+import io.legado.app.ui.compose.component.pagerPageFocus
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.platform.rememberColor
 import io.legado.app.ui.compose.platform.rememberPainter
@@ -233,7 +234,9 @@ fun TocScreen(
             beyondViewportPageCount = 1,
             userScrollEnabled = !eInk,
         ) { page ->
-            if (page == 0) ChapterListPage(state, actions) else BookmarkPage(state, actions)
+            Box(Modifier.fillMaxSize().pagerPageFocus(pagerState, page)) {
+                if (page == 0) ChapterListPage(state, actions) else BookmarkPage(state, actions)
+            }
         }
     }
 }
@@ -247,7 +250,7 @@ private fun TocTab(title: String, selected: Boolean, onClick: () -> Unit) {
             .width(IntrinsicSize.Max)
             .height(DesignTokens.viewHeightXl)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = DesignTokens.spacingMd),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -389,7 +392,7 @@ private fun ChapterItem(
                     if (item.isVolume) actions.toggleVolume(item) else actions.openChapter(item)
                 },
             )
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (item.isVip && !item.isPay) {
@@ -399,7 +402,7 @@ private fun ChapterItem(
                 tint = colors.secondaryText,
                 modifier = Modifier
                     .size(24.dp)
-                    .padding(end = 8.dp),
+                    .padding(end = DesignTokens.spacingDefault),
             )
         }
         Column(Modifier.weight(1f)) {
@@ -421,7 +424,7 @@ private fun ChapterItem(
                             color = colors.secondaryText,
                             fontSize = 12.sp,
                             maxLines = 1,
-                            modifier = Modifier.padding(end = 16.dp),
+                            modifier = Modifier.padding(end = DesignTokens.spacingLg),
                         )
                     }
                     if (showTag) {
@@ -440,7 +443,7 @@ private fun ChapterItem(
         Box(
             Modifier
                 .size(24.dp)
-                .padding(4.dp),
+                .padding(DesignTokens.spacingXs),
             contentAlignment = Alignment.Center,
         ) {
             when {
@@ -495,7 +498,7 @@ private fun ChapterInfoBar(
             .fillMaxWidth()
             .background(colors.bottomBackground)
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = DesignTokens.spacingLg),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -514,7 +517,7 @@ private fun ChapterInfoBar(
                         }
                     }
                 }
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = DesignTokens.spacingLg)
                 .wrapContentHeight(Alignment.CenterVertically),
         )
         IconButton(
@@ -573,8 +576,8 @@ private fun BookmarkPage(state: TocUiState, actions: TocUiActions) {
         state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
+            start = DesignTokens.spacingLg,
+            end = DesignTokens.spacingLg,
             bottom = navPad.calculateBottomPadding(),
         ),
     ) {
@@ -600,7 +603,7 @@ private fun BookmarkItem(
                 onClick = { actions.openBookmark(item) },
                 onLongClick = { actions.editBookmark(item) },
             )
-            .padding(vertical = 8.dp),
+            .padding(vertical = DesignTokens.spacingDefault),
     ) {
         Text(
             text = item.chapterName,
@@ -610,7 +613,7 @@ private fun BookmarkItem(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(4.dp),
+                .padding(DesignTokens.spacingXs),
         )
         if (item.bookText.isNotEmpty()) {
             Text(
@@ -621,7 +624,7 @@ private fun BookmarkItem(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(4.dp),
+                    .padding(DesignTokens.spacingXs),
             )
         }
         if (item.content.isNotEmpty()) {
@@ -633,7 +636,7 @@ private fun BookmarkItem(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(4.dp),
+                    .padding(DesignTokens.spacingXs),
             )
         }
     }
@@ -658,7 +661,7 @@ private fun CheckItem(text: String, checked: Boolean, onClick: () -> Unit) {
         onClick = onClick,
     ) {
         Text(text, color = colors.primaryText)
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(DesignTokens.spacingMd))
         AppMenuCheckbox(checked = checked)
     }
 }

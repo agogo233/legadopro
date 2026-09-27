@@ -24,7 +24,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.ui.compose.component.rememberSyncedTextFieldState
 import io.legado.app.ui.compose.platform.rememberColor
@@ -62,7 +61,7 @@ fun ReviewPostScreen(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = DesignTokens.spacingDefault)
-            .padding(top = 8.dp),
+            .padding(top = DesignTokens.spacingDefault),
     ) {
         // 输入框 weight=1 在左, 发布按钮 wrap_content 在右 (原版内层水平 LinearLayout)
         Row(
@@ -88,10 +87,10 @@ fun ReviewPostScreen(
                 fontSize = 14.sp,
                 maxLines = 1,
                 modifier = Modifier
-                    .padding(start = 8.dp)
+                    .padding(start = DesignTokens.spacingDefault)
                     .clip(DesignTokens.shapeDefault)
                     .clickable(enabled = state.content.isNotBlank()) { actions.onSubmit() }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = DesignTokens.spacingMd, vertical = DesignTokens.spacingDefault),
             )
         }
     }
@@ -114,8 +113,8 @@ private fun ReviewPostInputField(
     modifier: Modifier = Modifier,
 ) {
     ReviewInputCapsule(
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        modifier = modifier.heightIn(min = 40.dp),
+        contentPadding = PaddingValues(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingMd),
+        modifier = modifier.heightIn(min = DesignTokens.viewHeightLarge),
     ) {
         if (value.isEmpty()) {
             ReviewInputHint(hint)

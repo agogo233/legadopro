@@ -29,7 +29,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDbProviders
@@ -147,7 +146,7 @@ fun SearchScopeDialog(
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = DesignTokens.spacingDefault),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(DesignTokens.spacingDefault),
                 ) {
                     RadioChip(
                         text = stringResource(Res.string.group),
@@ -182,14 +181,14 @@ fun SearchScopeDialog(
                                                 selectedGroups - group
                                             }
                                         }
-                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                        .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingDefault),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     AppCheckbox(checked = checked, onCheckedChange = null)
                                     Text(
                                         text = group,
                                         color = colors.primaryText,
-                                        modifier = Modifier.padding(start = 8.dp),
+                                        modifier = Modifier.padding(start = DesignTokens.spacingDefault),
                                     )
                                 }
                             }
@@ -206,7 +205,7 @@ fun SearchScopeDialog(
                                             selected = selected,
                                             role = Role.RadioButton,
                                         ) { selectedSource = source }
-                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                        .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingDefault),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     AppRadioButton(selected = selected, onClick = null)
@@ -215,7 +214,7 @@ fun SearchScopeDialog(
                                         color = colors.primaryText,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.padding(start = 8.dp),
+                                        modifier = Modifier.padding(start = DesignTokens.spacingDefault),
                                     )
                                 }
                             }
@@ -266,7 +265,7 @@ private fun ScopeTitleBar(
             .fillMaxWidth()
             .background(colors.bottomBackground)
             // 56dp 对照原 TitleBar minHeight=actionBarSize
-            .heightIn(min = 56.dp),
+            .heightIn(min = DesignTokens.viewHeightMax),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (!groupMode && showScreen) {
@@ -294,7 +293,7 @@ private fun ScopeTitleBar(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 16.dp),
+                    .padding(start = DesignTokens.spacingLg),
             )
             if (!groupMode) {
                 IconButton(onClick = { onShowScreenChange(true) }) {

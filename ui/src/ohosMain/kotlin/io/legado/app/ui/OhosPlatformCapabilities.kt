@@ -71,6 +71,16 @@ object OhosPlatformCapabilities : NativePlatformCapabilities {
     // 读系统剪贴板 (对照原版 ContextExtensions getClipText: 主题导入/规则粘贴等 7 场景)
     override fun getClipboardText(): String? = readFromClipboard()
 
+    /**
+     * 应用版本名 (对照 app 端 AppConst.appInfo.versionName)。
+     *
+     * 鸿蒙版本号在 app.json5 且由 hvigorfile.ts 在构建阶段覆写, Kotlin/Native 无读取应用包信息的
+     * API, 故由 ArkTS 启动时经 [OhosNativeBridge.registerAppVersionFn] 注入; 未注入返回 null,
+     * 关于页版本号条目退化为空 summary。
+     */
+    override fun getAppVersionName(): String? = OhosNativeBridge.getAppVersionName()
+
+
     // 按 bookUrl 查 DB 解析 BookRef, 供 deep link / 文件关联的路由导航
     override suspend fun resolveBookRef(bookUrl: String): BookRef? =
         appDb.bookDao.getBook(bookUrl)?.toRouteRef()

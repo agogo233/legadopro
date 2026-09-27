@@ -52,6 +52,7 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.ui.compose.component.AppDropdownMenu
 import io.legado.app.ui.compose.component.AppMenuCheckbox
 import io.legado.app.ui.compose.component.AppRadioButton
+import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
 import io.legado.app.ui.compose.component.OverflowMenu
@@ -257,7 +258,7 @@ fun ChangeSourceBottomBar(
         Modifier
             .fillMaxWidth()
             .height(36.dp)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -265,7 +266,7 @@ fun ChangeSourceBottomBar(
                 .weight(1f)
                 .fillMaxHeight()
                 .clickable(onClick = onDurClick)
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = DesignTokens.spacingDefault),
             contentAlignment = Alignment.CenterStart,
         ) {
             Text(
@@ -318,7 +319,7 @@ fun SearchBookItem(
     onDelete: () -> Unit,
 ) {
     val colors = AppTheme.colors
-    var score by remember(book.bookUrl) { mutableIntStateOf(getScore()) }
+    var score by remember(book.origin, book.bookUrl) { mutableIntStateOf(getScore()) }
     var menuExpanded by remember { mutableStateOf(false) }
     // 预取格式化串: rememberString 是 @Composable, 不能在 lambda 里调
     val strRespondTime = stringResource(Res.string.respondTime)
@@ -326,8 +327,9 @@ fun SearchBookItem(
         Row(
             Modifier
                 .fillMaxWidth()
+                .listItemFocus()
                 .combinedClickable(onClick = onClick, onLongClick = { menuExpanded = true })
-                .padding(8.dp),
+                .padding(DesignTokens.spacingDefault),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -357,7 +359,7 @@ fun SearchBookItem(
             Column(
                 Modifier
                     .weight(1f)
-                    .padding(vertical = 4.dp),
+                    .padding(vertical = DesignTokens.spacingXs),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -531,7 +533,7 @@ private fun TocItemRow(chapter: BookChapter, isDur: Boolean, onClick: () -> Unit
             .fillMaxWidth()
             .then(volumeBg)
             .clickable(onClick = onClick)
-            .padding(8.dp),
+            .padding(DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -764,7 +766,7 @@ fun ChangeSourceScreen(
                 // 对照 app 端 Dialog.Content 第 228-242 行 SearchBookItem 完整回调
                 SearchBookItem(
                     book = searchBook,
-                    isCurSource = searchBook.bookUrl == state.curBookUrl,
+                    isCurSource = (state.book == null || searchBook.origin == state.book.origin) && searchBook.bookUrl == state.curBookUrl,
                     loadWordCount = state.loadWordCount,
                     getScore = { itemActions.getScore(searchBook) },
                     setScore = { itemActions.setScore(searchBook, it) },
@@ -780,7 +782,9 @@ fun ChangeSourceScreen(
         ChangeSourceBottomBar(
             durText = state.durText,
             onDurClick = {
-                val index = state.sources.indexOfFirst { it.bookUrl == state.curBookUrl }
+                val index = state.sources.indexOfFirst {
+                    (state.book == null || it.origin == state.book.origin) && it.bookUrl == state.curBookUrl
+                }
                 if (index >= 0) scope.launch { listState.scrollToItem(index) }
             },
             onTop = { scope.launch { listState.scrollToItem(0) } },

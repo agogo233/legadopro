@@ -9,10 +9,41 @@ legado iOS 端的 Xcode 工程骨架, 用 SwiftUI App 生命周期 (`@main`) + `
 iosApp/
 ├── iOSApp.swift       # SwiftUI App 入口 (@main), WindowGroup { ContentView() }
 ├── ContentView.swift  # UIViewControllerRepresentable 包装 MainViewControllerKt.MainViewController()
-├── Info.plist         # iOS App 配置 (屏幕方向/ATS/后台模式/Bundle ID)
+├── Info.plist         # iOS App 配置 (屏幕方向/ATS/后台模式/Bundle ID/文档类型)
 ├── project.yml        # XcodeGen 配置 (生成 .xcodeproj, 避免 git 二进制冲突)
+├── AppIcon.png        # 主图标 (由 scripts/GenerateIosIcons.kt 从 Android 矢量图生成)
+├── Icon1/4/5.png      # 交替图标 (换桌面图标, 对照 Android Launcher1/4/5)
+├── *.lproj/           # InfoPlist.strings: App 显示名本地化 (en/zh-Hans/zh-Hant/zh-Hant-HK)
 └── README.md          # 本文件 (macOS 构建说明)
 ```
+
+## 图标重生成
+
+图标 PNG 由 `scripts/GenerateIosIcons.kt` 从 `app/src/main/res/drawable/` 的 Android
+矢量图渲染 (与鸿蒙共用 `scripts/VectorIconCommon.kt`)。
+
+图标资源基本不改: 只有换 launcher 图标或改 `drawable/ic_launcher*.xml` 里的矢量时,
+才需要按脚本头部注释的命令手工重跑一次, 重跑后把 `iosApp/*.png` 一并提交。
+脚本是备用工具, 没有 Gradle/CI 调用点, 不会随构建自动跑。
+
+鸿蒙侧对应脚本为 `scripts/GenerateOhosIcons.kt`, 输出到
+`ohosApp/AppScope/resources/base/media/`。
+
+## App 显示名本地化
+
+iOS 的 App 名以各 `<lang>.lproj/InfoPlist.strings` 的 `CFBundleDisplayName` 为准,
+系统按当前语言挑选; `Info.plist` 与 `project.yml` 里的同名键只是缺本地化资源时的兜底。
+本工程四份与 app 端 `res/values*` 的 `app_name` 逐字对应:
+
+| .lproj | 显示名 | 对照 Android |
+| --- | --- | --- |
+| `en` | Legado | `res/values/strings.xml` |
+| `zh-Hans` | 阅读 | `res/values-zh/strings.xml` |
+| `zh-Hant` | 閱讀 | `res/values-zh-rTW/strings.xml` |
+| `zh-Hant-HK` | 閲讀 | `res/values-zh-rHK/strings.xml` |
+
+`Info.plist` 与 `project.yml` 里的 `CFBundleDisplayName` 只是缺本地化资源时的兜底,
+改显示名要改上面四份 `.strings`。
 
 ## 调用链
 

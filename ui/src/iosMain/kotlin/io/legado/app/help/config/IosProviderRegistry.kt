@@ -11,10 +11,11 @@ import io.legado.app.help.book.registerNativeBookStorage
 import io.legado.app.help.storage.registerNativeDataStorage
 import io.legado.app.help.book.registerNativeLocalBookLocator
 import io.legado.app.help.book.registerNativeContentProcessorAccessor
+import io.legado.app.help.crash.IosCrashHandler
+import io.legado.app.help.crash.refreshNativeCrashLogPaths
 import io.legado.app.help.file.registerIosAppFilesDir
 import io.legado.app.help.file.registerNativeFileDownloader
 import io.legado.app.help.http.registerIosBackstageWebView
-import io.legado.app.help.registerNativeAppStringProvider
 import io.legado.app.help.image.IosImageOps
 import io.legado.app.help.image.NativeBitmapProvider
 import io.legado.app.help.image.registerIosBookImageLoader
@@ -26,9 +27,11 @@ import io.legado.app.help.http.registerSharedCookieJarBridge
 import io.legado.app.help.media.registerIosMediaNotificationController
 import io.legado.app.help.notification.registerIosNotificationProgress
 import io.legado.app.help.registerComposeDefaultDataResourceProvider
+import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.help.registerNativeExploreKindsCacheProvider
 import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider
+import io.legado.app.help.service.registerIosBackgroundTasks
 import io.legado.app.help.service.registerIosServiceLauncher
 import io.legado.app.help.service.registerNativeUpdateBookCallback
 import io.legado.app.help.source.registerNativeSourceHelpAccessor
@@ -57,8 +60,6 @@ import io.legado.app.web.utils.registerComposeWebAssetSource
 import io.legado.app.web.utils.registerNativeWebStrings
 import platform.UIKit.UIDevice
 import platform.UIKit.UIScreen
-import platform.UIKit.UITraitCollection
-import platform.UIKit.UIUserInterfaceStyle
 import kotlin.concurrent.Volatile
 
 @Volatile
@@ -67,15 +68,17 @@ private var providersRegistered = false
 /**
  * iOS 宿主启动早期的统一 provider 注册入口。
  *
- * 调用方: Compose 入口 MainViewController (组合期) 与 BG 唤起时的 IosBackgroundTasks 补注册。
+ * 调用方: iOS 宿主 `application(_:didFinishLaunchingWithOptions:)` (见 iosApp/iOSApp.swift 的
+ * AppDelegate; BGTaskScheduler 注册也挂在本函数末尾, 同一条启动链)。
  * 只认第一次调用: 重复注册会换掉 prefs/AppConfig/Room 实例, 旧实例的 pref 与系统深色监听
  * 留在全局表里不摘 (见 NativeSystemTheme.listeners / PreferenceChangeNotifier)。
  *
  * 注册顺序约束 (与 desktop Main.kt / registerOhosProviders 对齐):
  * 1. registerIosAppFilesDir 最先 (其他 provider 持久化目录依赖 AppFilesDirs)
- * 1.05 registerIosToaster 须在 registerNativeAppLogHost 之前 (AppLog 的 toast 出口走 Toasters,
- *    晚于 host 注册则初始化期 `AppLog.put(toast = true)` 直接抛 (Toasters 未注册);
- *    IosToaster 只依赖 UIKit (按钮文案经 syncGetString 查 composeResources), 不依赖被它跳过的任何 provider)
+ * 1.05 字符串通道须排在 Toaster 之前, Toaster 须在 registerNativeAppLogHost 之前
+ *    (AppLog 的 toast 出口走 Toasters, 晚于 host 注册则初始化期 `AppLog.put(toast = true)`
+ *    直接抛 (Toasters 未注册); IosToaster 只依赖 UIKit, 按钮文案经 syncGetString 查
+ *    composeResources, 故字符串通道须排在 Toaster 之前)
  * 2. registerIosPreferenceProvider 在 registerNativeAppLogHost 之前 (log host 的 recordLog 门直读
  *    PreferenceProviders), 也在 AppConfigAccessor 之前 (委托 PreferenceProvider)
  * 3. registerNativeHttpProvider 在数据库/书籍缓存之前
@@ -98,19 +101,28 @@ fun registerIosProviders() {
     if (providersRegistered) return
     providersRegistered = true
 
+    // 0. 崩溃捕获 (未捕获异常钩子 + 信号处理器) 必须在最前: 本函数内任一 provider 注册抛异常
+    // 都会中断整条链, 而后面未注册的 provider (如 ScreenInfoProviders) 后续会硬崩 ——
+    // 捕获装在链首才能留下现场
+    IosCrashHandler.install()
+
     // 1. 文件系统目录 (其他 provider 持久化依赖)
     registerIosAppFilesDir()
 
-    // 1.05 Toaster (须在 AppLog 宿主之前: AppLog.put(toast = true) 的 toast 出口走 Toasters,
-    // 晚注册则初始化期的提示直接抛; IosToaster 只依赖 UIKit, 拿不到 vc 时 NSLog 兜底)
+    // 1.01 崩溃日志落盘路径补齐 (崩溃捕获装在链首时只有回退路径, 文件目录一就绪重建一次)
+    refreshNativeCrashLogPaths()
+
+    // 1.05 字符串 provider (syncGetString 与 appString 两条同步通道: model/help 层异常、
+    // 翻页边界提示、Toaster 按钮文案等; 未注册时两条通道均返回 key 名, 运行期可见为
+    // "no_prev_page" 之类原始 key。零平台依赖顺序无关, 只须在任何取值调用之前)
+    registerComposeStringProviders()
+
+    // 1.06 Toaster (须在 AppLog 宿主之前: AppLog.put(toast = true) 的 toast 出口走 Toasters,
+    // 晚注册则初始化期的提示直接抛; IosToaster 只依赖 UIKit, 拿不到 vc 时 NSLog 兜底。
+    // 按钮文案走 syncGetString("ok"), 故须在字符串通道注册之后)
     registerIosToaster()
 
-    // 1.05.5 AppString provider (help/i18n appString 通道: model/help 层异常与翻页边界提示等
-    // 同步文案; 未注册时 fallback 返回 key 名, 运行期可见为 "no_prev_page" 之类原始 key。
-    // 零平台依赖顺序无关, 只须在任何 appString 调用之前)
-    registerNativeAppStringProvider()
-
-    // 1.06 Preference provider (须在 AppLog 宿主之前: 宿主的 recordLog 门直读 PreferenceProviders,
+    // 1.07 Preference provider (须在 AppLog 宿主之前: 宿主的 recordLog 门直读 PreferenceProviders,
     // 晚注册则这中间的 AppLog.put 全按 recordLog=false 走, 不落盘)
     registerIosPreferenceProvider()
 
@@ -118,7 +130,7 @@ fun registerIosProviders() {
     // 须在 AppFilesDirs 之后 (日志目录从 filesDir 派生)、任何 AppLog.put 之前)
     registerNativeAppLogHost()
 
-    // 2. 配置 provider (AppConfigAccessor 委托 1.06 已注册的 PreferenceProvider)
+    // 2. 配置 provider (AppConfigAccessor 委托 1.07 已注册的 PreferenceProvider)
     registerNativeAppConfigAccessor()
 
     // 2.3 设备标识注入 (identifierForVendor, 取不到回退落盘 UUID; BaseSource 登录信息加密依赖 ≥16 字符)
@@ -210,7 +222,8 @@ fun registerIosProviders() {
     // 必须在任何封面提取调用之前 (BitmapProviders 未注册时 get() 抛 IllegalStateException)
     BitmapProviders.register(NativeBitmapProvider(IosImageOps))
 
-    // 7.6 本地书 accessor (FileBookProviders: epub 走 nativeMain EpubFile, txt/pdf/cbz 明确抛异常)
+    // 7.6 本地书 accessor + cbz 容器工厂 (FileBookProviders: epub 走 nativeMain EpubFile,
+    // cbz 走 commonMain CbzFile + NativeZipFileWrapperFactory, pdf 仍明确抛异常)
     // 须在 BookStorage/LocalBookLocator/BitmapProviders 之后, 任何 FileBook 调用之前
     registerNativeFileBookAccessor()
 
@@ -268,4 +281,10 @@ fun registerIosProviders() {
     // 经 NativeReadBookStateProvider 桥接阅读页挂接的 ReadBookShared)
     registerNativeBookControllerProviders()
     registerNativeWebServerPlatform()
+
+    // 缓存书籍后台续跑 (退后台收尾窗口 + BGProcessingTask 链式续约, 实现见 core iosMain
+    // help/service/IosBackgroundTasks.kt)。BGTaskScheduler 的 registerForTaskWithIdentifier
+    // 必须在 didFinishLaunching 返回前调用 (Apple 硬约束), 本函数由 iOS 宿主在该钩子内调用,
+    // 置于全部 provider 注册之后。
+    registerIosBackgroundTasks()
 }

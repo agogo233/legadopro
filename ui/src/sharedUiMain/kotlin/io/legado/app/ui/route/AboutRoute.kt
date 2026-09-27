@@ -71,7 +71,7 @@ fun AboutRoute(
 
     // 平台资源 (版本号/URL) 在 shared 层无法直读 R.string / AppConst.appInfo,
     // 由平台能力拼装后推入 ScreenModel
-    // (update_log summary 对照原版 AboutFragment.onCreatePreferences 里的 "${version} ${versionName}")
+    // (当前版本条目 summary 对照原版 AboutFragment.onCreatePreferences 里的 "${version} ${versionName}")
     val strVersion = stringResource(Res.string.version)
     val strContributorsUrl = stringResource(Res.string.contributors_url)
     val strTelegramGroupUrl = stringResource(Res.string.telegram_group_url)
@@ -84,7 +84,8 @@ fun AboutRoute(
         val versionName = PlatformCapabilityProviders.get().getAppVersionName().orEmpty()
         screenModel.updateState(
             AboutUiState(
-                updateLogSummary = if (versionName.isEmpty()) "" else "$strVersion $versionName",
+                versionSummary = if (versionName.isEmpty()) "" else "$strVersion $versionName",
+                appVersion = versionName,
                 contributorsUrl = strContributorsUrl,
                 telegramGroupUrl = strTelegramGroupUrl,
             )
@@ -104,6 +105,12 @@ fun AboutRoute(
         override fun onShare() {
             PlatformServiceProviders.get().sharing.shareText(strAppShareDescription)
         }
+
+        // 复制当前版本号 (反馈与失败处理均由各端复制能力负责, 与全仓其余复制调用一致)
+        override fun onCopyVersion() {
+            PlatformCapabilityProviders.get().copyToClipboard(state.appVersion)
+        }
+
 
         // 显示崩溃日志: 委托平台能力 (app: CrashLogsDialog Fragment; desktop: 共享 CrashLogsDialog)
         override fun onShowCrashLogs() {

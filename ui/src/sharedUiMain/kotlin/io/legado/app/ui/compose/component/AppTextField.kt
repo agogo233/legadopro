@@ -36,6 +36,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.takeOrElse
@@ -244,7 +249,7 @@ private fun <T : Any> AppTextFieldCore(
     focusRequester: FocusRequester?,
 ) {
     AppTextFieldImpl(
-        modifier = modifier.padding(start = 4.dp, end = 4.dp, bottom = 4.dp),
+        modifier = modifier.padding(start = DesignTokens.spacingXs, end = DesignTokens.spacingXs, bottom = DesignTokens.spacingXs),
         isError = isError,
         errorMessage = errorMessage,
     ) {
@@ -288,6 +293,7 @@ private fun <T : Any> AppTextFieldCore(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                .singleLineVerticalKeyGuard(singleLine)
                 .indicatorLine(enabled, isError, interactionSource, colors)
                 // 最小高度内容推导 (对齐 CodeTextField): 单行字段贴合内容, 消除 56dp 死区
                 .defaultMinSize(
@@ -349,8 +355,8 @@ internal const val SafeMaxFieldHeightPx = 260_000
 /** [SafeMaxFieldHeightPx] 按当前密度换算的 dp 值 (px 上限与设备密度无关, 需除以 density 折算)。 */
 internal fun safeMaxFieldHeight(density: Density): Dp = with(density) { SafeMaxFieldHeightPx.toDp() }
 
-/** 水平内容留白: 下划线形态收窄至 4dp (M2 filled 默认 16dp 是容器形态所需) */
-internal val TextFieldHorizontalPadding = 4.dp
+/** 水平内容留白: 下划线形态收窄至 [DesignTokens.spacingXs] (M2 filled 默认 16dp 是容器形态所需) */
+internal val TextFieldHorizontalPadding = DesignTokens.spacingXs
 
 /** 无 label 时文本顶部留白 (M2 textFieldWithoutLabelPadding 默认 top = TextFieldPadding = 16dp) */
 internal val TextFieldTopPadding = 16.dp
@@ -362,13 +368,13 @@ internal val TextFieldFirstBaselineOffset = 20.dp
 internal val TextFieldLabelToText = 2.dp
 
 /**
- * 文本底到指示线的间距 4dp (原版 EditText wrap_content 底部 inset 约 2-4dp)。
+ * 文本底到指示线的间距 [DesignTokens.spacingXs] (原版 EditText wrap_content 底部 inset 约 2-4dp)。
  * 顶对齐内容下 bottom 即"文本-下划线"距离。
  */
-internal val TextFieldBottomInset = 4.dp
+internal val TextFieldBottomInset = DesignTokens.spacingXs
 
 /**
- * 输入框默认最小高度 = 顶留白 + 固定行高 (fontSize*1.5) + 底部 4dp:
+ * 输入框默认最小高度 = 顶留白 + 固定行高 (fontSize*1.5) + 底部 [DesignTokens.spacingXs]:
  * 单行字段高度正好贴合内容, 消除 minHeight 死区 —— 死区是"单行文本离下划线太远"的根源
  * (56dp 最小高 + 顶对齐下, 文本下方空出 56-(顶留白+行高+4dp) ≈ 19dp)。
  * 多行时内容自然超过该值, 高度随内容增长, 文本底距指示线恒为 [TextFieldBottomInset]。
@@ -465,6 +471,21 @@ internal fun appTextSelectionColors(): TextSelectionColors = TextSelectionColors
     backgroundColor = AppTheme.colors.accent.copy(alpha = 0.4f),
 )
 
+/**
+ * 单行字段的上下键守卫: 单行 ↑/↓ 不改光标 selection, TextField 不消费,
+ * 事件会冒泡到根方向键导航把焦点移出输入框, 故在隧道阶段直接消费;
+ * 多行字段 ↑/↓ 移光标被 TextField 消费, 不拦。
+ */
+internal fun Modifier.singleLineVerticalKeyGuard(enabled: Boolean): Modifier =
+    if (enabled) {
+        onPreviewKeyEvent { event ->
+            event.type == KeyEventType.KeyDown &&
+                (event.key == Key.DirectionUp || event.key == Key.DirectionDown)
+        }
+    } else {
+        this
+    }
+
 /** 两个重载共享的容器: 下划线输入框 + 线下错误文案 */
 @Composable
 internal fun AppTextFieldImpl(
@@ -486,7 +507,7 @@ internal fun AppTextFieldImpl(
                     fontSize = 12.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 4.dp, top = 4.dp, end = 4.dp),
+                    modifier = Modifier.padding(start = DesignTokens.spacingXs, top = DesignTokens.spacingXs, end = DesignTokens.spacingXs),
                 )
             }
         }

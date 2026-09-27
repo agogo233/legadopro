@@ -56,6 +56,7 @@ import io.legado.app.ui.compose.component.AppRadioButton
 import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.AppTitleBar
 import io.legado.app.ui.compose.component.FastScrollLazyVerticalGrid
+import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.OverflowMenu
 import io.legado.app.ui.compose.component.effectiveColumns
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
@@ -298,14 +299,14 @@ private fun TitleActions(state: ReadRecordUiState, actions: ReadRecordUiActions)
                     dismiss()
                     actions.onToggleEnableRecord()
                 }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = DesignTokens.spacingMd, vertical = DesignTokens.spacingDefault),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AppMenuCheckbox(checked = state.enableReadRecord)
             Text(
                 stringResource(Res.string.enable_record),
                 color = AppTheme.colors.primaryText,
-                modifier = Modifier.padding(start = 4.dp),
+                modifier = Modifier.padding(start = DesignTokens.spacingXs),
             )
         }
         DropdownMenuItem(
@@ -332,14 +333,14 @@ private fun SortItem(
     Row(
         Modifier
             .clickable { onSelect() }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = DesignTokens.spacingMd, vertical = DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AppRadioButton(selected = currentMode == mode, onClick = null)
         Text(
             text,
             color = AppTheme.colors.primaryText,
-            modifier = Modifier.padding(start = 4.dp),
+            modifier = Modifier.padding(start = DesignTokens.spacingXs),
         )
     }
 }
@@ -401,7 +402,7 @@ private fun RecordList(
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                             SummaryCard(state, fillHeight = true)
                         }
-                        Box(Modifier.weight(1f).padding(top = 12.dp)) {
+                        Box(Modifier.weight(1f).padding(top = DesignTokens.spacingMd)) {
                             HeatMapCard(state, actions, heatmapSlot)
                         }
                     }
@@ -448,14 +449,14 @@ private fun SummaryCard(state: ReadRecordUiState, fillHeight: Boolean = false) {
     // (对照原版 view_read_record_header 的固定 16dp 间距)
     val fillMode = fillHeight
     val itemArrangement = if (fillMode) Arrangement.SpaceEvenly else Arrangement.Top
-    val itemGap = if (fillMode) 0.dp else 16.dp
+    val itemGap = if (fillMode) 0.dp else DesignTokens.spacingLg
     Row(
         heightMod
             .fillMaxWidth()
-            .padding(12.dp)
+            .padding(DesignTokens.spacingMd)
             .clip(DesignTokens.shapeDefault)
             .background(colors.bottomBackground)
-            .padding(vertical = 16.dp),
+            .padding(vertical = DesignTokens.spacingLg),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(
@@ -515,7 +516,7 @@ private fun SummaryItem(value: String, label: String, topPadding: Dp = 0.dp) {
         text = label,
         color = colors.secondaryText,
         fontSize = 12.sp,
-        modifier = Modifier.padding(top = 4.dp),
+        modifier = Modifier.padding(top = DesignTokens.spacingXs),
     )
 }
 
@@ -536,10 +537,10 @@ private fun HeatMapCard(
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+            .padding(start = DesignTokens.spacingMd, end = DesignTokens.spacingMd, bottom = DesignTokens.spacingMd)
             .clip(DesignTokens.shapeDefault)
             .background(colors.bottomBackground)
-            .padding(12.dp),
+            .padding(DesignTokens.spacingMd),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -565,7 +566,7 @@ private fun HeatMapCard(
                 ),
                 color = colors.primaryText,
                 fontSize = 13.sp,
-                modifier = Modifier.padding(horizontal = 8.dp),
+                modifier = Modifier.padding(horizontal = DesignTokens.spacingDefault),
             )
             IconButton(
                 onClick = { if (!atCurrent) actions.onStepMonth(1) },
@@ -588,7 +589,7 @@ private fun HeatMapCard(
         heatmapSlot(
             Modifier
                 .fillMaxWidth()
-                .padding(top = 4.dp)
+                .padding(top = DesignTokens.spacingXs)
         )
     }
 }
@@ -647,12 +648,13 @@ private fun RecordRow(
     }
     Row(
         Modifier
+            .listItemFocus()
             .fillMaxWidth()
             .combinedClickable(
                 onClick = { actions.openBook(item) },
                 onLongClick = { actions.sureDelAlert(item) },
             )
-            .padding(8.dp),
+            .padding(DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 高度跟随全局配置 (shelfCoverHeightDp)。原版此处不调 applyCoverHeight, 封面恒为布局里
@@ -670,7 +672,7 @@ private fun RecordRow(
         Column(
             Modifier
                 .weight(1f)
-                .padding(start = 12.dp),
+                .padding(start = DesignTokens.spacingMd),
         ) {
             Text(
                 text = item.bookName,
@@ -697,7 +699,7 @@ private fun RecordRow(
 private fun InfoLine(icon: androidx.compose.ui.graphics.painter.Painter, text: String) {
     val colors = AppTheme.colors
     Row(
-        Modifier.padding(top = 4.dp),
+        Modifier.padding(top = DesignTokens.spacingXs),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(

@@ -50,7 +50,9 @@ import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppSwitch
+import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.AppUnderlineTextField
+import io.legado.app.ui.compose.platform.rememberColor
 import io.legado.app.ui.compose.platform.rememberNavigationBarPaddingValues
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
@@ -96,7 +98,7 @@ fun LazyListScope.preferenceCategory(title: String) = item {
         fontSize = 14.sp,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
+            .padding(start = DesignTokens.spacingLg, end = DesignTokens.spacingLg, top = DesignTokens.spacingLg, bottom = DesignTokens.spacingDefault),
     )
 }
 
@@ -357,10 +359,11 @@ internal fun PreferenceRow(
 ) {
     val (titleColor, summaryColor) = prefTextColors(isBottomBackground)
     val clickModifier = if ((onClick != null || onLongClick != null) && enabled) {
-        Modifier.combinedClickable(
-            onClick = { onClick?.invoke() },
-            onLongClick = onLongClick,
-        )
+        Modifier.listItemFocus()
+            .combinedClickable(
+                onClick = { onClick?.invoke() },
+                onLongClick = onLongClick,
+            )
     } else Modifier
     Row(
         Modifier
@@ -372,7 +375,7 @@ internal fun PreferenceRow(
                     .semantics { disabled() }
             )
             .heightIn(min = 60.dp)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingMd),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
@@ -382,17 +385,17 @@ internal fun PreferenceRow(
                 tint = AppTheme.colors.accent,
                 modifier = Modifier.size(24.dp),
             )
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(DesignTokens.spacingLg))
         }
         Column(Modifier.weight(1f)) {
             Text(title, color = titleColor, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!summary.isNullOrEmpty()) {
-                Text(summary, color = summaryColor, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp))
+                Text(summary, color = summaryColor, fontSize = 14.sp, modifier = Modifier.padding(top = DesignTokens.spacingDefault))
             }
         }
         if (widget != null) {
             // view_preference: widget 无前置间隙, layout_marginEnd 8dp
-            Box(Modifier.padding(end = 8.dp), contentAlignment = Alignment.Center) { widget() }
+            Box(Modifier.padding(end = DesignTokens.spacingDefault), contentAlignment = Alignment.Center) { widget() }
         }
     }
 }
@@ -403,14 +406,14 @@ private fun FilletText(text: String, isBottomBackground: Boolean) {
     if (text.isEmpty()) return
     val colors = AppTheme.colors
     val textColor = if (isBottomBackground) prefTextColors(true).first else colors.secondaryText
-    val btnBg = if (colors.isDark) Color(0x14e0e0e0) else Color(0x100e0e0e)
+    val btnBg = rememberColor("btn_bg")
     Box(
         Modifier
             // 复刻 selector_fillet_btn_bg 的 4dp inset：底色内缩，外围留白不变
-            .padding(4.dp)
+            .padding(DesignTokens.spacingXs)
             .clip(DesignTokens.shapeDefault)
             .background(btnBg)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = DesignTokens.spacingMd, vertical = DesignTokens.spacingDefault),
     ) {
         Text(text, color = textColor, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -437,9 +440,9 @@ private fun SingleChoiceDialog(
                             selected = i == selectedIndex,
                             onClick = { onSelected(i); onDismissRequest() },
                         )
-                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                        .padding(horizontal = DesignTokens.spacingXl, vertical = DesignTokens.spacingMd),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(DesignTokens.spacingMd),
                 ) {
                     RadioButton(
                         selected = i == selectedIndex,
