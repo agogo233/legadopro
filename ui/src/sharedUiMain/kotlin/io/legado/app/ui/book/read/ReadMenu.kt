@@ -125,6 +125,7 @@ import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.compose.theme.LocalEInk
 import io.legado.app.ui.root.AppNavigator
+import io.legado.app.ui.root.AppOverlay
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.RouteResults
@@ -155,7 +156,7 @@ enum class ReadMenuAction {
     REFRESH, REFRESH_DUR, REFRESH_AFTER, REFRESH_ALL,
     DOWNLOAD, TOC_REGEX, SET_CHARSET,
     ADD_BOOKMARK, EDIT_CONTENT, SYNC_PROGRESS, SIMULATED_READING,
-    ENABLE_REPLACE, SAME_TITLE_REMOVED, RE_SEGMENT, REVIEW,
+    ENABLE_REPLACE, KEYWORD_HIGHLIGHT, SAME_TITLE_REMOVED, RE_SEGMENT, REVIEW,
     DEL_RUBY_TAG, DEL_H_TAG, IMAGE_STYLE, UPDATE_TOC, LOG, HELP,
 }
 
@@ -460,16 +461,20 @@ open class BaseReadMenuState(
 
     override fun onTopMenuAction(action: ReadMenuAction) {
         when (action) {
+            // 弹对话框/翻配置前先收菜单 (对照原版各菜单项的 runMenuOut 语义)
             ReadMenuAction.CHANGE_SOURCE,
             ReadMenuAction.BOOK_CHANGE_SOURCE -> {
+                hide()
                 screenModel.postDialogEvent(ReaderDialogEvent.ChangeSource)
             }
 
             ReadMenuAction.CHAPTER_CHANGE_SOURCE -> {
+                hide()
                 screenModel.postDialogEvent(ReaderDialogEvent.ChangeChapterSource)
             }
 
             ReadMenuAction.REFRESH_DUR -> screenModel.viewModel.refreshCurrentChapter()
+            // 对照原版 addBookmark: 弹书签对话框, 不收菜单 (对话框盖在菜单上)
             ReadMenuAction.ADD_BOOKMARK -> {
                 val book = screenModel.viewModel.book.value ?: return
                 val page = screenModel.viewModel.curTextPage.value
@@ -484,6 +489,7 @@ open class BaseReadMenuState(
 
             ReadMenuAction.EDIT_CONTENT -> screenModel.postDialogEvent(ReaderDialogEvent.EditContent)
             ReadMenuAction.LOG -> screenModel.postDialogEvent(ReaderDialogEvent.Log)
+
             ReadMenuAction.REFRESH_AFTER -> {
                 val book = screenModel.viewModel.book.value ?: return
                 screenModel.viewModel.refreshContentAfter(book)
@@ -497,14 +503,23 @@ open class BaseReadMenuState(
                 screenModel.postDialogEvent(ReaderDialogEvent.SimulatedReading)
             }
 
-            ReadMenuAction.ENABLE_REPLACE -> screenModel.viewModel.toggleUseReplaceRule()
+            ReadMenuAction.ENABLE_REPLACE -> {
+                screenModel.viewModel.toggleUseReplaceRule()
+                upTopMenu()
+            }
+            ReadMenuAction.KEYWORD_HIGHLIGHT -> navigator.push(
+                AppRoute.KeywordHighlight(book = screenModel.viewModel.book.value?.toRouteRef())
+            )
             ReadMenuAction.SAME_TITLE_REMOVED -> screenModel.viewModel.reverseRemoveSameTitle()
-            ReadMenuAction.RE_SEGMENT -> screenModel.viewModel.toggleReSegment()
+            ReadMenuAction.RE_SEGMENT -> {
+                screenModel.viewModel.toggleReSegment()
+                upTopMenu()
+            }
             ReadMenuAction.IMAGE_STYLE -> screenModel.postDialogEvent(ReaderDialogEvent.ImageStyle)
             ReadMenuAction.UPDATE_TOC -> screenModel.viewModel.updateToc()
             ReadMenuAction.SYNC_PROGRESS -> screenModel.viewModel.syncProgressManual(
-                uploadSuccessAction = { Toasters.get().toast("上传成功") },
-                syncSuccessAction = { Toasters.get().toast("同步成功") },
+                uploadSuccessAction = { Toasters.get().toast(syncGetString("upload_book_success")) },
+                syncSuccessAction = { Toasters.get().toast(syncGetString("sync_book_progress_success")) },
             )
 
             ReadMenuAction.REVIEW -> screenModel.currentBook?.let { book ->
@@ -514,9 +529,20 @@ open class BaseReadMenuState(
                 }
             }
 
-            ReadMenuAction.HELP -> Unit
-            ReadMenuAction.DEL_RUBY_TAG -> screenModel.viewModel.toggleDelTag(Book.rubyTag)
-            ReadMenuAction.DEL_H_TAG -> screenModel.viewModel.toggleDelTag(Book.hTag)
+            // 帮助 (对照原版 menu_help → showHelp("readMenuHelp"): help Overlay 读 web/help/md 渲染)
+            ReadMenuAction.HELP -> navigator.showOverlay(
+                AppOverlay.Dialog(key = "help", payload = "readMenuHelp")
+            )
+
+            ReadMenuAction.DEL_RUBY_TAG -> {
+                screenModel.viewModel.toggleDelTag(Book.rubyTag)
+                upTopMenu()
+            }
+
+            ReadMenuAction.DEL_H_TAG -> {
+                screenModel.viewModel.toggleDelTag(Book.hTag)
+                upTopMenu()
+            }
             else -> Unit
         }
     }
@@ -524,8 +550,9 @@ open class BaseReadMenuState(
     override fun onSeekDragStart() = Unit
 
     override fun onSeekStop(progress: Int) {
-        screenModel.saveCurrentBookProgress()
-        screenModel.viewModel.loadChapter(progress, null, false)
+        // page 直接跳页 / chapter 首次拖动弹确认 (确认框由 ReaderRoute 渲染 ChapterJumpConfirm,
+        // 确认标志/进度快照在 ReaderScreenModel.onSeekStop 内, 对照原版 onStopTrackingTouch)
+        screenModel.onSeekStop(progress)
     }
 
     override fun clickSearch() {
@@ -642,7 +669,7 @@ open class BaseReadMenuState(
         title = book?.name
         val curChapter = screenModel.currentChapter
         chapterName = curChapter?.title
-        chapterUrl = curChapter?.url
+        chapterUrl = book?.let { curChapter?.getAbsoluteURL(it) }
         chapterNameVisible = !chapterName.isNullOrEmpty()
         chapterUrlVisible = !chapterUrl.isNullOrEmpty() && book?.isLocal == false
         prevEnabled = screenModel.viewModel.canMoveToPrevChapter()
@@ -964,6 +991,7 @@ private fun TopOverflowMenu(state: ReadMenuState, tint: Color) {
             OverflowCheckItem("replace_rule_title", menu.enableReplaceChecked) {
                 click(ReadMenuAction.ENABLE_REPLACE)
             }
+            OverflowItem("keyword_highlight") { click(ReadMenuAction.KEYWORD_HIGHLIGHT) }
             OverflowCheckItem("same_title_removed", menu.sameTitleRemovedChecked) {
                 click(ReadMenuAction.SAME_TITLE_REMOVED)
             }

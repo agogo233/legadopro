@@ -19,6 +19,8 @@ import io.legado.app.ui.route.DictRuleRoute
 import io.legado.app.ui.route.ExploreShowRoute
 import io.legado.app.ui.route.ImportBookRoute
 import io.legado.app.ui.route.MainRoute
+import io.legado.app.ui.route.MangaExtensionReposRoute
+import io.legado.app.ui.route.MangaExtensionRoute
 import io.legado.app.ui.route.MangaReaderRoute
 import io.legado.app.ui.route.MyConfigRoute
 import io.legado.app.ui.route.OtherConfigRoute
@@ -30,10 +32,13 @@ import io.legado.app.ui.route.ReplaceEditRoute
 import io.legado.app.ui.route.ReplaceRuleRoute
 import io.legado.app.ui.route.ReviewListRoute
 import io.legado.app.ui.route.RuleSubRoute
+import io.legado.app.ui.route.KeywordHighlightRoute
 import io.legado.app.ui.route.SearchContentRoute
 import io.legado.app.ui.route.SearchRoute
 import io.legado.app.ui.route.SourceFilterRuleRoute
+import io.legado.app.ui.route.SourceToolboxRoute
 import io.legado.app.ui.route.ThemeConfigRoute
+import io.legado.app.ui.route.TvBoxRoute
 import io.legado.app.ui.route.TocRoute
 import io.legado.app.ui.route.TxtTocRuleRoute
 import io.legado.app.ui.route.VideoPlayRoute
@@ -90,6 +95,16 @@ fun RouteContent(
             true
         }
 
+        is AppRoute.MangaExtension -> {
+            MangaExtensionRoute(entry, navigator, screenModelStore)
+            true
+        }
+
+        is AppRoute.MangaExtensionRepos -> {
+            MangaExtensionReposRoute(entry, navigator, screenModelStore)
+            true
+        }
+
         is AppRoute.Bookmark -> {
             BookmarkRoute(entry, navigator, screenModelStore)
             true
@@ -115,6 +130,11 @@ fun RouteContent(
         }
 
         is AppRoute.ExploreShowByUrl -> {
+            ExploreShowRoute(entry, navigator, screenModelStore)
+            true
+        }
+
+        is AppRoute.SourceSearchShow -> {
             ExploreShowRoute(entry, navigator, screenModelStore)
             true
         }
@@ -148,6 +168,11 @@ fun RouteContent(
 
         is AppRoute.ReadRecord -> {
             ReadRecordRoute(entry, navigator, screenModelStore)
+            true
+        }
+
+        is AppRoute.SourceToolbox -> {
+            SourceToolboxRoute(entry, navigator, screenModelStore)
             true
         }
 
@@ -186,6 +211,11 @@ fun RouteContent(
             true
         }
 
+        is AppRoute.KeywordHighlight -> {
+            KeywordHighlightRoute(entry, navigator, screenModelStore)
+            true
+        }
+
         is AppRoute.ThemeConfig -> {
             ThemeConfigRoute(entry, navigator, screenModelStore)
             true
@@ -198,6 +228,11 @@ fun RouteContent(
 
         is AppRoute.TxtTocRule -> {
             TxtTocRuleRoute(entry, navigator, screenModelStore)
+            true
+        }
+
+        is AppRoute.TvBox -> {
+            TvBoxRoute(entry, navigator, screenModelStore)
             true
         }
 

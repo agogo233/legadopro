@@ -2,11 +2,14 @@ package io.legado.app.ui.explore
 
 import io.legado.app.constant.AppConst.timeLimit
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.BookSourceType
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.PinnedExplore
 import io.legado.app.data.entities.SearchBook
+import io.legado.app.data.entities.PluginExploreKindUrl
+import io.legado.app.data.entities.isTachiyomiPluginSource
 import io.legado.app.help.IntentData
 import io.legado.app.help.PinnedExploreHelp
 import io.legado.app.help.book.isNotShelf
@@ -17,8 +20,10 @@ import io.legado.app.help.source.SearchBookFilter
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.model.webBook.ExploreOption
+import io.legado.app.model.webBook.PluginFilterSession
 import io.legado.app.model.webBook.WebBook.getBookListAwait
 import io.legado.app.model.webBook.parseExploreOptionsFromUrl
+import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
 import io.legado.app.utils.concurrent.newConcurrentSet
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.throttleLatest
@@ -125,12 +130,42 @@ class ExploreShowViewModelShared(
     /** 当前发现样式 (bookSource?.exploreStyle ?: 0)。 */
     val exploreStyle: Int get() = bookSource?.exploreStyle ?: 0
 
+    /**
+     * 当前发现分类页是否为插件源的"筛选"分类 (筛选入口据此判定; 其余分类/非插件源 false)。
+     * TVBox 站点不属 Tachiyomi/Aniyomi 插件源 (无筛选契约)。
+     */
+    val isPluginFilterKind: Boolean
+        get() = rawExploreUrl == PluginExploreKindUrl.FILTER &&
+            bookSource?.isTachiyomiPluginSource() == true
+
+    /**
+     * 筛选分类页的会话筛选实例 (漫画 [MangaFilterSession] / 视频 [AnimeFilterSession]; 仅本页会话内
+     * 有效, VM 随页面销毁即丢, 不持久化)。由 [createPluginExploreFilters] 在 initData 创建,
+     * 经 [explore] 透传取数委派; 入口行"重置"或退出重进页面时新建会话。
+     */
+    var pluginExploreFilters: PluginFilterSession? = null
+        private set
+
+    /** 筛选会话版本 (每次替换实例 +1): 面板据此重组 (结构相等的两份实例否则会被 Compose 跳过)。 */
+    private val _pluginFiltersVersion = MutableStateFlow(0)
+    val pluginFiltersVersion: StateFlow<Int> = _pluginFiltersVersion.asStateFlow()
+
     /** 原始发现 URL (含参数 chip, 解析后填入 [exploreOptions])。 */
     private var rawExploreUrl: String? = null
 
     /** 发现分类名 (PinnedExplore.categoryName 用)。 */
     var exploreName: String? = null
         private set
+
+    /**
+     * 搜索模式 (AppRoute.SourceSearchShow 入口): 数据走书源 searchUrl 搜索规则
+     * (isSearch=true, key=[searchKeyword]), 与发现模式的 explore 规则区分;
+     * 布局/翻页/收藏等其余机制与发现模式同源。
+     */
+    private var isSearchMode = false
+
+    /** 搜索模式的搜索词 (WebBook isSearch=true 时作为 key 传入)。 */
+    private var searchKeyword: String? = null
 
     /** URL 解析出的参数 chip 列表 (可被 onUrlResolved 回调追加)。 */
     val exploreOptions = mutableListOf<ExploreOption>()
@@ -203,6 +238,7 @@ class ExploreShowViewModelShared(
                     ?: return@launch
             }
             parseExploreOptions()
+            createPluginExploreFilters()
             _sourceReadyFlow.tryEmit(Unit)
             if (exploreOptions.isNotEmpty()) {
                 _optionsReadyFlow.tryEmit(Unit)
@@ -228,6 +264,31 @@ class ExploreShowViewModelShared(
             this@ExploreShowViewModelShared.exploreName = exploreName
             bookSource = source
             parseExploreOptions()
+            createPluginExploreFilters()
+            _sourceReadyFlow.tryEmit(Unit)
+            if (exploreOptions.isNotEmpty()) {
+                _optionsReadyFlow.tryEmit(Unit)
+            }
+            _upStarFlow.value = isFavorite()
+            explore()
+        }
+    }
+
+    /**
+     * 初始化数据 (搜索模式重载, AppRoute.SourceSearchShow 入口)。
+     *
+     * 与发现模式差异: [explore] 走搜索规则 (isSearch=true); [rawExploreUrl] 存书源
+     * searchUrl (收藏 PinnedExplore.categoryUrl 的标识); [exploreName] 存搜索词
+     * (收藏分类名)。
+     */
+    fun initDataSearch(source: BookSource, keyword: String) {
+        scope.launch(IoDispatcher) {
+            isSearchMode = true
+            searchKeyword = keyword
+            rawExploreUrl = source.searchUrl
+            exploreName = keyword
+            bookSource = source
+            parseExploreOptions()
             _sourceReadyFlow.tryEmit(Unit)
             if (exploreOptions.isNotEmpty()) {
                 _optionsReadyFlow.tryEmit(Unit)
@@ -245,8 +306,10 @@ class ExploreShowViewModelShared(
     fun isFavorite(): Boolean {
         val sourceUrl = bookSource?.bookSourceUrl ?: return false
         val url = rawExploreUrl ?: return false
+        // searchKey 维度参与匹配: 搜索类收藏与发现类收藏的 categoryUrl 同源时不互混
+        val searchKey = if (isSearchMode) searchKeyword else null
         val favorites = PinnedExploreHelp.getPinnedExplores()
-        return favorites.any { it.sourceUrl == sourceUrl && it.categoryUrl == url }
+        return favorites.any { it.sourceUrl == sourceUrl && it.categoryUrl == url && it.searchKey == searchKey }
     }
 
     /**
@@ -259,9 +322,12 @@ class ExploreShowViewModelShared(
         val sourceName = bookSource?.bookSourceName ?: return
         val categoryName = exploreName ?: return
         val categoryUrl = rawExploreUrl ?: return
+        val searchKey = if (isSearchMode) searchKeyword else null
 
         val favorites = PinnedExploreHelp.getPinnedExplores()
-        val existing = favorites.find { it.sourceUrl == sourceUrl && it.categoryUrl == categoryUrl }
+        val existing = favorites.find {
+            it.sourceUrl == sourceUrl && it.categoryUrl == categoryUrl && it.searchKey == searchKey
+        }
         if (existing != null) {
             PinnedExploreHelp.removePinnedExplore(existing)
         } else {
@@ -270,11 +336,50 @@ class ExploreShowViewModelShared(
                     sourceUrl,
                     sourceName,
                     categoryName,
-                    categoryUrl
+                    categoryUrl,
+                    searchKey
                 )
             )
         }
         _upStarFlow.value = isFavorite()
+    }
+
+    /**
+     * 创建筛选分类页的会话筛选实例 (仅 Tachiyomi/Aniyomi 插件源且当前为"筛选"分类时)。
+     *
+     * 筛选不持久化: 实例为源默认筛选的新建件 (源 getFilterList 每次全新实例),
+     * 挂本 VM (页面会话) 随页面销毁即丢; 每次进入筛选分类页均为全新默认。
+     */
+    private suspend fun createPluginExploreFilters() {
+        if (!isPluginFilterKind) return
+        val source = bookSource ?: return
+        pluginExploreFilters = createPluginFilterSession(source)
+        _pluginFiltersVersion.value++
+    }
+
+    /**
+     * 重置到源默认筛选: 换新会话实例并返回 (源不可用/服务未注册返回 null, 保留原实例)。
+     * 入口行"重置"调用, 调用方换实例后重载第 1 页。
+     *
+     * 部分扩展的档位靠首次请求的拦截器异步抓站点表单写入插件偏好, 抓取完成前 getFilterList 只
+     * 返回兜底档位 (如 hanime1 的「發佈年份/發佈月份」仅「全部」); 重置与退出重进页面都会重新
+     * 新建会话 (见 [createPluginExploreFilters]), 据那时已就绪的档位刷新。
+     */
+    suspend fun resetPluginExploreFilters(): PluginFilterSession? {
+        val source = bookSource ?: return null
+        val session = createPluginFilterSession(source) ?: return null
+        pluginExploreFilters = session
+        _pluginFiltersVersion.value++
+        return session
+    }
+
+    private suspend fun createPluginFilterSession(source: BookSource): PluginFilterSession? {
+        val service = MangaExtensionServiceProviders.getOrNull() ?: return null
+        return when (source.bookSourceType) {
+            BookSourceType.image -> service.createMangaFilterSession(source.bookSourceUrl)
+            BookSourceType.video -> service.createAnimeFilterSession(source.bookSourceUrl)
+            else -> null
+        }
     }
 
     /**
@@ -317,15 +422,21 @@ class ExploreShowViewModelShared(
      */
     fun explore(resetPage: Boolean = false) {
         val source = bookSource ?: return
-        val url = rawExploreUrl ?: return
         if (resetPage) {
             page = 1
             books.clear()
         }
         val selectedOptions = exploreOptions.associate { it.name to it.resolvedValue }
+        // 搜索模式 key=搜索词 (WebBook 内部 url 取 searchUrl + 注入 KEY 变量), 发现模式 key=exploreUrl
+        val key = if (isSearchMode) {
+            searchKeyword ?: return
+        } else {
+            rawExploreUrl ?: return
+        }
         Coroutine.async(scope) {
             getBookListAwait(
-                source, url, page, isSearch = false,
+                source, key, page, isSearch = isSearchMode,
+                pluginFilters = if (isSearchMode) null else pluginExploreFilters,
                 onUrlResolved = { analyzeUrl: AnalyzeUrlCore ->
                     val oldSize = exploreOptions.size
                     mergeOptions(parseExploreOptionsFromUrl(analyzeUrl.ruleUrl))

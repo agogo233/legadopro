@@ -58,7 +58,7 @@ import legado.ui.generated.resources.home
 import legado.ui.generated.resources.home_manage
 import legado.ui.generated.resources.home_tab_empty
 import legado.ui.generated.resources.home_tab_manage
-import legado.ui.generated.resources.ic_cfg_other
+import legado.ui.generated.resources.ic_other_setting
 import legado.ui.generated.resources.ic_groups
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
@@ -67,7 +67,7 @@ import org.jetbrains.compose.resources.stringResource
  * 下沉所需资源 key 清单 (供 ResourceProvider 各平台 actual 补全)
  *
  * Painter key (drawable):
- *   - ic_cfg_other     主页"管理展示项"图标
+ *   - ic_other_setting 主页"管理展示项"图标
  *   - ic_groups        主页"管理分组"图标 (ResourceProvider 已支持)
  *
  * String key (string):
@@ -98,8 +98,8 @@ import org.jetbrains.compose.resources.stringResource
  *     弹窗态由 HomeScreenModel 持有, MainRoute 渲染
  *   - HomeViewModel.kt / HomeTabState: 依赖 appDb + HomeTabHelp + LiveData + activity, L3
  *     (HomeTabState 实现 HomeUiActions 桥接); HomeEvents.kt 已下沉 commonMain
- *   - SectionTitleRow: 留在 app HomeSectionComposables.kt (仅该文件使用, 含
- *     R.drawable.ic_arrow_right + R.string.home_more)
+ *   - SectionTitleRow: 已下沉 ui HomeSectionWidgets.kt (仅该文件使用, 含
+ *     ic_arrow_right + home_more, 均走 composeResources)
  */
 
 /**
@@ -302,7 +302,7 @@ private fun HomeTopBar(
             }
             IconButton(onClick = { actions.openManageSection() }) {
                 Icon(
-                    painter = painterResource(Res.drawable.ic_cfg_other),
+                    painter = painterResource(Res.drawable.ic_other_setting),
                     contentDescription = stringResource(Res.string.home_manage),
                     tint = colors.primaryText,
                 )

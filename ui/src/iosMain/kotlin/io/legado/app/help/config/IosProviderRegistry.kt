@@ -9,7 +9,7 @@ import io.legado.app.help.book.registerNativeBookHelpAccessor
 import io.legado.app.help.book.registerNativeBookImageStorage
 import io.legado.app.help.book.registerNativeBookStorage
 import io.legado.app.help.storage.registerNativeDataStorage
-import io.legado.app.help.book.registerNativeLocalBookLocator
+import io.legado.app.help.book.registerIosLocalBookLocator
 import io.legado.app.help.book.registerNativeContentProcessorAccessor
 import io.legado.app.help.crash.IosCrashHandler
 import io.legado.app.help.crash.refreshNativeCrashLogPaths
@@ -45,7 +45,7 @@ import io.legado.app.help.tts.registerIosSystemTtsEngine
 import io.legado.app.help.ui.registerIosOpenUrlProvider
 import io.legado.app.help.ui.registerNativeUserAgentProvider
 import io.legado.app.model.fileBook.BitmapProviders
-import io.legado.app.model.fileBook.registerNativeFileBookAccessor
+import io.legado.app.model.fileBook.registerIosFileBookAccessor
 import io.legado.app.model.registerIosAudioPlayCommanders
 import io.legado.app.model.registerIosReadBookPlatform
 import io.legado.app.model.registerNativeCacheBookCallback
@@ -172,7 +172,8 @@ fun registerIosProviders() {
     registerNativeDataStorage()
     registerNativeBookStorage()
     registerNativeBookImageStorage()
-    registerNativeLocalBookLocator()
+    // iOS: 路径解析复用 nativeMain 实现, 文件动作 (最后修改时间/删除) 走 security-scoped 授权
+    registerIosLocalBookLocator()
 
     // 6. 数据访问 provider (依赖 AppDatabaseProviders / BookStorageProviders)
     // AppDbAccessor: 委托 AppDatabaseProviders 取全部 17 个 DAO (供 WebBook/SourceHelp 等编排层用)
@@ -206,7 +207,7 @@ fun registerIosProviders() {
     // 6.7 压缩包 provider (zip/cbz, NativeZipCodec + RemoteZipCore; rar/7z 明确抛异常)
     registerNativeArchiveProvider()
 
-    // 7. JS 引擎 provider (IosJsEngine + IosImageOps + SharedJsScope + JsExtFactory), 必须在任何 JS eval 之前
+    // 7. JS 引擎 provider (IosJsEngine + IosImageOps + SharedJsScope + JsCryptoProviders), 必须在任何 JS eval 之前
     // (解除 KP3 P0 阻塞: iOS 端 JS 引擎缺失导致书源规则解析全失效)
     registerNativeJsEngines(IosImageOps)
 
@@ -224,8 +225,9 @@ fun registerIosProviders() {
 
     // 7.6 本地书 accessor + cbz 容器工厂 (FileBookProviders: epub 走 nativeMain EpubFile,
     // cbz 走 commonMain CbzFile + NativeZipFileWrapperFactory, pdf 仍明确抛异常)
+    // iOS 额外包一层 security-scoped 授权装饰器 (外部目录书籍文件需授权才能读)
     // 须在 BookStorage/LocalBookLocator/BitmapProviders 之后, 任何 FileBook 调用之前
-    registerNativeFileBookAccessor()
+    registerIosFileBookAccessor()
 
     // 8. TTS 引擎 provider (AVSpeechSynthesizer), 供 ReadAloudControllerShared 用
     // (对齐 desktop Main.kt 中 TtsEngineProvider.register 在 registerDesktopJsEngines 之后)

@@ -1,26 +1,33 @@
 package io.legado.app.ui.book.search
 
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.BookSourceType
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.SearchKeyword
+import io.legado.app.data.entities.isTachiyomiPluginSource
 import io.legado.app.help.book.BookFilter
 import io.legado.app.help.book.incrementalFilter
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.webBook.ExploreOption
+import io.legado.app.model.webBook.PluginFilterSession
 import io.legado.app.model.webBook.SearchModel
+import io.legado.app.model.webBook.SourceSearchGroup
+import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
 import io.legado.app.ui.root.screenModelScope
+import io.legado.app.utils.concurrent.newConcurrentMap
 import io.legado.app.utils.concurrent.newConcurrentSet
 import io.legado.app.utils.systemCurrentTimeMillis
 import io.legado.app.utils.throttleLatest
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -47,8 +54,7 @@ import kotlinx.coroutines.launch
  * 替换 Android 专属依赖:
  * - `androidx.lifecycle.LiveData / MutableLiveData / asLiveData` → 纯状态用 `MutableStateFlow`,
  *   事件 (结果列表 / 搜索结束) 用 `MutableSharedFlow(replay=1)` 对齐 postValue 的"每次都投递"
- * - `viewModelScope` → 构造参数 [scope] (默认 [screenModelScope], 带异常兜底),
- *   宿主可注入生命周期 scope (桌面端窗口 scope / app 端 viewModelScope)
+ * - `viewModelScope` → 自管 [screenModelScope] (带异常兜底),
  * - `BaseViewModel.execute { ... }.onError { ... }` → `scope.launch { ... }` + try/catch
  *   (Coroutine 容器仍可用, 但 StateFlow 已无观察者调度需求, 直接 launch 更直接)
  * - `appDb.searchKeywordDao` (app 端单例) → `AppDbProviders.get().searchKeywordDao`
@@ -59,12 +65,12 @@ import kotlinx.coroutines.launch
  * SearchModel 自身已下沉 commonMain (走 `AppConfigProviders` / `AppDbProviders`),
  * 本 VM 仅作状态编排与回调适配。
  *
- * @param scope 持有所有协程的 scope, 宿主关闭时调用 [close] 释放。
+ * 宿主关闭时调用 [close] 释放所有协程。
  */
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
-class SearchViewModel(
-    private val scope: CoroutineScope = screenModelScope("搜索"),
-) {
+class SearchViewModel {
+
+    private val scope = screenModelScope("搜索")
 
     /** 搜索范围 (持久化于 AppConfig)。 */
     val searchScope = SearchScope(AppConfigProviders.get().searchScope)
@@ -92,6 +98,13 @@ class SearchViewModel(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
+    /**
+     * 按源分组的搜索结果 ("按源分类"布局用, 组顺序 = 源完成顺序)。
+     * 同 [searchBooks] 的事件语义: 每源每页完成后全量发射一次。
+     */
+    private val _searchGroups = signalFlow<List<SourceSearchGroup>>()
+    val searchGroups: SharedFlow<List<SourceSearchGroup>> = _searchGroups.asSharedFlow()
+
     private val _hasMore = MutableStateFlow(true)
     val hasMore = _hasMore.asStateFlow()
 
@@ -110,12 +123,102 @@ class SearchViewModel(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
-    /** searchOptions 结构版本号, UI 监听此变化以重组选项行。 */
+    /** 搜索选项结构版本号, UI 监听此变化以重组选项行。 */
     private val _searchOptionsVersion = MutableStateFlow(0)
     val searchOptionsVersion = _searchOptionsVersion.asStateFlow()
 
-    /** 单源搜索 URL 声明的可选项 (ExploreOption), 多源搜索时为空。 */
-    val searchOptions = mutableListOf<ExploreOption>()
+    /**
+     * 聚簇布局顶部选项行内容: 仅本轮只有一个搜索源时才返回该源选项 (多源不展示, 对齐原版
+     * 只解析单源选项)。选项实例与 [sourceSearchOptions] 同一仞, 点击直改实例。
+     */
+    fun getTopOptions(): List<ExploreOption> =
+        if (searchModel.isSingleSource) sourceSearchOptions.values.firstOrNull().orEmpty()
+        else emptyList()
+
+    /** 按源分类区块选项行: 取该源已声明选项 (无声明为空, UI 零行)。 */
+    fun getSourceOptions(sourceUrl: String): List<ExploreOption> =
+        sourceSearchOptions[sourceUrl] ?: emptyList()
+
+    /** 区块内选项 chip 变化: 只重搜该源 (其余源结果不动)。 */
+    fun onSourceOptionChanged(sourceUrl: String) {
+        searchModel.restartSource(sourceUrl)
+    }
+
+    /** 重搜指定源 (筛选改动后调用, 其余源结果不动)。 */
+    fun restartSourceSearch(source: BookSource) {
+        searchModel.restartSource(source.bookSourceUrl)
+    }
+
+    /** 重置指定源筛选会话为源默认并重搜该源 (入口行"重置")。 */
+    fun resetSourceFilters(source: BookSource) {
+        scope.launch {
+            resetPluginFilterSession(source)
+            searchModel.restartSource(source.bookSourceUrl)
+        }
+    }
+
+    /**
+     * 页面会话的插件源筛选实例 (key=bookSourceUrl): 同一实例同时供筛选 UI 与取数委派使用,
+     * 随本 VM (页面) 销毁即丢, 不经任何全局缓存 (对齐 Mihon 筛选随浏览页 VM 生命周期)。
+     */
+    private val pluginFilterSessions = newConcurrentMap<String, PluginFilterSession>()
+
+    /** 已探测确认不声明筛选器的插件源 (免得每次重组重复新建默认实例) */
+    private val noFilterPluginSources = newConcurrentSet<String>()
+
+    /** 筛选会话建立/替换版本 (面板据此重读实例)。 */
+    private val _pluginFiltersVersion = MutableStateFlow(0)
+    val pluginFiltersVersion = _pluginFiltersVersion.asStateFlow()
+
+    /** 取该源已建立的筛选会话; 未建立返回 null (UI 据此触发就地建立)。 */
+    fun getPluginFilterSession(sourceUrl: String): PluginFilterSession? =
+        pluginFilterSessions[sourceUrl]
+
+    /**
+     * 本轮搜索源列表 (搜索开始时随 [SearchModel] 重建)。
+     * 聚簇布局的单源顶部筛选入口与"是否只搜一个源"判定都从这里派生。
+     */
+    private val _searchSources = MutableStateFlow<List<BookSource>>(emptyList())
+    val searchSources = _searchSources.asStateFlow()
+
+    /** 取/建该源筛选会话; 非插件源或未声明筛选器的源返回 null (不出筛选入口)。 */
+    suspend fun ensurePluginFilterSession(source: BookSource): PluginFilterSession? {
+        if (!source.isTachiyomiPluginSource()) return null
+        val url = source.bookSourceUrl
+        pluginFilterSessions[url]?.let { return it }
+        if (url in noFilterPluginSources) return null
+        val service = MangaExtensionServiceProviders.getOrNull() ?: return null
+        val session = when (source.bookSourceType) {
+            BookSourceType.image -> service.createMangaFilterSession(url)
+            BookSourceType.video -> service.createAnimeFilterSession(url)
+            else -> null
+        }
+        if (session == null || session.isEmpty) {
+            noFilterPluginSources.add(url)
+            return null
+        }
+        pluginFilterSessions[url] = session
+        return session
+    }
+
+    /**
+     * 重置该源筛选会话为源默认 (新建实例替换), 返回新会话供 UI 回填。
+     * 入口行"重置"调用; 调用方随后重搜该源。
+     */
+    suspend fun resetPluginFilterSession(source: BookSource): PluginFilterSession? {
+        pluginFilterSessions.remove(source.bookSourceUrl)
+        noFilterPluginSources.remove(source.bookSourceUrl)
+        val session = ensurePluginFilterSession(source)
+        _pluginFiltersVersion.value++
+        return session
+    }
+
+    /**
+     * 按源隔离的搜索 URL 声明可选项 (key=bookSourceUrl)。
+     * 同源每轮只回调一次 (串行), 异源并发但异 key, 无锁安全;
+     * 聚簇顶部行与按源分类区块行都从这里派生。
+     */
+    private val sourceSearchOptions = newConcurrentMap<String, List<ExploreOption>>()
 
     /** 当前搜索关键词 (空字符串表示未开始, 触底续搜时沿用)。 */
     var searchKey: String = ""
@@ -162,6 +265,7 @@ class SearchViewModel(
     // ---- 内部 ----
 
     private var searchID = 0L
+    private var searchCommandJob: Job? = null
     private var filteredCount = 0
     private var booksFlowJob: Job? = null
     private var searchBooksThrottleJob: Job? = null
@@ -189,6 +293,10 @@ class SearchViewModel(
             searchBooksSource.tryEmit(searchBooks)
         }
 
+        override fun onSearchGroupsChanged(groups: List<SourceSearchGroup>) {
+            _searchGroups.tryEmit(groups)
+        }
+
         override fun onSearchFinish(isEmpty: Boolean, hasMore: Boolean) {
             _hasMore.value = hasMore
             _isSearching.value = false
@@ -210,26 +318,34 @@ class SearchViewModel(
             }
         }
 
-        override fun onSearchOptionsResolved(options: List<ExploreOption>) {
-            val structureUnchanged = searchOptions.size == options.size &&
-                searchOptions.zip(options).all { (a, b) ->
+        override fun onSearchOptionsResolved(sourceUrl: String, options: List<ExploreOption>) {
+            val existing = sourceSearchOptions[sourceUrl]
+            val structureUnchanged = existing != null && existing.size == options.size &&
+                existing.zip(options).all { (a, b) ->
                     a.name == b.name && a.options == b.options
                 }
             if (structureUnchanged) {
-                // 保留用户已选中的状态，仅在结构变化时通知 UI
+                // 结构未变: 保留原实例 (用户选中态在实例上), UI 无需刷新
                 return
             }
             val merged = options.map { newOpt ->
-                searchOptions.find { it.name == newOpt.name }
-                    ?.let { existing -> newOpt.apply { copySelectionFrom(existing) } }
+                existing?.find { it.name == newOpt.name }
+                    ?.let { old -> newOpt.apply { copySelectionFrom(old) } }
                     ?: newOpt
             }
-            searchOptions.clear()
-            searchOptions.addAll(merged)
+            sourceSearchOptions[sourceUrl] = merged
             _searchOptionsVersion.value++
         }
 
-        override fun getSearchOptions(): List<ExploreOption> = searchOptions
+        override fun getSearchOptions(sourceUrl: String): List<ExploreOption> =
+            sourceSearchOptions[sourceUrl] ?: emptyList()
+
+        override suspend fun getPluginFilters(source: BookSource): PluginFilterSession? =
+            ensurePluginFilterSession(source)
+
+        override fun onSearchSourcesResolved(sources: List<BookSource>) {
+            _searchSources.value = sources
+        }
     })
 
     init {
@@ -404,20 +520,26 @@ class SearchViewModel(
      * @param resetOptions 是否重置搜索选项 (单源搜索声明的可选项)。
      */
     fun search(key: String, resetOptions: Boolean = true) {
-        scope.launch {
+        if (key.isEmpty() && (_isSearching.value || searchKey.isEmpty())) return
+        searchCommandJob?.cancel()
+        _isSearching.value = true
+        searchCommandJob = scope.launch {
             if ((searchKey == key) || key.isNotEmpty()) {
                 searchModel.cancelSearch()
-                searchID = systemCurrentTimeMillis()
+                _isSearching.value = true
+                searchID++
                 _searchBooks.tryEmit(emptyList())
+                _searchGroups.tryEmit(emptyList())
                 restartSearchBooksCollector()
                 searchKey = key
                 _hasMore.value = true
-                if (resetOptions && searchOptions.isNotEmpty()) {
-                    searchOptions.clear()
+                if (resetOptions && sourceSearchOptions.isNotEmpty()) {
+                    sourceSearchOptions.clear()
                     _searchOptionsVersion.value++
                 }
             }
             if (searchKey.isEmpty()) {
+                _isSearching.value = false
                 return@launch
             }
             searchModel.search(searchID, searchKey)
@@ -425,7 +547,10 @@ class SearchViewModel(
     }
 
     /** 停止搜索。 */
-    fun stop() = searchModel.cancelSearch()
+    fun stop() {
+        searchCommandJob?.cancel()
+        searchModel.cancelSearch()
+    }
 
     /** 暂停搜索 (生命周期 onPause)。 */
     fun pause() = searchModel.pause()
@@ -521,5 +646,6 @@ class SearchViewModel(
     /** 释放资源 (Activity destroy / Composable onDispose)。 */
     fun close() {
         searchModel.close()
+        scope.cancel()
     }
 }

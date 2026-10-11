@@ -37,11 +37,14 @@ import io.legado.app.help.config.ReadConfigProviders
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.coroutine.registerJvmDebugState
 import io.legado.app.help.file.desktopResolveStoredRef
+import io.legado.app.help.extension.MangaExtensionHostProviders
+import io.legado.app.help.extension.MangaExtensionManager
 import io.legado.app.help.image.decodeBytesSampled
 import io.legado.app.help.image.registerJvmBookImageLoader
 import io.legado.app.help.image.registerReaderImageResolver
 import io.legado.app.help.storage.BackupShared
 import io.legado.app.help.toast.DesktopTrayNotifier
+import io.legado.app.help.tvbox.TvBoxSniffPlatforms
 import io.legado.app.help.tts.TtsEngineProvider
 import io.legado.app.model.fileBook.BitmapProviders
 import io.legado.app.ui.FileAssociationDispatch
@@ -72,6 +75,8 @@ import io.legado.app.ui.compose.platform.rememberString
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.reader.ReaderDictWord
 import io.legado.app.ui.reader.ReaderImageActionMenu
+import io.legado.app.ui.about.preferenceUpVersionStore
+import io.legado.app.ui.about.upVersion
 import io.legado.app.ui.root.AppFontScaleScope
 import io.legado.app.ui.root.AppForegroundState
 import io.legado.app.ui.root.AppNavigator
@@ -90,12 +95,17 @@ import io.legado.desktop.help.DesktopUrlProtocol
 import io.legado.desktop.help.SingleInstanceGuard
 import io.legado.desktop.help.archive.DesktopArchiveCodec
 import io.legado.desktop.help.book.DesktopBitmapProvider
+import io.legado.desktop.help.http.DesktopWebViewChallengeEngine
 import io.legado.desktop.help.http.registerDesktopBackstageWebView
+import io.legado.desktop.http.DesktopChallengeEngines
 import io.legado.desktop.help.registerDesktopArchiveProvider
+import io.legado.desktop.constant.DesktopAppInfo
 import io.legado.desktop.help.registerDesktopScreenInfoProvider
 import io.legado.desktop.help.source.registerDesktopVerificationUiProvider
+import io.legado.desktop.help.tvbox.DesktopTvBoxSniffer
 import io.legado.desktop.help.tts.DesktopReadAloudHost
 import io.legado.desktop.help.ui.registerDesktopOpenUrlProvider
+import io.legado.desktop.extension.DesktopMangaExtensionHost
 import io.legado.desktop.model.fileBook.DesktopPdfFile
 import io.legado.desktop.model.fileBook.registerDesktopFileBookAccessor
 import io.legado.desktop.model.webBook.DesktopImageControllerProvider
@@ -392,6 +402,13 @@ private fun runDesktopApp() = application {
         DesktopUrlProtocol.ensureRegisteredAsync()
         // 阶段0 (日志/字符串/AndroidId/Toast/进度/更新回调/config+语言): 闪屏所需最小集
         DesktopCore.registerEarlyProviders()
+        // CF 挑战求解引擎 (书源栈 DesktopHttpProvider.okHttpClient 首次访问时按本注册与否
+        // 决定是否挂 DesktopCloudflareInterceptor, 故必须早于阶段1 的任何 HTTP 访问)
+        DesktopChallengeEngines.register(DesktopWebViewChallengeEngine())
+        // TVBox parse=1 网页嗅探 (对照 app 端 App.kt 的 TvBoxSniffPlatforms.register
+        // (AndroidTvBoxSniffer)): DesktopTvBoxSniffer 走 DesktopWebViewEngines (JNA, 只在
+        // :desktop), 引擎全不可用的机器在嗅探时如实报错, 直链与 json 解析不受影响
+        TvBoxSniffPlatforms.register(DesktopTvBoxSniffer)
         val duration = splashScreen.show()
         // 预热 CMP 字符串资源表: 首次取串要走 runBlocking + 资源表初始化, 实测 178~289ms。
         // 放后台线程而不是主线程: 同步预热虽然落在"闪屏可见期", 但占的是主线程, 直接拖后首帧。
@@ -415,7 +432,8 @@ private fun runDesktopApp() = application {
     // Windows: 设置进程级 AppUserModelID + 保证开始菜单快捷方式身份注册 (SMTC 媒体卡
     // 应用名来源; :desktop:run/java -jar 无安装注册时按官方文档自建快捷方式)。
     // 须在 AppString provider 注册之后 (快捷方式文件名取 app_name 显示名),
-    // 且必须在首窗口创建前 (MSDN: SetCurrentProcessExplicitAppUserModelID 须先于 UI)。
+    // 且须在首个有任务栏按钮的窗口 (Compose 主窗口) 创建前设置;
+    // 闪屏是无任务栏按钮的 JWindow, 不受此约束。
     DesktopAppUserModelId.ensureProcessAppId()
     // 注册桌面端 ScreenInfoProvider (Toolkit.getDefaultToolkit().screenSize),
     // 供 shared commonMain 经 ScreenInfoProviders.get() 读屏幕尺寸; 无依赖, 同步注册
@@ -485,6 +503,12 @@ private fun runDesktopApp() = application {
     AudioPlayPlatformProviders.register(SharedAudioPlayPlatformProvider)
     MangaReaderScreenModel.Providers.register(DesktopMangaReaderPlatform)
     VideoPlayPlatformProviders.register(MediampVideoPlayPlatformProvider(windowHandle))
+    // 漫画插件宿主 (扩展目录扫描 + dex2jar 装载; 兼容层 Injekt 绑定/取数委派/图片获取/
+    // 管理页服务已在 DesktopCore.registerRestProviders 同步注册)
+    MangaExtensionHostProviders.register(DesktopMangaExtensionHost())
+    // 启动即装载扩展注册表 (后台异步): 虚拟行同步/登录标记/取数委派依赖注册表内存态,
+    // 不能等首次进插件管理页才装载 (Android/桌面同语义)
+    MangaExtensionManager.init()
 
     // ==================== 阶段2: 显示窗口 ====================
     // 启动闪屏已在阶段0 后、阶段1 重注册前显示 (见上方 splashScreen / 阶段1 块):
@@ -525,10 +549,11 @@ private fun runDesktopApp() = application {
     // classpath 资源加载: 手动 Skia 解码 + BitmapPainter
     val iconPainter = remember {
         runCatching {
-            Thread.currentThread().contextClassLoader
-                ?.getResourceAsStream("icon.png")?.use { decodeBytesSampled(it.readBytes(), 0) }
+            // 本 composable 在 EDT 上执行, 线程 contextClassLoader 不可靠, 统一走应用类加载器
+            desktopAppClassLoader
+                .getResourceAsStream("icon.png")?.use { decodeBytesSampled(it.readBytes(), 0) }
                 ?.let { BitmapPainter(it) }
-        }.getOrNull()
+        }.onFailure { AppLog.put("任务栏图标加载失败", it) }.getOrNull()
     }
     // AppNavigator: 零薄壳导航唯一状态源 (替代旧 DesktopApp 的 20+ 并行状态字段)
     val navigator = remember { AppNavigator(AppRoute.Main()) }
@@ -686,6 +711,15 @@ private fun runDesktopApp() = application {
         // 用 withContext(Dispatchers.Default) 在后台线程执行, 避免阻塞 UI 线程
         LaunchedEffect(Unit) {
             registerSecondaryProviders()
+        }
+        // 升级更新日志 (对照原版 MainActivity.upVersion): 首启弹帮助, 升级弹更新日志;
+        // debug 判定与 registerJvmDebugState 同源 (run 任务注入 -Dlegado.debug=true)
+        LaunchedEffect(Unit) {
+            upVersion(
+                DesktopAppInfo.versionCode.toLong(),
+                System.getProperty("legado.debug")?.toBoolean() == true,
+                preferenceUpVersionStore(),
+            )
         }
         // 文件关联分发: 队列在 main() 就可能有值 (argv 冷启动), 这里等首帧组合完成
         // (navigator 已注册) 再消费; 解压/读文件是阻塞 IO, 切 IO 线程

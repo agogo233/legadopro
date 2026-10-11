@@ -7,12 +7,26 @@ import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
+import io.legado.app.help.AppWebDavShared
+import io.legado.app.help.book.BookHelpProviders
+import io.legado.app.help.book.ContentProcessorProviders
+import io.legado.app.help.book.getExportFileName
+import io.legado.app.help.book.isEpub
+import io.legado.app.help.book.isImage
+import io.legado.app.help.book.isLocal
+import io.legado.app.data.entities.HttpTTS
+import io.legado.app.help.tts.IosReadAloudHost
+import io.legado.app.service.defaultTtsEngineConfig
+import io.legado.app.ui.root.AppNavigatorProviders
+import io.legado.app.ui.root.AppOverlay
 import io.legado.app.help.book.toShelfJsonMap
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.file.exportFile
+import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.file.pickDirectory as pickDirectoryDocument
 import io.legado.app.help.openURL
 import io.legado.app.help.copyToClipboard as copyTextToClipboard
@@ -21,6 +35,7 @@ import io.legado.app.help.toast.Toasters
 import io.legado.app.help.topMostViewController
 import io.legado.app.model.CheckSourceShared
 import io.legado.app.model.Debug
+import io.legado.app.model.ExportBookUtils
 import io.legado.app.ui.book.import.ImportFileItem
 import io.legado.app.ui.book.source.BookSourceSort
 import io.legado.app.ui.book.source.manage.BookSourceViewModelShared
@@ -32,22 +47,32 @@ import io.legado.app.ui.root.TransitionEasing
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.utils.File
 import io.legado.app.utils.GSON
+import io.legado.app.utils.HtmlFormatter
+import io.legado.app.utils.IosSecurityScopedStorage
 import io.legado.app.utils.onEachParallel
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toJson
+import io.legado.app.utils.textCharsetCodec
 import io.legado.app.web.WebServerManager
 import kotlinx.cinterop.useContents
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okio.FileSystem
+import okio.Path.Companion.toPath
+import okio.buffer
+import okio.use
 import platform.Foundation.NSBundle
 import platform.Foundation.NSDate
 import platform.Foundation.NSURL
@@ -73,8 +98,28 @@ import platform.darwin.dispatch_get_main_queue
  */
 object IosPlatformCapabilities : NativePlatformCapabilities {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var exportBooksJob: Job? = null
 
     override val capabilityScope: CoroutineScope get() = scope
+
+    override fun showHttpTtsEditDialog(engine: HttpTTS?) {
+        AppNavigatorProviders.get().showOverlay(
+            AppOverlay.Dialog(
+                "httpTtsEdit",
+                payload = engine?.id?.toString(),
+                // 表单登录 → push WebView 路由盖住本窗口时保留 Overlay, 由内容自管挂起/恢复
+                // (对照原版 DialogFragment 被新 Activity 盖住仍存活, 返回后表单原样)
+                keepOnPush = true,
+            )
+        )
+    }
+
+    override fun onHttpTtsEdited(engine: HttpTTS) {
+        if (IosReadAloudHost.isRun && defaultTtsEngineConfig() == engine.id.toString()) {
+            // 正在播放则重载；暂停时记录重建位置，继续朗读才启用新配置。
+            IosReadAloudHost.play(play = !IosReadAloudHost.isPause)
+        }
+    }
 
     // iOS 无物理/手势返回键, PlatformBackHandler 是 no-op → 无系统返回通道,
     // 页面内的子状态需自带可见退出口。
@@ -85,12 +130,6 @@ object IosPlatformCapabilities : NativePlatformCapabilities {
 
     /** 书源分组增删改 (shared 下沉件)。 */
     private val bookSourceViewModel by lazy { BookSourceViewModelShared(scope) }
-
-    /**
-     * 导入根目录的 security-scoped URL (UIDocumentPicker Open 模式选出的目录)。
-     * 持有 NSURL 引用 + 保持 startAccessing 才能访问目录内容; 换目录时释放旧 scope。
-     */
-    private var importRootUrl: NSURL? = null
 
     // iOS 由系统统一管理应用生命周期, 无 Activity.finish 等价物
     override fun exitApplication() = Unit
@@ -148,7 +187,13 @@ object IosPlatformCapabilities : NativePlatformCapabilities {
 
     // ===== 导入本地书 (状态与扫描见 NativeImportBook, 与鸿蒙共用) =====
 
-    override fun initImportBookData() = NativeImportBook.init(restoreLast = false)
+    // 上次导入目录的授权经 minimal bookmark 恢复 (security-scoped URL 现在可跨启动解析),
+    // 恢复失败则保持原行为: 等用户在导入页重新选目录 (restoreLast=false)
+    override fun initImportBookData() {
+        val restored = IosSecurityScopedStorage.restoreImportRootPath()
+        NativeImportBook.init(restoreLast = false)
+        restored?.let { NativeImportBook.setRoot(it) }
+    }
 
     override fun importBookItems(): StateFlow<List<ImportFileItem>> = NativeImportBook.items
     override fun importBookPath(): StateFlow<String?> = NativeImportBook.path
@@ -158,22 +203,43 @@ object IosPlatformCapabilities : NativePlatformCapabilities {
 
     // 对照 Android onPickFolder / selectFolder.launch。
     // 不用 IosFilePickerService.pickDirectory (只返回 path, 会丢 security-scoped URL):
-    // 这里直接拿 NSURL 并 startAccessingSecurityScopedResource, 否则读取授权目录内容会失败
-    // (iOS Open 模式选出的目录必须持有 scope 才能访问, 权限随应用会话有效)。
+    // 这里直接拿 NSURL 交授权表, 否则读取授权目录内容会失败
     override fun pickImportFolder() {
         scope.launch {
             val url = pickDirectoryDocument() ?: return@launch
-            val path = url.path ?: return@launch
-            // 换目录时释放上一目录的 scope, 保持有界
-            importRootUrl?.stopAccessingSecurityScopedResource()
-            importRootUrl = url
-            // 返回 false = 无需 scope (如应用沙盒内目录), 忽略即可
-            url.startAccessingSecurityScopedResource()
+            // 授权表负责: 释放上一目录 scope → 起新 scope → 落 bookmark (换目录不留悬空授权)
+            val path = IosSecurityScopedStorage.setImportRoot(url) ?: return@launch
             NativeImportBook.setRoot(path)
         }
     }
 
     override fun scanImportFolder() = NativeImportBook.scan()
+
+    // ===== 书籍目录授权 (对照 app 端 SAF: OtherConfigHost.localBookTreeSelect / BaseReadBookActivity.selectBookFolderResult) =====
+
+    /**
+     * 选书籍目录: 直接拿 UIDocumentPicker(Open) 的 security-scoped NSURL, 不经过只回 path 的
+     * [PlatformServices.FilePickerService] —— 普通路径在下次访问时拿不回授权。
+     * 选中后存 minimal bookmark 集合 (可跨启动), 回调仍传目录路径 (与其余端同一契约)。
+     */
+    override fun pickBookTreeUri(onSelected: (String?) -> Unit) {
+        scope.launch {
+            val url = pickDirectoryDocument()
+            if (url == null) {
+                onSelected(null)
+                return@launch
+            }
+            val path = IosSecurityScopedStorage.addBookTree(url)
+            onSelected(path)
+        }
+    }
+
+    /**
+     * 在已授权目录里按文件名找回本地书 (对照原版 `FileDoc.find(book.originName)` 默认 depth=0:
+     * 只查所选目录, 与 app 端一致); 返回 `file://` + 绝对路径, 与导入写入的 bookUrl 同格式。
+     */
+    override fun findBookFileInDir(dirUri: String, fileName: String): String? =
+        IosSecurityScopedStorage.findBookFileInTree(dirUri, fileName)
 
     // 对照 Android alertImportFileName: 复用现有 UIAlertController 文本输入弹窗
     // (presentTextInput), 允许清空 = 恢复默认文件名解析。预设值存 PreferKey.bookImportFileName。
@@ -242,14 +308,210 @@ object IosPlatformCapabilities : NativePlatformCapabilities {
 
     // ===== 书籍详情页 =====
 
-    // 本地书文件字节数 (bookUrl 形如 file:///path, iOS 沙盒为 POSIX 路径, 去 scheme 即可)
+    // 本地书文件字节数: 外部目录下的书籍文件走 security-scoped 授权读取属性
+    // (bookUrl 形如 file:///path; 沙盒内文件无需授权)
     override suspend fun localBookFileSize(bookUrl: String): Long = withContext(Dispatchers.IO) {
-        runCatching { File(bookUrl.removePrefix("file://")).length() }.getOrDefault(0L)
+        val path = bookUrl.removePrefix("file://")
+        runCatching { IosSecurityScopedStorage.withAccess(path) { File(it).length() } }
+            .getOrDefault(0L)
     }
 
     // ===== 书架管理: 导出开关 =====
 
     // ===== 书架管理: 导出 JSON =====
+
+    override fun exportAllBooks(books: List<Book>) {
+        if (books.isEmpty()) {
+            Toasters.get().toast("书籍不能为空")
+            return
+        }
+        if (exportBooksJob?.isActive == true) {
+            Toasters.get().toast("书籍正在导出")
+            return
+        }
+        exportBooksJob = scope.launch {
+            val files = mutableListOf<NSURL>()
+            val failures = mutableListOf<String>()
+            val usedPaths = mutableSetOf<String>()
+            val exportType = prefs.getInt(PreferKey.exportType, 0)
+            val exportDir = File(AppFilesDirs.get().filesDir, "export")
+            if (!exportDir.isDirectory && !exportDir.mkdirs()) {
+                Toasters.get().toast("无法创建导出目录")
+                return@launch
+            }
+            books.forEach { book ->
+                try {
+                    currentCoroutineContext().ensureActive()
+                    val file = NativeBookExporter.exportBookFile(book, exportDir, usedPaths, exportType)
+                    files.add(NSURL.fileURLWithPath(file.absolutePath))
+                    if (prefs.getBoolean(PreferKey.exportToWebDav, false)) {
+                        AppWebDavShared.exportWebDav(file.absolutePath, file.name)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failures.add("${book.name}：${e.message ?: "未知错误"}")
+                    AppLog.put("导出书籍失败：${book.name}\n${e.message}", e)
+                }
+            }
+            if (files.isNotEmpty()) {
+                presentShareSheet(files)
+            } else if (failures.isNotEmpty()) {
+                Toasters.get().toast("${failures.size} 本书导出失败：${failures.take(2).joinToString()}")
+            }
+            if (files.isNotEmpty() && failures.isNotEmpty()) {
+                AppLog.put("部分书籍导出失败：${failures.joinToString()}")
+            }
+        }
+    }
+
+    override fun selectExportFolder(books: List<Book>) {
+        if (books.isEmpty()) {
+            Toasters.get().toast("选中书籍后，在系统分享面板中选择保存位置")
+        } else if (prefs.getBoolean(PreferKey.enableCustomExport, false)
+            && prefs.getInt(PreferKey.exportType, 0) == 1
+        ) {
+            showExportSectionConfig("", books)
+        } else {
+            exportAllBooks(books)
+        }
+    }
+
+    override fun showExportSectionConfig(path: String, books: List<Book>) {
+        if (books.isEmpty()) {
+            Toasters.get().toast("书籍不能为空")
+            return
+        }
+        dispatch_async(dispatch_get_main_queue()) {
+            val vc = topMostViewController() ?: return@dispatch_async
+            val dialog = UIAlertController.alertControllerWithTitle(
+                "自定义 EPUB 导出", "章节范围如 1-5,8；每份至少 1 章。图片书仍导出 CBZ。", UIAlertControllerStyleAlert,
+            )
+            dialog.addTextFieldWithConfigurationHandler { field ->
+                field?.placeholder = "章节范围，例如 1-5,8"
+            }
+            dialog.addTextFieldWithConfigurationHandler { field ->
+                field?.placeholder = "每份 EPUB 的章节数"
+                field?.text = "1"
+            }
+            dialog.addTextFieldWithConfigurationHandler { field ->
+                field?.placeholder = "分卷文件名 JS 表达式，留空用默认名称"
+                field?.text = prefs.getString(PreferKey.episodeExportFileName, "")
+            }
+            dialog.addAction(UIAlertAction.actionWithTitle("导出全部", UIAlertActionStyleDefault) {
+                exportAllBooks(books)
+            })
+            dialog.addAction(UIAlertAction.actionWithTitle("按范围导出", UIAlertActionStyleDefault) {
+                val fields = dialog.textFields
+                val range = (fields?.getOrNull(0) as? UITextField)?.text.orEmpty().trim()
+                val size = (fields?.getOrNull(1) as? UITextField)?.text.orEmpty().toIntOrNull()
+                val fileNameRule = (fields?.getOrNull(2) as? UITextField)?.text.orEmpty().trim()
+                val scope = runCatching { ExportBookUtils.parseScope(range) }.getOrNull()
+                if (scope.isNullOrEmpty() || scope.any { it < 0 } || size == null || size < 1) {
+                    Toasters.get().toast("章节范围或每份章节数无效")
+                    return@actionWithTitle
+                }
+                prefs.putString(PreferKey.episodeExportFileName, fileNameRule)
+                exportCustomBooks(books, scope, size)
+            })
+            dialog.addAction(UIAlertAction.actionWithTitle("取消", UIAlertActionStyleCancel, null))
+            vc.presentViewController(dialog, animated = true, completion = null)
+        }
+    }
+
+    private fun exportCustomBooks(books: List<Book>, scope: Set<Int>, size: Int) {
+        if (exportBooksJob?.isActive == true) {
+            Toasters.get().toast("书籍正在导出")
+            return
+        }
+        exportBooksJob = this.scope.launch {
+            val files = mutableListOf<NSURL>()
+            val failures = mutableListOf<String>()
+            val usedPaths = mutableSetOf<String>()
+            val exportDir = File(AppFilesDirs.get().filesDir, "export")
+            if (!exportDir.isDirectory && !exportDir.mkdirs()) {
+                Toasters.get().toast("无法创建导出目录")
+                return@launch
+            }
+            books.forEach { book ->
+                try {
+                    currentCoroutineContext().ensureActive()
+                    val bookFiles = if (book.isImage) {
+                        listOf(NativeBookExporter.exportBookFile(book, exportDir, usedPaths, 1))
+                    } else {
+                        val chapters = appDb.bookChapterDao.getChapterList(book.bookUrl)
+                        val selected = chapters.filterIndexed { index, _ -> index in scope }
+                        if (selected.isEmpty()) error("章节范围内没有章节")
+                        selected.chunked(size).mapIndexed { index, part ->
+                            NativeBookExporter.exportBookFile(
+                                book, exportDir, usedPaths, 1, part,
+                                book.getExportFileName("epub", index + 1),
+                            )
+                        }
+                    }
+                    bookFiles.forEach { file ->
+                        files.add(NSURL.fileURLWithPath(file.absolutePath))
+                        if (prefs.getBoolean(PreferKey.exportToWebDav, false)) {
+                            AppWebDavShared.exportWebDav(file.absolutePath, file.name)
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failures.add("${book.name}：${e.message ?: "未知错误"}")
+                    AppLog.put("导出书籍失败：${book.name}\n${e.message}", e)
+                }
+            }
+            if (files.isNotEmpty()) presentShareSheet(files)
+            if (failures.isNotEmpty()) Toasters.get().toast("${failures.size} 本书导出失败：${failures.take(2).joinToString()}")
+        }
+    }
+
+    override fun toggleExportUseReplace() {
+        val enabled = !prefs.getBoolean(PreferKey.exportUseReplace, true)
+        prefs.putBoolean(PreferKey.exportUseReplace, enabled)
+    }
+
+    override fun exportUseReplace(): Boolean = prefs.getBoolean(PreferKey.exportUseReplace, true)
+
+    override fun showExportConfig() {
+        dispatch_async(dispatch_get_main_queue()) {
+            val vc = topMostViewController() ?: return@dispatch_async
+            val current = if (prefs.getInt(PreferKey.exportType, 0) == 1) "EPUB" else "TXT"
+            val dialog = UIAlertController.alertControllerWithTitle(
+                "导出配置", "当前格式：$current。图片书始终导出 CBZ。文件名可用 name、author 的 JS 表达式；留空使用默认名称。", UIAlertControllerStyleAlert,
+            )
+            dialog.addTextFieldWithConfigurationHandler { field ->
+                field?.placeholder = "导出文件名表达式"
+                field?.text = prefs.getString(PreferKey.bookExportFileName, "")
+            }
+            dialog.addTextFieldWithConfigurationHandler { field ->
+                field?.placeholder = "TXT 字符集，例如 UTF-8 或 GBK"
+                field?.text = prefs.getString(PreferKey.exportCharset, "UTF-8")
+            }
+            listOf(
+                Triple("TXT · 含章节名", 0, false),
+                Triple("TXT · 不含章节名", 0, true),
+                Triple("EPUB", 1, false),
+            ).forEach { (label, value, noChapterName) ->
+                dialog.addAction(UIAlertAction.actionWithTitle("保存为 $label", UIAlertActionStyleDefault) {
+                    val fileName = (dialog.textFields?.getOrNull(0) as? UITextField)?.text.orEmpty().trim()
+                    val charset = (dialog.textFields?.getOrNull(1) as? UITextField)?.text.orEmpty().trim()
+                        .ifEmpty { "UTF-8" }
+                    if (runCatching { textCharsetCodec(charset) }.isFailure) {
+                        Toasters.get().toast("不支持的 TXT 字符集：$charset")
+                        return@actionWithTitle
+                    }
+                    prefs.putString(PreferKey.bookExportFileName, fileName)
+                    prefs.putString(PreferKey.exportCharset, charset)
+                    prefs.putInt(PreferKey.exportType, value)
+                    if (value == 0) prefs.putBoolean(PreferKey.exportNoChapterName, noChapterName)
+                })
+            }
+            dialog.addAction(UIAlertAction.actionWithTitle("取消", UIAlertActionStyleCancel, null))
+            vc.presentViewController(dialog, animated = true, completion = null)
+        }
+    }
 
     override fun exportAllUseBookSource() {
         scope.launch {

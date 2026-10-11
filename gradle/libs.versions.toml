@@ -8,6 +8,10 @@ ksp = "2.3.11"
 
 # ===== Compose Multiplatform (Android/桌面共用基线) =====
 cmp = "1.11.1"
+# 官方 CMP 版本 (与 cmp 非鸿蒙值同源): 鸿蒙模式 settings 把 cmp 切到 CPF fork (无 jvm 变体),
+# 而引用 compose runtime 注解的 commonMain 代码 (:data AnimeFilterList 的 @Stable) 需要
+# android/jvm 变体齐全的官方构件; ohos 配置由 OhosTargetConventionPlugin 替换为 fork 版
+composeMultiplatform-jvm = "1.11.1"
 # 0.41.0 对 CMP 1.10 编译 (Kotlin 2.3.21, iosArm64 klib abi 2.3.0), 与本项目工具链兼容。
 # 2026-09-19 实测 0.44.0/0.45.0: 其自身 klib 已恢复 Kotlin 2.3 可消费, 但 0.43+ 的
 # markdown-renderer-coil3 强制 coil3 >= 3.5.0 (runtime 依赖), 而 coil 3.5.0/3.6.0 的
@@ -81,7 +85,10 @@ uiautomator = "2.4.0"
 
 # ===== 网络栈 =====
 okhttp = "5.4.0"
+gson = "2.11.0"
 okio = "3.18.1"
+kmp-zip = "0.12.1"
+epub4kmp = "0.3.0"
 ktor = "3.5.2"
 cronet = "143.7445.0"
 coil3 = "3.4.0"
@@ -117,11 +124,31 @@ json = "20260814"
 # ===== 桌面 JVM 专属 =====
 jna = "5.19.1"
 
+# ===== 桌面扩展加载 (APK 安装包解析 / dex→jar 字节码转换) =====
+# 坐标经 Suwayomi-Server 实证; 2026-10-04 逐一核对远端仓库元数据:
+# - dex2jar (de.femtopedia fork): Maven Central 最新即 2.4.38 (dex-translator/dex-tools 同版发布)
+# - apk-parser: 2.6.10 即最终版 (2019-11 后未再发版), Central 在售
+# - apksig: Maven Central 停在 2.3.0 (2017), 8.x/9.x 只发布在 Google Maven;
+#   settings.gradle.kts 已配 google(), 9.4.0 与项目 AGP 9.4.1 同代 (9.4.1 也在售)
+# - asm: Dex2Jar 2.4.38 的 POM 传递 asm-tree/asm-util/asm-commons 9.10.1,
+#   asm-tree 再传递 asm:asm:9.10.1, Gradle 冲突消解 (最新版胜出) 会把显式钉的
+#   更低版本静默抬到 9.10.1 —— 故直接钉 Dex2Jar 2.4.38 POM 实际配套的 9.10.1
+#   (任务书给的 9.9.1 对 2.4.38 不成立, 详见桌面扩展加载汇报)
+dex2jar = "2.4.38"
+asm = "9.10.1"
+apkParser = "2.6.10"
+apksig = "9.4.0"
+
 # ===== UI 组件 =====
 reorderable = "3.1.0"
 
 # ===== 测试 =====
 junit = "4.13.2"
+
+# ===== 漫画扩展 (eu.kanade.tachiyomi.*) 兼容层 =====
+# keiyoushi 扩展二进制绑定 null2264 fork 的 Injekt API (含 uy.kohesive.injekt.api 包与 Injekt object);
+# Maven Central 的 uy.kohesive.injekt:injekt-core:1.16.1 无该包面 (实测 jar), 不可用
+injekt-core = "4135455a2a"
 
 [libraries]
 # ===== 构建工具链 =====
@@ -158,8 +185,12 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 kotlinx-coroutines-swing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
 kotlinx-atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "atomicfu" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+# 扩展按 compileOnly 引用 kotlinx.serialization.json.okio 包, 运行时委派宿主, 官方宿主 serialization bundle 同含此工件
+kotlinx-serialization-json-okio = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json-okio", version.ref = "kotlinxSerializationJson" }
+kotlinx-serialization-protobuf = { module = "org.jetbrains.kotlinx:kotlinx-serialization-protobuf", version.ref = "kotlinxSerializationJson" }
 jetbrains-kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test" }
 runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "cmp" }
+runtime-jvm = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform-jvm" }
 slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4jNop" }
 
 # ===== AndroidX / Google 官方库 =====
@@ -199,9 +230,13 @@ androidx-uiautomator = { module = "androidx.test.uiautomator:uiautomator", versi
 
 # ===== 网络栈 =====
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
+kmp-zip-okio = { module = "no.synth:kmp-zip-okio", version.ref = "kmp-zip" }
+epub4kmp-core = { module = "com.darkrockstudios:epub4kmp-core", version.ref = "epub4kmp" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "ktor" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
 ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.ref = "ktor" }
@@ -241,8 +276,18 @@ json = { module = "org.json:json", version.ref = "json" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
 
+# ===== 桌面扩展加载 =====
+dex-translator = { module = "de.femtopedia.dex2jar:dex-translator", version.ref = "dex2jar" }
+dex-tools = { module = "de.femtopedia.dex2jar:dex-tools", version.ref = "dex2jar" }
+asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+apk-parser = { module = "net.dongliu:apk-parser", version.ref = "apkParser" }
+apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
+
 # ===== 测试 =====
 junit = { module = "junit:junit", version.ref = "junit" }
+
+# ===== 漫画扩展兼容层 =====
+injekt-core = { module = "com.github.null2264.injekt:injekt-core", version.ref = "injekt-core" }
 
 [bundles]
 coroutines = ["kotlinx-coroutines-core", "kotlinx-coroutines-android"]

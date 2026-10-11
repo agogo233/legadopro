@@ -144,7 +144,7 @@ import org.jetbrains.compose.resources.stringResource
  *   (注: bottomBackground 已通过 AppTheme.colors.bottomBackground 暴露, 不需要 rememberColor)
  *
  * L3 不可下沉项 (保留 app 端, 通过 slot 注入):
- *   - BlurCoverBg: Glide + BookInfoBgTransformation + AndroidView(AppCompatImageView)
+ *   - BlurCoverBg: Coil3 位图管线模糊 (StackBlur + BookInfoBgTransformation), Compose Image 渲染
  *     → blurCoverBgSlot: @Composable (Modifier) -> Unit
  *   - InfoCover 中的封面渲染 (原 app 端 ShelfCover)
  *     → coverSlot: @Composable (Book?, Modifier) -> Unit (现默认 SharedBookCover)
@@ -615,7 +615,7 @@ private fun TopSectionVertical(
 ) {
     Column(Modifier.fillMaxWidth()) {
         InfoCover(
-            state, coverSlot, cardBg = !land,
+            state, coverSlot,
             modifier = Modifier
                 .align(Alignment.CenterHorizontally)
                 .padding(DesignTokens.spacingDefault),
@@ -644,7 +644,7 @@ private fun TopSectionHorizontal(
     coverSlot: @Composable (Book?, Modifier) -> Unit,
 ) {
     Row(Modifier.fillMaxWidth()) {
-        InfoCover(state, coverSlot, cardBg = true, modifier = Modifier.padding(DesignTokens.spacingDefault))
+        InfoCover(state, coverSlot, modifier = Modifier.padding(DesignTokens.spacingDefault))
         Column(
             Modifier
                 .weight(1f)
@@ -714,7 +714,6 @@ private fun LastedRow(state: BookInfoUiState, modifier: Modifier) {
 private fun InfoCover(
     state: BookInfoUiState,
     coverSlot: @Composable (Book?, Modifier) -> Unit,
-    cardBg: Boolean,
     modifier: Modifier,
 ) {
     val actions = LocalBookInfoActions.current
@@ -730,10 +729,6 @@ private fun InfoCover(
                 .height(144.dp)
                 .aspectRatio(coverRatio, matchHeightConstraintsFirst = true)
                 .clip(DesignTokens.shapeSm)
-                .then(
-                    if (cardBg) Modifier.background(AppTheme.colors.bottomBackground)
-                    else Modifier
-                )
                 .listItemFocus()
                 .combinedClickable(
                     onClick = { actions.onCoverClick() },

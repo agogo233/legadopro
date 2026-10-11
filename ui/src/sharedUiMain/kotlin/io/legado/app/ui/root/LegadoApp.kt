@@ -571,7 +571,7 @@ val LocalPlatformCapabilities = staticCompositionLocalOf<PlatformCapabilities> {
     PlatformCapabilityProviders.get()
 }
 
-// 窗口策略应用: 委托 PlatformServices 的 window/keyboard 各 setter (pictureInPicture 暂无统一接口, 跳过)
+// 窗口策略应用: 委托 PlatformServices 的 window/keyboard 各 setter
 private fun applyWindowPolicy(policy: WindowPolicy) {
     val services = PlatformServiceProviders.get()
     val wc = services.window
@@ -754,11 +754,15 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         "photo" -> PhotoOverlayDialogContent(overlay, navigator)
         "group_select" -> GroupSelectDialogContent(overlay, navigator)
         "sourceLogin" -> SourceLoginOverlayContent(overlay, navigator)
+        // 插件虚拟源登录直达: 单扩展自带设置弹窗 (payload=归属扩展包名, 见
+        // ExtensionPrefOverlayDialog.kt; 不进插件管理页)
+        "extensionPref" -> ExtensionPrefOverlayContent(overlay, navigator)
         // 源/书变量编辑 (对照原版 VariableDialog; payload 携带实体, 见 VariableOverlayDialog.kt)
         "sourceVariable" -> SourceVariableOverlayDialogContent(overlay, navigator)
         "bookVariable" -> BookVariableOverlayDialogContent(overlay, navigator)
         "change_cover" -> ChangeCoverDialogContent(overlay, navigator)
         "app_log" -> AppLogOverlayDialogContent(overlay, navigator)
+        "httpTtsEdit" -> HttpTtsEditOverlayDialogContent(overlay, navigator)
 
         // java.copy 确认对话框 (完整文本在 IntentData, payload 只带 key, 见 CopyConfirmDialog.kt)
         "copy_confirm" -> CopyConfirmOverlayDialogContent(overlay, navigator)
@@ -773,6 +777,9 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         // 帮助: key="help" 时 payload 为 md 文件名, dictRuleHelp 为固定文档
         "help" -> HelpDialogContent(overlay, navigator, overlay.payload.orEmpty())
         "dictRuleHelp" -> HelpDialogContent(overlay, navigator, "dictRuleHelp")
+
+        // 升级更新日志 (对照原版 upVersion updateLog 分支)
+        "updateLog" -> UpdateLogOverlayDialogContent(overlay, navigator)
 
         // 崩溃日志 (对照 app 端 CrashLogsDialog Fragment)
         "crash_logs" -> CrashLogsOverlayDialogContent(overlay, navigator)
@@ -808,6 +815,7 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
 
         // 按文件名导入 js 编辑框 (对照 app 端 alertImportFileName, 鸿蒙命令式文本输入宿主缺失时经此弹窗)
         "import_file_name" -> ImportFileNameOverlayDialogContent(overlay, navigator)
+        "book_export_format" -> BookExportFormatDialogContent(overlay, navigator)
 
         // 字典规则
         "dictRuleEdit" -> DictRuleEditDialogContent(overlay, navigator)

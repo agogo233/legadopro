@@ -243,6 +243,14 @@ object BookHelpShared {
     }
 
     /**
+     * 该书去重内存缓存是否已含该章文件名 (对照 app 端 `ContentProcessor.removeSameTitleCache.contains`)。
+     * 实例未入注册表时按未缓存处理。
+     */
+    fun isRemoveSameTitleCached(book: Book, chapter: BookChapter): Boolean =
+        removeSameTitleCacheRegistry[book.name + book.origin]
+            ?.contains(chapter.getFileName("nr")) == true
+
+    /**
      * 保存章节正文并通知阅读页 (对照 app 端 `BookHelp.saveContent`)。
      *
      * 失败只记日志不抛出, 与 app 端一致。
@@ -259,18 +267,18 @@ object BookHelpShared {
     /**
      * 读取章节正文 (对照 app 端 `BookHelp.getContent`)。
      *
-     * 缓存文件存在则直接返回 (空文件视为无内容返回 null, 不回退本地解析);
-     * 无缓存且为本地书时走 [FileBook] 解析, epub 结果顺带写回缓存。
+     * 优先读取非空缓存；无有效缓存且为本地书时解析原文件，epub 结果顺带写回缓存。
      */
     fun getContent(book: Book, chapter: BookChapter): String? {
         val storage = BookStorageProviders.get()
         val cached = storage.readCacheFile(book, chapter.getFileName())
-        if (cached != null) {
-            return cached.ifEmpty { null }
+        if (!cached.isNullOrEmpty()) {
+            return cached
         }
         if (book.isLocal) {
             val string = FileBook.getContent(book, chapter)
-            if (string != null && book.isEpub) {
+            // 错误文本是 getContent 的兜底返回而非正文, 缓存会把失败固化 (须清缓存才能恢复)
+            if (string != null && book.isEpub && !string.startsWith(FileBook.CONTENT_ERROR_PREFIX)) {
                 storage.saveText(book, chapter, string)
             }
             return string

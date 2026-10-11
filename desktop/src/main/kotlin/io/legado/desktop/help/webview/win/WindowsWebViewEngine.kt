@@ -86,17 +86,21 @@ internal object WindowsWebViewEngine : DesktopWebViewEngineBase() {
         instance: WebView2Instance,
         request: WebViewFetchRequest,
     ): WebViewFetchResult {
-        val hit = CompletableDeferred<String>()
+        val hit = CompletableDeferred<Pair<String, Map<String, String>>>()
         val (overrideRegex, sourceRegex) = snifferRegexes(request)
 
         instance.onNavigationStarting = { url, _ ->
             val matched = overrideRegex?.matches(url) == true
-            if (matched) hit.complete(url)
+            // 导航命中时拿不到子资源请求头, 用空头 + playHeaders 的 Referer/UA 兜底
+            if (matched) hit.complete(url to emptyMap())
             // 命中即取消导航, 与 app 端 shouldOverrideUrlLoading 返回 true 等价
             matched
         }
-        instance.onResourceRequested = { url ->
-            if (sourceRegex?.matches(url) == true) hit.complete(url)
+        instance.onResourceRequested = { url, headers ->
+            val matched = sourceRegex?.matches(url) == true
+            if (matched) hit.complete(url to headers())
+            // 命中即返回空响应吞掉该请求 (等价 Android 返回空 WebResourceResponse)
+            matched
         }
         instance.onNavigationCompleted = { url ->
             harvestTagCookies(url, request.cookieTag) {
@@ -106,8 +110,8 @@ internal object WindowsWebViewEngine : DesktopWebViewEngineBase() {
             injectJsOnPageReady(request) { instance.navigate("javascript:$it") }
         }
         start(instance, request)
-        val resultUrl = hit.await()
-        return snifferResult(request, resultUrl)
+        val (resultUrl, headers) = hit.await()
+        return snifferResult(request, resultUrl, playHeaders(headers, request.url))
     }
 
     /** 对应 app 端 load(): html 优先, 否则加载 url; UA 走 Settings2。 */
@@ -119,8 +123,45 @@ internal object WindowsWebViewEngine : DesktopWebViewEngineBase() {
         val html = request.html
         when {
             !html.isNullOrEmpty() -> instance.navigateToString(html)
-            !request.url.isNullOrEmpty() -> instance.navigate(request.url)
+            !request.url.isNullOrEmpty() ->
+                // 导航请求头全量透传 (对照 app 端 WebView.loadUrl(url, headerMap)):
+                // 经 NavigateWithWebResourceRequest 写入, 接口缺失时自动退回普通导航
+                instance.navigateWithHeaders(request.url, request.headerMap)
+
             else -> throw NoStackTraceException("url 与 html 不能同时为空")
+        }
+    }
+
+    /**
+     * 无头 CF 挑战求解: 复用 fetch 的会话创建/注入/导航路径, 主循环改为原生
+     * cookie 轮询 (cf_clearance 含 HttpOnly 时 document.cookie 读不到),
+     * 超时窗在本方法 withTimeout 保证 (不受 fetch 的 AppConst.timeLimit 限制)。
+     */
+    override suspend fun awaitChallengeCookies(
+        url: String,
+        headerMap: Map<String, String>?,
+        delayTimeMs: Long,
+        timeoutMs: Long,
+        isSolved: (cookies: String) -> Boolean,
+    ): String {
+        val instance = WebView2Instance.create(
+            visible = false,
+            title = "legado-cloudflare",
+            sniffResources = false,
+        ) ?: throw NoStackTraceException("WebView2 实例创建失败")
+        try {
+            return withTimeout<String>(timeoutMs) {
+                start(instance, WebViewFetchRequest(url = url, headerMap = headerMap, delayTime = delayTimeMs))
+                while (true) {
+                    delay(delayTimeMs)
+                    val cookies = runCatching { instance.cookies(url, COOKIE_TIMEOUT_MS) }.getOrNull()
+                        ?: continue
+                    if (isSolved(cookies)) return@withTimeout cookies
+                }
+                error("unreachable")
+            }
+        } finally {
+            instance.close()
         }
     }
 

@@ -20,6 +20,7 @@ import io.legado.app.ui.book.explore.ExploreShowScreen
 import io.legado.app.ui.book.explore.ExploreShowScreenModel
 import io.legado.app.ui.book.explore.ExploreShowUiActions
 import io.legado.app.ui.book.explore.ExploreShowUiEvent
+import io.legado.app.ui.book.explore.PluginFilterSource
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.ui.bookshelf.LocalBookCoverSlot
 import io.legado.app.ui.bookshelf.ShelfVideoItem
@@ -38,6 +39,7 @@ import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.ui.root.toRouteRef
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.bottom_line
 import legado.ui.generated.resources.empty
@@ -77,7 +79,8 @@ fun ExploreShowRoute(
     // VM 创建 (组合委托, 对照 app 端 ExploreShowViewModel)
     val vmScope = remember { screenModelScope("发现列表") }
     val vm = remember(vmScope) { ExploreShowViewModelShared(vmScope) }
-    // VM 作用域挂"在栈期间" (STARTED): 对照原版 Activity 存活期, 出栈才取消
+    // VM 作用域挂"在栈期间" (STARTED): 对照原版 Activity 存活期, 出栈才取消。
+    // 筛选实例挂 VM (页面会话) 随页面销毁自然丢弃, 无需退出清理。
     OnRouteLifecycle(onLeave = { vmScope.cancel() })
 
     // footer 文案 (对照 Activity getString(R.string.empty / bottom_line / error_load_msg))
@@ -87,11 +90,13 @@ fun ExploreShowRoute(
     val errorTitle = stringResource(Res.string.error)
     val retryText = stringResource(Res.string.retry)
 
-    // 标题初始化 (对照原 Activity intent exploreName / discovery; ByUrl 变体 extra 可为空)
-    // route 由 RouteContent 保证只分派 ExploreShow 两变体, else 分支不可达 (穷尽性占位)
+    // 标题初始化 (对照原 Activity intent exploreName / discovery; ByUrl 变体 extra 可为空;
+    // SourceSearchShow 用源名)
+    // route 由 RouteContent 保证只分派三变体, else 分支不可达 (穷尽性占位)
     val title = when (route) {
         is AppRoute.ExploreShow -> route.title
         is AppRoute.ExploreShowByUrl -> route.title.orEmpty()
+        is AppRoute.SourceSearchShow -> route.source.bookSourceName
         else -> ""
     }
     LaunchedEffect(title) {
@@ -110,7 +115,9 @@ fun ExploreShowRoute(
                 route.exploreUrl,
                 route.sourceUrl
             )
-            // 不可达 (RouteContent 仅分派两变体); 占位保证 when 穷尽
+            // 搜索模式: 数据走书源 searchUrl 搜索规则
+            is AppRoute.SourceSearchShow -> vm.initDataSearch(route.source, route.keyword)
+            // 不可达 (RouteContent 仅分派三变体); 占位保证 when 穷尽
             else -> Unit
         }
     }
@@ -153,6 +160,20 @@ fun ExploreShowRoute(
             // 菜单"书源登录"显隐: 书源带登录入口 (loginUrl/loginUi 非空, 对照原 hasLoginUrl)
             screenModel.dispatch(
                 ExploreShowUiEvent.LoginAvailabilityChanged(vm.bookSource?.hasLogin() == true)
+            )
+        }
+    }
+    // 筛选入口目标与实例 (实例被替换时同样重发): 仅"筛选"分类页推源, 其余分类/非插件源推 null;
+    // 实例缺失 (服务未注册/未声明筛选器) 时推 null 实例, 入口行零行。
+    LaunchedEffect(vm) {
+        vm.pluginFiltersVersion.collect {
+            screenModel.dispatch(
+                ExploreShowUiEvent.PluginFilterSourceChanged(
+                    vm.bookSource
+                        ?.takeIf { vm.isPluginFilterKind }
+                        ?.let { PluginFilterSource(it.bookSourceUrl, it.bookSourceName) },
+                    vm.pluginExploreFilters,
+                )
             )
         }
     }
@@ -286,6 +307,15 @@ fun ExploreShowRoute(
             override fun onExploreOptionChanged() {
                 screenModel.dispatch(ExploreShowUiEvent.ClearBooks)
                 vm.explore(true)
+            }
+
+            // 入口行"重置": 换新默认会话实例 (实例经 pluginFiltersVersion 重新下发) 后重载第 1 页
+            override fun onPluginFiltersReset() {
+                vmScope.launch {
+                    vm.resetPluginExploreFilters()
+                    screenModel.dispatch(ExploreShowUiEvent.ClearBooks)
+                    vm.explore(true)
+                }
             }
         }
     }

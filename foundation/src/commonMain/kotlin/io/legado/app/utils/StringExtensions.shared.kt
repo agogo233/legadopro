@@ -13,21 +13,25 @@ import io.legado.app.constant.AppPattern
 fun String?.isDataUrl() =
     this?.startsWith("data:") ?: false
 
+/**
+ * 取首尾非空白字符, 不分配整串副本 (对应判定只需要首尾两个字符, 不必 trim 出中间串)。
+ * 全空白或无字符时返回 null。
+ */
+private fun String.firstLastNonWhitespace(): Pair<Char, Char>? {
+    var start = 0
+    var end = length - 1
+    while (start <= end && this[start].isWhitespace()) start++
+    while (end >= start && this[end].isWhitespace()) end--
+    return if (start > end) null else this[start] to this[end]
+}
+
 fun String?.isJson(): Boolean =
-    this?.run {
-        val str = this.trim()
-        when {
-            str.startsWith("{") && str.endsWith("}") -> true
-            str.startsWith("[") && str.endsWith("]") -> true
-            else -> false
-        }
+    this?.firstLastNonWhitespace()?.let { (first, last) ->
+        (first == '{' && last == '}') || (first == '[' && last == ']')
     } ?: false
 
 fun String?.isXml(): Boolean =
-    this?.run {
-        val str = this.trim()
-        str.startsWith("<") && str.endsWith(">")
-    } ?: false
+    this?.firstLastNonWhitespace()?.let { (first, last) -> first == '<' && last == '>' } ?: false
 
 fun String.splitNotBlank(vararg delimiter: String, limit: Int = 0): Array<String> = run {
     this.split(*delimiter, limit = limit).map { it.trim() }.filterNot { it.isBlank() }
@@ -61,22 +65,34 @@ fun String?.isAbsUrl() =
     } ?: false
 
 fun String?.isJsonObject(): Boolean =
-    this?.run {
-        val str = this.trim()
-        str.startsWith("{") && str.endsWith("}")
-    } ?: false
+    this?.firstLastNonWhitespace()?.let { (first, last) -> first == '{' && last == '}' } ?: false
 
 fun String?.isJsonArray(): Boolean =
-    this?.run {
-        val str = this.trim()
-        str.startsWith("[") && str.endsWith("]")
-    } ?: false
+    this?.firstLastNonWhitespace()?.let { (first, last) -> first == '[' && last == ']' } ?: false
+
+// 词表均 ASCII: regionMatches 逐字符大小写折叠与 (?i) 正则对 ASCII 的判定一致
+private val falseValues = arrayOf("false", "no", "not", "0")
+
+/**
+ * 忽略首尾 Unicode 空白后与 [other] 忽略大小写比较, 全程零分配。
+ */
+private fun String.contentEqualsTrimmedIgnoreCase(other: String): Boolean {
+    var start = 0
+    var end = length
+    while (start < end && this[start].isWhitespace()) start++
+    while (end > start && this[end - 1].isWhitespace()) end--
+    return end - start == other.length &&
+        regionMatches(start, other, 0, other.length, ignoreCase = true)
+}
 
 fun String?.isTrue(nullIsTrue: Boolean = false): Boolean {
     if (this.isNullOrBlank() || this == "null") {
         return nullIsTrue
     }
-    return !this.trim().matches("(?i)^(false|no|not|0)$".toRegex())
+    for (word in falseValues) {
+        if (contentEqualsTrimmedIgnoreCase(word)) return false
+    }
+    return true
 }
 
 fun String.isHex(): Boolean {

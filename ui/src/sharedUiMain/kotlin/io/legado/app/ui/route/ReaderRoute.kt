@@ -10,10 +10,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -46,6 +52,7 @@ import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.ReadBookViewModelShared
 import io.legado.app.ui.book.read.ReadConfigChange
 import io.legado.app.ui.book.read.ReadMenuAction
+import io.legado.app.data.entities.Bookmark
 import io.legado.app.ui.book.read.ReaderDialogEvent
 import io.legado.app.ui.book.read.ReaderPlatformProviders
 import io.legado.app.ui.book.read.ReaderScreen
@@ -53,6 +60,7 @@ import io.legado.app.ui.book.read.ReaderScreenModel
 import io.legado.app.ui.book.read.ReaderScreenModelRegistry
 import io.legado.app.ui.book.read.ReaderUiActions
 import io.legado.app.ui.book.read.ReaderUiState
+import io.legado.app.ui.book.read.UnderlineNoteBubbleHost
 import io.legado.app.ui.book.read.SimulatedReadingDialog
 import io.legado.app.ui.book.read.config.AutoReadActions
 import io.legado.app.ui.book.read.config.AutoReadController
@@ -85,30 +93,22 @@ import io.legado.app.ui.root.RouteResults
 import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.root.asBook
 import io.legado.app.ui.root.toRouteRef
-import io.legado.app.utils.KS_JSON
-import io.legado.app.utils.systemCurrentTimeMillis
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.add_to_bookshelf
 import legado.ui.generated.resources.cancel
 import legado.ui.generated.resources.chapter_pay
+import legado.ui.generated.resources.chapter_jump_confirm
+import legado.ui.generated.resources.chapter_jump_confirm_msg
 import legado.ui.generated.resources.check_add_bookshelf
 import legado.ui.generated.resources.cloud_progress_exceeds_current
-import legado.ui.generated.resources.concurrent_rate
 import legado.ui.generated.resources.draw
-import legado.ui.generated.resources.login_check_js
-import legado.ui.generated.resources.login_ui
-import legado.ui.generated.resources.login_url
 import legado.ui.generated.resources.name
 import legado.ui.generated.resources.no
 import legado.ui.generated.resources.ok
 import legado.ui.generated.resources.read_aloud_pause
 import legado.ui.generated.resources.restore_last_book_process
-import legado.ui.generated.resources.source_http_header
 import legado.ui.generated.resources.sync_book_progress_t
 import legado.ui.generated.resources.yes
 import org.jetbrains.compose.resources.stringResource
@@ -229,6 +229,8 @@ fun ReaderRoute(
     // Looper.myQueue().addIdleHandler 把 loadContent 推迟到视图测量完成后执行）。
     // book 在路由组合期内固定（remember(route)），用一次性标志保证只 init 一次，
     // 后续 textAreaSize 变化（窗口 resize）不重复 initBook。
+    // initBook 只做状态落位与装载登记 (整段跑在可取消任务内), 正文装载/本地文件检查/云进度
+    // 都在该任务里执行, 组合期的 UI 线程不做 DB/文件 IO。
     var bookInitialized by remember { mutableStateOf(false) }
     LaunchedEffect(textAreaSize) {
         if (textAreaSize == null || bookInitialized) return@LaunchedEffect
@@ -261,6 +263,10 @@ fun ReaderRoute(
 
             override fun onTextSelection(text: String, anchorX: Float, anchorY: Float) {
                 provider.onTextSelected(screenModel, text, anchorX, anchorY)
+            }
+
+            override fun onUnderlineTap(bookmark: Bookmark, anchor: Rect) {
+                screenModel.onUnderlineTap(bookmark, anchor)
             }
 
             // 点按取消选择等手势分支：同步关平台浮动菜单（对照原版 ACTION_DOWN →
@@ -307,16 +313,25 @@ fun ReaderRoute(
         }
     }
     // 菜单按钮是 clickable，非触摸输入模式下点击会夺焦；收起菜单后要把焦点收回。
+    // 批注气泡是可聚焦浮层 (要收按键与输入法)，它弹出期间活动窗口失焦，收起气泡同样要把焦点收回。
+    // 一并订阅窗口焦点: 失焦期间请求的焦点可能被随后的失焦事件再清一次，回到前台时再收一次兜底。
     // 用 snapshotFlow 而非直接读 isVisible，避免整页跟着菜单动画重组
+    val windowInfo = LocalWindowInfo.current
     LaunchedEffect(screenModel) {
-        snapshotFlow { screenModel.menuState.isVisible }.collect { visible ->
-            if (!visible) runCatching { keyFocusRequester.requestFocus() }
+        snapshotFlow {
+            Triple(
+                windowInfo.isWindowFocused,
+                screenModel.menuState.isVisible,
+                screenModel.underlineBubble != null,
+            )
+        }.collect { (_, visible, bubbleVisible) ->
+            if (!visible && !bubbleVisible) runCatching { keyFocusRequester.requestFocus() }
         }
     }
 
     // region 阅读页快捷键 (对照 app 端 ReadBookKeyHandler.onKeyDown)
     // 栈内页面全部留在组合中, 故非栈顶时必须失效, 否则目录/换源等子页里按方向键会翻背景的书;
-    // 翻页键与 Ctrl+滚轮字号调整在菜单可见时不响应 (避免菜单滚动被阅读页消费)
+    // 翻页键在菜单可见时不响应 (避免菜单滚动被阅读页消费)
     // 栈顶判定改为响应式: collectAsState 订阅 backStack, 栈变化驱动重组刷新下方消费点;
     // 旧写法 lambda 读 .value 不订阅 StateFlow, AppBackHandler 的 enabled 会停在过期值
     val backStack by navigator.backStack.collectAsState()
@@ -487,11 +502,59 @@ fun ReaderRoute(
     }
     // endregion
 
+    // pointerInput(Unit) 长驻协程不随重组重启, 栈顶判定经 State 间接读拿最新值
+    // (同 ReadViewComposable latestXxx 惯例)
+    val latestIsTopEntry by rememberUpdatedState(isTopEntry)
+    // 鼠标滚轮翻页: 仅上下滚动模式消费为连续滚动 (scrollBy: 行级滚动 + 页边界折算,
+    // 滚过页底自动切页, 与拖拽滚动同一套折算互不干扰), 左右翻页模式不消费 (保持拖拽翻页);
+    // 菜单可见时不消费, 让位菜单内列表滚动 (判定口径同 ReaderScreen 的 menuVisible:
+    // 主菜单或搜索菜单根容器任一可见即让位); 非栈顶不消费, 对齐上方快捷键 enabled 守卫
+    // (目录/换源等子页半透明区域滚轮会命中下层阅读页)。
     ReaderScreen(
         state = state,
         actions = actions,
+        modifier = Modifier.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    if (event.type != PointerEventType.Scroll) continue
+                    val change = event.changes.firstOrNull() ?: continue
+                    val delta = change.scrollDelta.y
+                    if (delta == 0f) continue
+                    if (!latestIsTopEntry || screenModel.menuState.isVisible ||
+                        screenModel.searchMenuState.rootVisible
+                    ) {
+                        continue
+                    }
+                    val scrollDelegate =
+                        screenModel.viewModel.pageDelegate as? ScrollPageDelegateCompose
+                    if (scrollDelegate != null) {
+                        // CMP 的 scrollDelta 是格数 (preciseWheelRotation 直接透传,
+                        // Windows 一格 = 1.0, 非像素) —— 按像素假设倍率会全部失效;
+                        // 一格 = 视口 1/4 (4 格滚一页, 用户实测拍板的速度), 高精度滚轮
+                        // (preciseWheelRotation 小数) 自然细分; 方向 -delta 用户实测确认
+                        val viewportH =
+                            (screenModel.viewModel.curTextPage.value?.visibleHeight ?: 0).toFloat()
+                        scrollDelegate.scrollBy(
+                            if (viewportH > 0f) -delta * viewportH / 4f else -delta * 300f
+                        )
+                        change.consume()
+                    }
+                }
+            }
+        },
         focusRequester = keyFocusRequester,
         onTextAreaMeasured = { textAreaSize = it },
+    )
+
+    // 批注气泡 (轻点命中批注区域弹出; 长按菜单创建后也自动弹出; 编辑/换色/换样式/删除直接落 DAO, 回显经 flow 自动刷新)
+    UnderlineNoteBubbleHost(
+        state = screenModel.underlineBubble,
+        onDismiss = { screenModel.dismissUnderlineBubble() },
+        onNoteConfirm = { content -> screenModel.saveUnderlineNote(content) },
+        onColorChange = { color -> screenModel.changeUnderlineColor(color) },
+        onLineStyleChange = { lineStyle -> screenModel.changeUnderlineLineStyle(lineStyle) },
+        onDelete = { screenModel.deleteUnderline() },
     )
 
     // region ReadBookEvents 订阅 (对照 app 端 ReadBookActivity.observeLiveBus 的 ReadBookEvents 收集)
@@ -523,6 +586,27 @@ fun ReaderRoute(
         }
     }
     // endregion
+
+    // 本地书文件无权限/缺失 → 弹选目录对话框重新定位文件 (对照 app 端 BaseReadBookActivity
+    // 的 permissionDenialLiveData 观察者 → selectBookFolderResult)。
+    // 请求带唯一身份与书籍归属: 初态无请求 (不弹框); 同一时刻只允许一个选择器,
+    // 结果按请求 id 采用 (旧结果不覆盖同书的新请求, 也不落到换书后的新书)。
+    LaunchedEffect(screenModel) {
+        screenModel.viewModel.permissionDenialState.collect { request ->
+            if (request == null) return@collect
+            // 同一时刻只允许一个选择器; 过期请求 (换书/被同 code 的新失败取代) 不弹框。
+            // 选择结果由 VM 按请求 id 采用, 过期结果不覆盖同书的新请求
+            val resolution = screenModel.viewModel.awaitPermissionDenialResolution(request.id)
+                ?: return@collect
+            val book = screenModel.viewModel.acceptPermissionDenial(request.id)
+                ?: return@collect
+            if (resolution.dirUri == null) {
+                Toasters.get().toast("没有权限访问")
+            } else {
+                screenModel.relocateLocalBook(book, resolution.dirUri)
+            }
+        }
+    }
 
     // 云进度同步确认对话框 (对照 app 端 ReadBookActivity.sureNewProgress)
     var syncProgress by remember { mutableStateOf<BookProgress?>(null) }
@@ -1078,7 +1162,11 @@ fun ReaderRoute(
                             // 从 SINGLE 切出会恢复滚动，两个方向都得重建翻页委托。原版只在
                             // `imageStyle == SINGLE` 时调 upPageAnim，切出时委托会停在覆盖不回滚动，此处不对齐。
                             ReadBookEvents.postConfig(ReadConfigChange.PAGE_ANIM)
-                            screenModel.viewModel.loadChapter(screenModel.viewModel.durChapterIndex.value)
+                            // 对照原版 menu_image_style → ReadBook.loadContent(false): 保偏移
+                            screenModel.viewModel.loadChapter(
+                                screenModel.viewModel.durChapterIndex.value,
+                                keepScrollOffset = true,
+                            )
                         }
                     },
                     onDismiss = { screenModel.clearDialogEvent() },
@@ -1105,12 +1193,15 @@ fun ReaderRoute(
                         } else {
                             // 与原版一致: 输入为章节号, CacheBook 下标从 0 起 (start-1/end-1),
                             // 结束章节 clamp 到 lastChapterIndex (原版在 CacheBookService.addDownloadData 内)
-                            cacheBook.addDownload(
-                                (start - 1).coerceAtLeast(0),
-                                end - 1
-                            )
-                            scope.launch(IoDispatcher) {
-                                CacheBookShared.startProcessJob()
+                            val startIndex = start.coerceAtLeast(1) - 1
+                            val endIndex = (end.coerceAtLeast(0) - 1).coerceAtMost(book.lastChapterIndex)
+                            if (startIndex > endIndex) {
+                                Toasters.get().toast("离线缓存章节范围无效")
+                            } else {
+                                cacheBook.addDownload(startIndex, endIndex)
+                                scope.launch(IoDispatcher) {
+                                    CacheBookShared.startProcessJob()
+                                }
                             }
                         }
                     },
@@ -1136,6 +1227,26 @@ fun ReaderRoute(
             } else {
                 LaunchedEffect(screenModel) { screenModel.clearDialogEvent() }
             }
+        }
+
+        // 章节跳转确认 (对照原版 ReadMenu onStopTrackingTouch "chapter" 分支首次拖动的 alert:
+        // 确定=记住选择并存跳转前快照后跳章, 取消/关闭=复位进度条不跳)
+        is ReaderDialogEvent.ChapterJumpConfirm -> {
+            AppAlertDialog(
+                onDismissRequest = {
+                    screenModel.clearDialogEvent()
+                    screenModel.menuState.upSeekBar()
+                },
+                title = stringResource(Res.string.chapter_jump_confirm),
+                message = stringResource(Res.string.chapter_jump_confirm_msg),
+                okButton = AlertButton(stringResource(Res.string.yes)) {
+                    screenModel.confirmChapterJump(event.progress)
+                },
+                cancelButton = AlertButton(stringResource(Res.string.no)) {
+                    screenModel.clearDialogEvent()
+                    screenModel.menuState.upSeekBar()
+                },
+            )
         }
 
         null -> Unit

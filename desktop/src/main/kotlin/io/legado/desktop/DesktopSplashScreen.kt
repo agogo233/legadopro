@@ -7,6 +7,7 @@ import io.legado.app.help.config.resolveImagePath
 import io.legado.app.help.image.decodeBytesSampled
 import io.legado.app.model.bakedImagePath
 import io.legado.app.model.ensureBakedImage
+import io.legado.desktop.desktopAppClassLoader
 import io.legado.app.ui.compose.platform.DesktopThemeStoreProvider
 import java.awt.Color
 import java.awt.Dimension
@@ -145,10 +146,11 @@ class DesktopSplashScreen(
         // upBackgroundImage), 先展示主题纯色闪屏, 由后台线程现场重烘焙+解码后回填重绘
         var bgImage: BufferedImage? = null
         val bakedPath = bgImagePath?.let { bakedImagePath(it) }
-        val bakedFile = bakedPath?.let { java.io.File(it) }
-        val bakedExists = bakedFile?.exists() == true
+        // 产物存在与否只看这一个变量: 以前另存 bakedExists 再与 bakedFile 双重判空,
+        // 两者同源, 编译期即能推出第二个条件恒真 (warning: Condition is always 'true')
+        val bakedFile = bakedPath?.let { java.io.File(it) }?.takeIf { it.exists() }
 
-        if (bakedExists && bakedFile != null) {
+        if (bakedFile != null) {
             // 常态: 产物在, 直接采样解码 (与 Android 端一致, 快速)
             bgImage = runCatching {
                 decodeBytesSampled(bakedFile.readBytes(), 0)?.toAwtImage()
@@ -169,7 +171,7 @@ class DesktopSplashScreen(
         window.contentPane.add(content)
         content.bounds = java.awt.Rectangle(0, 0, width, height)
 
-        if (bgImagePath != null && !bakedExists) {
+        if (bgImagePath != null && bakedFile == null) {
             // 冷路径 (缓存被清/跨端同步首启): 后台重烘焙 + 解码, 不卡首帧
             Thread({
                 runCatching {
@@ -241,8 +243,8 @@ class DesktopSplashScreen(
         private val tintedIcon: BufferedImage? by lazy {
             runCatching {
                 // 与 app 端共用同一份 icon_read_book.png (desktop sourceSets 挂载 drawable-nodpi)
-                val decoded = Thread.currentThread().contextClassLoader
-                    ?.getResourceAsStream("icon_read_book.png")
+                val decoded = desktopAppClassLoader
+                    .getResourceAsStream("icon_read_book.png")
                     ?.use { decodeBytesSampled(it.readBytes(), 0) }?.toAwtImage()
                 decoded?.let { tintImage(it, accentColor) }
             }.getOrNull()

@@ -43,6 +43,20 @@ sealed interface AppRoute {
     @SerialName("book_source")
     data object BookSourceManage : AppRoute
 
+    // 漫画插件管理 (取数走 PluginSourceDelegates 委派; 服务未注册端入口隐藏)
+    @Serializable
+    @SerialName("manga_extension")
+    data object MangaExtension : AppRoute
+
+    // TVBox 影视源管理 (站点以虚拟书源行进入书源体系; 服务未注册端入口隐藏)
+    @Serializable
+    @SerialName("tvbox")
+    data object TvBox : AppRoute
+
+    @Serializable
+    @SerialName("manga_extension_repos")
+    data object MangaExtensionRepos : AppRoute
+
     @Serializable
     @SerialName("explore_show")
     data class ExploreShow(
@@ -64,6 +78,18 @@ sealed interface AppRoute {
         val sourceUrl: String,
         val title: String? = null,
         val exploreUrl: String? = null,
+    ) : AppRoute
+
+    /**
+     * 单源搜索结果页 (搜索界面"按源分类"布局的二级页): 复用发现 show 界面,
+     * 但数据走 [BookSource.searchUrl] 搜索规则 (isSearch=true, key=[keyword]),
+     * 与 [ExploreShow] (explore 规则) 区分。
+     */
+    @Serializable
+    @SerialName("source_search_show")
+    data class SourceSearchShow(
+        val source: BookSource,
+        val keyword: String,
     ) : AppRoute
 
     @Serializable
@@ -202,6 +228,11 @@ sealed interface AppRoute {
     @SerialName("source_filter_rule")
     data object SourceFilterRule : AppRoute
 
+    // 关键词高亮管理 (规则默认作用范围 = 本书, 故带上阅读页当前书)
+    @Serializable
+    @SerialName("keyword_highlight")
+    data class KeywordHighlight(val book: BookRef? = null) : AppRoute
+
     @Serializable
     @SerialName("rule_sub")
     data object RuleSub : AppRoute
@@ -234,6 +265,11 @@ sealed interface AppRoute {
     @Serializable
     @SerialName("read_record")
     data object ReadRecord : AppRoute
+
+    // 书源工具箱: 请求特殊格式 URL + 按阶段绑定书源环境跑规则/JS, 编写书源的调试工作台
+    @Serializable
+    @SerialName("source_toolbox")
+    data object SourceToolbox : AppRoute
 
     @Serializable
     @SerialName("backup_config")

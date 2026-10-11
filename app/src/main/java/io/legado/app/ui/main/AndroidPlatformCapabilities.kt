@@ -82,13 +82,16 @@ import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.book.removeType
 import io.legado.app.help.book.toShelfJsonMap
+import io.legado.app.constant.PreferKey
 import io.legado.app.help.book.toggleBookshelfCore
 import io.legado.app.help.book.tryParesExportFileName
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
+import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.i18n.androidAppString
+import io.legado.app.lib.theme.MonetColorExtract
 import io.legado.app.model.BookCover
 import io.legado.app.model.CheckSource
 import io.legado.app.model.Debug
@@ -362,7 +365,11 @@ class AndroidPlatformCapabilities(
     override fun openWebView(url: String, sourceKey: String, sourceName: String) {
         // 移动端保留内嵌 WebViewRoute 路由语义 (对话框内嵌)
         AppNavigatorProviders.get().push(
-            io.legado.app.ui.root.AppRoute.WebView(url, sourceKey, sourceName)
+            io.legado.app.ui.root.AppRoute.WebView(
+                url = url,
+                sourceKey = sourceKey,
+                sourceName = sourceName,
+            )
         )
     }
 
@@ -1719,6 +1726,18 @@ class AndroidPlatformCapabilities(
         activity.showDialogFragment(ThemeCustomizeDialog.editPrefs(true))
     }
 
+    // 莫奈取色: 壁纸取色 API 仅 Android 12+ (S=31) 提供; eInk 显隐门在 ThemeConfigRoute
+    // (对齐 AppTheme 读取层判定, 本端不再重复判断)
+    override val monetColorExtractSupported: Boolean
+        get() = MonetColorExtract.isSupported()
+
+    // 一键取当前壁纸主色派生日/夜主题色; 取不到时 toast 且不改任何状态 (含主题 pref/刷新)
+    override fun applyMonetColorFromWallpaper() {
+        MonetColorExtract.applyFromWallpaper(activity) {
+            activity.toastOnUi(androidAppString("monet_color_extract_failed"))
+        }
+    }
+
     // 换桌面图标 (对照 master ThemeConfigFragment: launcherIcon -> LauncherIconHelp.changeIcon):
     // setComponentEnabledSetting 切换 WelcomeActivity / Launcher1/4/5 的启用态, 桌面图标即变
     override fun changeLauncherIcon(icon: String) {
@@ -1799,6 +1818,13 @@ class AndroidPlatformCapabilities(
     override fun pickBookTreeUri(onSelected: (String?) -> Unit) {
         activity.pendingBookTreeUriCallback = onSelected
         activity.launchBookTreeUriPicker()
+    }
+
+    // 对照 app 端 BaseReadBookActivity 的 FileDoc.fromUri(uri, true).find(book.originName):
+    // SAF 目录逐层列举, 一层找不到再进子目录找 (与 FileDoc.find(depth) 同语义)
+    override fun findBookFileInDir(dirUri: String, fileName: String): String? {
+        val dir = runCatching { FileDoc.fromUri(dirUri.toUri(), true) }.getOrNull() ?: return null
+        return dir.find(fileName, depth = 1)?.uri?.toString()
     }
 
     // 对照 OtherConfigHost.onCheckSource: showDialogFragment<CheckSourceConfig>

@@ -1,6 +1,11 @@
 package io.legado.app.ui.main
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.res.Configuration
+import androidx.core.content.ContextCompat
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
@@ -54,9 +59,15 @@ import io.legado.app.help.storage.Backup
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.model.ActiveReadBookRegistry
 import io.legado.app.model.fileBook.FileBook
+import io.legado.app.help.extension.AndroidMangaExtensionHost
+import io.legado.app.help.extension.MangaExtensionHostProviders
+import io.legado.app.help.extension.MangaExtensionManager
+import io.legado.app.model.manga.AndroidMangaExtensionPlatform
 import io.legado.app.receiver.MediaButtonReceiver
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.service.ExportBookService
+import io.legado.app.ui.about.UpVersionStore
+import io.legado.app.ui.about.upVersion
 import io.legado.app.ui.association.DeepLinkImportHost
 import io.legado.app.ui.association.LegadoDeepLink
 import io.legado.app.ui.association.LegadoDeepLinkHandler
@@ -70,7 +81,10 @@ import io.legado.app.ui.book.info.LocalBlurCoverBgSlot
 import io.legado.app.ui.book.info.LocalIntroImageSlot
 import io.legado.app.ui.book.manga.AndroidMangaReaderPlatform
 import io.legado.app.ui.book.manga.MangaReaderScreenModel
+import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
 import io.legado.app.ui.book.read.AndroidReaderPlatformProvider
+import io.legado.app.ui.book.tvbox.JvmTvBoxPlatform
+import io.legado.app.ui.book.tvbox.TvBoxServiceProviders
 import io.legado.app.ui.book.read.ReaderPlatformProviders
 import io.legado.app.ui.book.read.ReaderScreenModelRegistry
 import io.legado.app.ui.book.read.page.loadAndroidTypeface
@@ -114,7 +128,6 @@ import io.legado.app.utils.toastOnUi
 import io.legado.app.web.utils.WebAssetSources
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -131,6 +144,19 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     private var exitTime: Long = 0
     private val EXIT_INTERVAL = 2000L
     private val exportBookPathKey = "exportBookPath"
+
+    /** 视频画中画 provider: PiP 模式切换回调由此转发到共享层渲染状态。 */
+    private var videoPlayProvider: AndroidVideoPlayPlatformProvider? = null
+
+    /** 画中画小窗内遥控 RemoteAction 的广播接收 (onCreate 注册, onDestroy 注销) */
+    private val pipControlReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != AndroidVideoPlayPlatformProvider.ACTION_MEDIA_CONTROL) return
+            videoPlayProvider?.onPipControl(
+                intent.getIntExtra(AndroidVideoPlayPlatformProvider.EXTRA_CONTROL_TYPE, 0)
+            )
+        }
+    }
 
     /** 换封面源回调暂存: 由 [AndroidPlatformCapabilities.showChangeCoverDialog] 写入,
      *  ChangeCoverDialog 触发 [coverChangeTo] 时消费。 */
@@ -608,7 +634,28 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
         ReaderPlatformProviders.register(readerPlatform)
         AudioPlayPlatformProviders.register(SharedAudioPlayPlatformProvider)
         MangaReaderScreenModel.Providers.register(AndroidMangaReaderPlatform)
-        VideoPlayPlatformProviders.register(AndroidVideoPlayPlatformProvider(this))
+        // 漫画插件服务 (管理页/搜索筛选条; 状态组装已下沉 ui 层 SharedMangaExtensionPlatform,
+        // 平台面经 MangaExtensionHostProviders 注入 PackageManager 装载/安装/广播)
+        // 进程级单例 (只持 applicationContext): Activity 重建不得新建, 否则旧实例的
+        // 状态流收集器与进行中的安装任务会成为孤儿
+        MangaExtensionHostProviders.register(AndroidMangaExtensionHost.get(applicationContext))
+        MangaExtensionServiceProviders.register(AndroidMangaExtensionPlatform.get(applicationContext))
+        // 启动即装载扩展注册表 (后台异步): 虚拟行同步/登录标记/取数委派都依赖注册表内存态,
+        // 不能等首次进插件管理页才装载 (2026-10-05 用户拍板回归启动装载)
+        MangaExtensionManager.init()
+        // 影视源服务 (管理页; 桥接 TvBoxManager, jvmAndAndroidMain 实现 Android/桌面共用,
+        // 平台差异经 TvBoxPlatforms 钩子注入)
+        TvBoxServiceProviders.register(JvmTvBoxPlatform())
+        videoPlayProvider = AndroidVideoPlayPlatformProvider(this)
+            .also { VideoPlayPlatformProviders.register(it) }
+        // 小窗内播放/暂停钮的广播通道 (系统 RemoteAction 触发); setPackage 限定自身,
+        // 否则 NOT_EXPORTED receiver 收不到隐式广播
+        ContextCompat.registerReceiver(
+            this,
+            pipControlReceiver,
+            IntentFilter(AndroidVideoPlayPlatformProvider.ACTION_MEDIA_CONTROL),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         // 排版度量走真实字形（对照 TextStyleProvider.getPaints 的 contentPaint）
         TextMeasurerProviders.register { textSizePx, letterSpacingPx, fontPath, weight ->
             AndroidTextMeasurer(TextPaint().apply {
@@ -648,6 +695,16 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
         super.onNewIntent(intent)
         // warm launch: singleTask 复用已运行实例, 新 VIEW intent 经 onNewIntent 派发
         handleExternalIntent(intent, isNewIntent = true)
+    }
+
+    // 进入/退出系统画中画 (API 26+, 仅在 PiP 模式变化时回调): 两参重载自 API 26 才有,
+    // 低版本永不触发, 无需版本门控。只转发平台态, 渲染分切换由共享层读 provider 状态完成。
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        videoPlayProvider?.onPipModeChanged(isInPictureInPictureMode)
     }
 
     /**
@@ -756,6 +813,11 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     override fun onResume() {
         super.onResume()
         AppForegroundState.set(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // 按系统真实态校正画中画标志: 关闭小窗的 onPictureInPictureModeChanged(false)
+            // 在部分场景不送达/迟到, 残留 true 会让视频页停在“纯画面”渲染, 控制器全部不显示
+            videoPlayProvider?.onPipModeChanged(isInPictureInPictureMode)
+        }
     }
 
     override fun onPause() {
@@ -766,6 +828,9 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     override fun onStop() {
         super.onStop()
         viewModel.isActivityVisible = false
+        // 官方 PiP 指南钦定模式 (视频只在可见时播放): onStop 即暂停,
+        // 无需判断是否处于/离开画中画。
+        videoPlayProvider?.onActivityStopped()
         if (isFinishing) {
             // 退出应用时取消刷新任务, 避免弹出通知
             viewModel.cancelRefreshJobs()
@@ -779,8 +844,21 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
         lifecycleScope.launch {
             //隐私协议
             if (!privacyPolicy()) return@launch
-            //版本更新
-            upVersion()
+            //版本更新 (首启弹帮助, 升级弹更新日志; versionCode 写回 LocalConfig
+            //供 DefaultData.upVersion 做默认数据版本推进判断)
+            upVersion(
+                AppConst.appInfo.versionCode,
+                BuildConfig.DEBUG,
+                object : UpVersionStore {
+                    override fun getSavedVersionCode(): Long = LocalConfig.versionCode
+
+                    override fun saveVersionCode(versionCode: Long) {
+                        LocalConfig.versionCode = versionCode
+                    }
+
+                    override fun consumeFirstOpen(): Boolean = LocalConfig.isFirstOpenApp
+                },
+            )
             //设置本地密码
             setLocalPassword()
             notifyAppCrash()
@@ -824,23 +902,6 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
                     if (block.isActive) block.resume(false)
                 }
             }
-        }
-    }
-
-    /**
-     * 版本更新日志
-     * 帮助文档对话框已下沉 shared (HelpDialog): 经 help Overlay 读 appHelp.md 渲染,
-     * 等待 Overlay 关闭后继续 (对照原版 TextDialog setOnDismissListener 语义)
-     */
-    private suspend fun upVersion() {
-        if (LocalConfig.versionCode == AppConst.appInfo.versionCode) return
-        LocalConfig.versionCode = AppConst.appInfo.versionCode
-        if (!LocalConfig.isFirstOpenApp) return
-        // 挂起等待首帧 navigator 注册就绪, 避免早于首帧组合静默跳过
-        val navigator = AppNavigatorProviders.awaitNavigator()
-        navigator.showOverlay(AppOverlay.Dialog(key = "help", payload = "appHelp"))
-        navigator.overlays.first { list ->
-            list.none { it.key == "help" }
         }
     }
 
@@ -906,6 +967,7 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterReceiver(pipControlReceiver)
         if (!BuildConfig.DEBUG) {
             Backup.autoBack(this)
         }

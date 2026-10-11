@@ -2,6 +2,9 @@ package io.legado.app.ui.book.read.page.overlay
 
 import io.legado.app.ui.book.read.page.entities.TextPage
 import io.legado.app.ui.book.read.page.entities.column.TextColumn
+import androidx.compose.ui.geometry.Rect
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 搜索命中范围（不可变外部状态，使用章节正文的半开字符区间）。
@@ -14,6 +17,38 @@ data class SearchHighlightOverlay(
     val chapterIndex: Int,
     val start: Int,
     val endExclusive: Int,
+)
+
+/**
+ * 高亮线型 (上色由 color 可空独立表达, 线型互斥): 0 无线, 1 下划线, 2 波浪线, 3 删除线。
+ */
+object HighlightLineStyle {
+    const val NONE = 0
+    const val UNDERLINE = 1
+    const val WAVY = 2
+    const val STRIKETHROUGH = 3
+}
+
+/**
+ * 静态章内区间高亮 (批注回显 / 关键词命中共用的 overlay 状态, 不可变)。
+ *
+ * 与 [SearchHighlightOverlay] 同一字符账本 (每个 TextColumn 消耗 charData.length,
+ * 非文字列消耗 1), 章内偏移口径同 `TextLine.chapterPosition`。
+ *
+ * @param chapterIndex 章节序号
+ * @param start 章内起始字符偏移 (含)
+ * @param endExclusive 章内结束字符偏移 (不含)
+ * @param color 上色颜色 (ARGB, 0x50 半透明色块); null = 不上色 (默认), 此时线取主题 accent 色
+ * @param lineStyle 线型 (见 [HighlightLineStyle]), 默认下划线
+ * @param underlineId 来源批注 Bookmark.time (点击命中后反查实体用); 关键词命中恒 0
+ */
+data class HighlightOverlay(
+    val chapterIndex: Int,
+    val start: Int,
+    val endExclusive: Int,
+    val color: Int? = null,
+    val lineStyle: Int = HighlightLineStyle.UNDERLINE,
+    val underlineId: Long = 0,
 )
 
 /**
@@ -146,9 +181,36 @@ object PageOverlayProjector {
         textPage: TextPage,
         highlight: SearchHighlightOverlay,
         emit: (left: Float, top: Float, right: Float, bottom: Float, lineIndex: Int) -> Unit,
+    ) = projectSearchResult(
+        textPage = textPage,
+        chapterIndex = highlight.chapterIndex,
+        start = highlight.start,
+        endExclusive = highlight.endExclusive,
+        emit = emit,
+    )
+
+    /**
+     * [projectSearchResult] 的标量入参形态：绘制热路径逐帧按章内区间调用，不构造包装对象。
+     *
+     * 页级预过滤：本页字符区间 [首行 chapterPosition, 末行末字符) 与命中区间不相交直接返回，
+     * 命中在其他页的高亮不再逐列扫描本页。区间口径与 [isSearchRangeHit] 同源（章内半开区间），
+     * 故早退不改变可见结果。
+     */
+    inline fun projectSearchResult(
+        textPage: TextPage,
+        chapterIndex: Int,
+        start: Int,
+        endExclusive: Int,
+        emit: (left: Float, top: Float, right: Float, bottom: Float, lineIndex: Int) -> Unit,
     ) {
-        if (highlight.endExclusive <= highlight.start) return
+        if (endExclusive <= start) return
+        if (textPage.chapterIndex != chapterIndex) return
         val lines = textPage.lines
+        if (lines.isEmpty()) return
+        val pageStart = lines[0].chapterPosition
+        val lastLine = lines[lines.size - 1]
+        val pageEndExclusive = lastLine.chapterPosition + lastLine.charSize
+        if (start >= pageEndExclusive || endExclusive <= pageStart) return
         for (lineIndex in lines.indices) {
             val line = lines[lineIndex]
             val columns = line.columns
@@ -159,12 +221,8 @@ object PageOverlayProjector {
                 val column = columns[colIdx]
                 val length = if (column is TextColumn) column.charData.length else 1
                 val columnEnd = chapterPos + length
-                val hit = column is TextColumn && isSearchRangeHit(
-                    textPage = textPage,
-                    highlight = highlight,
-                    start = chapterPos,
-                    endExclusive = columnEnd,
-                )
+                val hit = column is TextColumn && columnEnd > chapterPos &&
+                    start < columnEnd && endExclusive > chapterPos
                 if (hit) {
                     if (runStart < 0) runStart = colIdx
                     runEnd = colIdx
@@ -191,5 +249,47 @@ object PageOverlayProjector {
                 )
             }
         }
+    }
+
+    /**
+     * 静态区间高亮投影 (章内字符区间维度, 算法同 [projectSearchResult]): 命中范围与当前页
+     * 求交后逐行折算到文字列，连续命中列合并为矩形；同一区间自然可投影到涉及的所有页面。
+     * 消息占位页的页内偏移与章内账本不同源，不投影。
+     *
+     * 绘制热路径逐帧调用，走 [projectSearchResult] 的标量入参形态：不构造包装对象，
+     * 页级预过滤在投影内部完成。
+     */
+    inline fun projectHighlight(
+        textPage: TextPage,
+        highlight: HighlightOverlay,
+        emit: (left: Float, top: Float, right: Float, bottom: Float, lineIndex: Int) -> Unit,
+    ) {
+        if (textPage.isMsgPage) return
+        projectSearchResult(
+            textPage = textPage,
+            chapterIndex = highlight.chapterIndex,
+            start = highlight.start,
+            endExclusive = highlight.endExclusive,
+            emit = emit,
+        )
+    }
+
+    /**
+     * 命中批注的页内锚定矩形 (投影并集): 轻点批注弹气泡时, 气泡锚点取该矩形
+     * (与绘制同走 [projectHighlight] 投影)。取并集而非首个投影矩形 —— 多行批注弹在首行
+     * 下方会盖住批注自身剩下的行。无投影 (区间为空/消息页) 返回 null。
+     */
+    fun projectHighlightAnchorRect(textPage: TextPage, highlight: HighlightOverlay): Rect? {
+        if (textPage.isMsgPage) return null
+        var bounds: Rect? = null
+        projectHighlight(textPage, highlight) { l, t, r, b, _ ->
+            val cur = bounds
+            bounds = if (cur == null) {
+                Rect(l, t, r, b)
+            } else {
+                Rect(min(cur.left, l), min(cur.top, t), max(cur.right, r), max(cur.bottom, b))
+            }
+        }
+        return bounds
     }
 }

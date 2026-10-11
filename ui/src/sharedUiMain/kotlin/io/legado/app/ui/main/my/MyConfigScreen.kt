@@ -17,16 +17,21 @@ import legado.ui.generated.resources.book_source_manage_desc
 import legado.ui.generated.resources.bookmark
 import legado.ui.generated.resources.dict_rule
 import legado.ui.generated.resources.ic_bookmark
+import legado.ui.generated.resources.ic_bug_report
 import legado.ui.generated.resources.ic_cfg_about
 import legado.ui.generated.resources.ic_cfg_backup
-import legado.ui.generated.resources.ic_cfg_other
+import legado.ui.generated.resources.ic_other_setting
 import legado.ui.generated.resources.ic_cfg_replace
 import legado.ui.generated.resources.ic_cfg_source
 import legado.ui.generated.resources.ic_cfg_theme
 import legado.ui.generated.resources.ic_cfg_web
 import legado.ui.generated.resources.ic_history
 import legado.ui.generated.resources.ic_import
+import legado.ui.generated.resources.ic_extension
+import legado.ui.generated.resources.ic_layout_video
 import legado.ui.generated.resources.ic_translate
+import legado.ui.generated.resources.manga_extension
+import legado.ui.generated.resources.manga_extension_desc
 import legado.ui.generated.resources.other
 import legado.ui.generated.resources.other_setting
 import legado.ui.generated.resources.outline_filter_alt_24
@@ -34,10 +39,13 @@ import legado.ui.generated.resources.read_record
 import legado.ui.generated.resources.replace_purify
 import legado.ui.generated.resources.rule_subscription
 import legado.ui.generated.resources.source_filter_rule
+import legado.ui.generated.resources.source_toolbox
 import legado.ui.generated.resources.theme_mode
 import legado.ui.generated.resources.theme_mode_v
 import legado.ui.generated.resources.theme_setting
 import legado.ui.generated.resources.theme_setting_s
+import legado.ui.generated.resources.tvbox
+import legado.ui.generated.resources.tvbox_desc
 import legado.ui.generated.resources.txt_toc_rule
 import legado.ui.generated.resources.web_dav_set_import_old
 import legado.ui.generated.resources.web_service
@@ -61,7 +69,7 @@ import org.jetbrains.compose.resources.stringResource
  * - `ic_cfg_theme`        主题/外观（listPreference + preference 共用）
  * - `ic_cfg_backup`       备份/恢复
  * - `ic_cfg_web`          web 服务
- * - `ic_cfg_other`        其它设置入口
+ * - `ic_other_setting`    其它设置入口
  * - `ic_cfg_source`       书源/目录规则
  * - `ic_cfg_replace`      替换净化
  * - `outline_filter_alt_24`  书源过滤
@@ -69,6 +77,7 @@ import org.jetbrains.compose.resources.stringResource
  * - `ic_import`           规则订阅
  * - `ic_bookmark`         书签
  * - `ic_history`          阅读记录（已注册, 复用）
+ * - `ic_bug_report`       书源工具箱（复用）
  * - `ic_cfg_about`        关于
  *
  * ### String key (string)
@@ -82,7 +91,7 @@ import org.jetbrains.compose.resources.stringResource
  * - `replace_purify` / `source_filter_rule` / `txt_toc_rule`
  * - `dict_rule` / `rule_subscription`
  * - `other`                     分类标题
- * - `bookmark` / `read_record` / `about`
+ * - `bookmark` / `read_record` / `source_toolbox` / `about`
  *
  * ### StringArray key (string-array)
  * - `theme_mode`        主题模式名（系统/亮/暗/E-Ink）
@@ -108,7 +117,12 @@ fun MyConfigScreen(
     onRuleSubManage: () -> Unit,
     onBookmark: () -> Unit,
     onReadRecord: () -> Unit,
+    onSourceToolbox: () -> Unit,
     onAbout: () -> Unit,
+    // 漫画插件管理 (MangaExtensionService 未注册端 null, 条目隐藏)
+    onMangaExtensionManage: (() -> Unit)? = null,
+    // 影视源 TVBox 管理 (TvBoxService 未注册端 null, 条目隐藏)
+    onTvBoxManage: (() -> Unit)? = null,
 ) {
     val themeModeEntries = stringArrayResource(Res.array.theme_mode)
     val themeModeValues = stringArrayResource(Res.array.theme_mode_v)
@@ -131,13 +145,18 @@ fun MyConfigScreen(
     val titleOther = stringResource(Res.string.other)
     val titleBookmark = stringResource(Res.string.bookmark)
     val titleReadRecord = stringResource(Res.string.read_record)
+    val titleSourceToolbox = stringResource(Res.string.source_toolbox)
     val titleAbout = stringResource(Res.string.about)
+    val titleMangaExtension = stringResource(Res.string.manga_extension)
+    val summaryMangaExtension = stringResource(Res.string.manga_extension_desc)
+    val titleTvBox = stringResource(Res.string.tvbox)
+    val summaryTvBox = stringResource(Res.string.tvbox_desc)
 
     // rememberPainter 是 @Composable，须在此层取值，不能在 LazyListScope 构建 lambda 内调用
     val iconTheme = painterResource(Res.drawable.ic_cfg_theme)
     val iconBackup = painterResource(Res.drawable.ic_cfg_backup)
     val iconWeb = painterResource(Res.drawable.ic_cfg_web)
-    val iconOther = painterResource(Res.drawable.ic_cfg_other)
+    val iconOther = painterResource(Res.drawable.ic_other_setting)
     val iconSource = painterResource(Res.drawable.ic_cfg_source)
     val iconReplace = painterResource(Res.drawable.ic_cfg_replace)
     val iconFilter = painterResource(Res.drawable.outline_filter_alt_24)
@@ -145,6 +164,9 @@ fun MyConfigScreen(
     val iconImport = painterResource(Res.drawable.ic_import)
     val iconBookmark = painterResource(Res.drawable.ic_bookmark)
     val iconHistory = painterResource(Res.drawable.ic_history)
+    val iconToolbox = painterResource(Res.drawable.ic_bug_report)
+    val iconExtension = painterResource(Res.drawable.ic_extension)
+    val iconVideo = painterResource(Res.drawable.ic_layout_video)
     val iconAbout = painterResource(Res.drawable.ic_cfg_about)
 
     AppTheme {
@@ -193,6 +215,22 @@ fun MyConfigScreen(
                 icon = iconSource,
                 onClick = onBookSourceManage,
             )
+            if (onMangaExtensionManage != null) {
+                preference(
+                    title = titleMangaExtension,
+                    summary = summaryMangaExtension,
+                    icon = iconExtension,
+                    onClick = { onMangaExtensionManage.invoke() },
+                )
+            }
+            if (onTvBoxManage != null) {
+                preference(
+                    title = titleTvBox,
+                    summary = summaryTvBox,
+                    icon = iconVideo,
+                    onClick = { onTvBoxManage.invoke() },
+                )
+            }
             preference(
                 title = titleReplacePurify,
                 icon = iconReplace,
@@ -229,6 +267,11 @@ fun MyConfigScreen(
                 title = titleReadRecord,
                 icon = iconHistory,
                 onClick = onReadRecord,
+            )
+            preference(
+                title = titleSourceToolbox,
+                icon = iconToolbox,
+                onClick = onSourceToolbox,
             )
             preference(
                 title = titleAbout,

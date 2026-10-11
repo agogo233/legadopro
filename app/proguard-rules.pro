@@ -61,7 +61,11 @@
 ############################
 # 业务：JS 引擎调用的 Java 类
 ############################
--keep class * extends io.legado.app.help.JsExtensionsJvm { *; }
+# 书源 JS 面实现类 (BookSource/HttpTTS/AnalyzeRuleCore/AnalyzeUrlCore/RssJsExtensionsJvm 等):
+# JS 桥经 JavaObjectBridge 按方法名反射调用 (collectMethods 走 clazz.methods, 含接口默认实现
+# 桥方法), 不 keep 时未被 Kotlin 直接调用的成员会被当死代码删除。
+# 注: JS 侧拿到的是运行时实例 (evalJS 绑 this), 类本身由 Kotlin 构造点可达, 故只需保成员。
+-keep class * implements io.legado.app.help.JsExtensionsCommon { *; }
 
 ############################
 # 业务：数据实体（Gson 反射 + Room + JS 访问）
@@ -69,6 +73,28 @@
 -keep class **.data.entities.** { *; }
 -keep class io.legado.app.model.fileBook.ZipEntry { *; }
 -keep class io.legado.app.model.fileBook.ZipImageCache { *; }
+
+############################
+# 业务：TVBox spider jar 运行时类路径供给
+############################
+# spider jar 经 DexClassLoader 双亲委派按类名解析宿主类, 宿主源码对 zxing 零引用,
+# 不 keep 会被 R8 整库裁光, jar 内 Init 二维码任务在 release 包必然 NoClassDefFoundError。
+# zxing core 为纯 Java 直调库 (无反射/无服务发现); 实测 custom_spider.jar 常量池只引用下列
+# 编码面入口, 其余格式 Writer 与其共用件 (BitArray/reedsolomon/MatrixUtil 等) 由 R8 按可达性自动保留。
+# 解析面 (Reader/decoder/Binarizer/LuminanceSource/client.result/multi/maxicode) 宿主与 jar 都不用,
+# 不再 keep, 交由 R8 裁除。
+-keep class com.google.zxing.MultiFormatWriter { *; }
+-keep class com.google.zxing.qrcode.QRCodeWriter { *; }
+-keep class com.google.zxing.EncodeHintType { *; }
+-keep class com.google.zxing.BarcodeFormat { *; }
+-keep class com.google.zxing.common.BitMatrix { *; }
+# com.github.catvod.* 是 spider jar 的类路径契约面 (壳类/工具/网络, 签名须与 FongMi catvod 一致),
+# 宿主源码只引用少数接线点, 其余成员仅被 jar 直调; 纯 Java 直调面, jar 用法覆盖面不可预判,
+# 不 keep 会被 R8 整库裁光 (release 包 init/取数期 NoClassDefFoundError)。
+-keep class com.github.catvod.** { *; }
+# com.google.gson.** 同为 spider jar 运行时契约 (FongMi catvod 以 api 暴露 gson,
+# 生态 jar 可直调), 混淆改名后 jar 按 FQCN 链接即断。
+-keep class com.google.gson.** { *; }
 
 ############################
 # 异常类型：保留类名以便堆栈和反射查找
@@ -106,7 +132,30 @@
 # Jsoup / RE2J
 ############################
 -keep class org.jsoup.** { *; }
+
+############################
+# 扩展动态加载面：Tachiyomi/Aniyomi 扩展按 compileOnly 引用这些库，运行时委派宿主 PathClassLoader；
+# 宿主自身不可达的类/成员会被 R8 裁剪，扩展调用即 NoSuchMethodError。
+# 对齐官方宿主 aniyomi app/proguard-rules.pro 的 "Keep common dependencies used in extensions" 段。
+############################
+-keep,allowoptimization class kotlin.** { public protected *; }
+-keep,allowoptimization class kotlinx.coroutines.** { public protected *; }
+-keep,allowoptimization class kotlinx.serialization.** { public protected *; }
+-keep,allowoptimization class okio.** { public protected *; }
+-keep,allowoptimization class uy.kohesive.injekt.** { public protected *; }
+# injekt 的 fullType<T>() 在调用点内联出 FullTypeReference 的匿名子类, 构造经
+# javaClass.genericSuperclass 反射取泛型实参; R8 仅在 keep 规则匹配到的类上保留 Signature 属性,
+# 子类被优化/合并即丢失泛型父类信息, 反射退化为裸 Class, release 包启动即
+# IllegalArgumentException: TypeReference constructed without actual type information
+# (规则与 keiyoushi 扩展源 common/proguard-rules.pro 逐字一致)。
+-keep class * extends uy.kohesive.injekt.api.FullTypeReference
 -dontwarn org.jspecify.annotations.NullMarked
+
+############################
+# Gson TypeToken (object : TypeToken<...>() {} 同款反射契约, 规则取自 Gson 官方 README)
+############################
+-keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
+-keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
 -keep class com.google.re2j.** { *; }
 -dontwarn com.google.re2j.**
 
@@ -135,6 +184,16 @@
 -dontwarn javax.annotation.**
 -dontwarn org.codehaus.**
 -dontwarn java.lang.invoke.StringConcatFactory
+
+############################
+# 扩展/jar 运行时引用的宿主 API 面：扩展 APK 按 eu.kanade.tachiyomi.*
+# 以 compileOnly 编译，这些类型仅在扩展 dex 中被引用，R8 静态不可见，
+# 缺 keep 即被收缩/合并出 dex，扩展加载即 ClassNotFound（规则对齐 Mihon 官方 proguard-rules.pro）
+############################
+-keep,allowoptimization class eu.kanade.** { *; }
+-keep,allowoptimization class androidx.preference.** { public protected *; }
+# okhttp3 子包: 上方只有单星 okhttp3.*, 不含 okhttp3.internal 等子包
+-keep,allowoptimization class okhttp3.** { public protected *; }
 
 ############################
 # @file:JvmName 合成类跨模块引用加固（顶级 Kotlin 函数宿主类）

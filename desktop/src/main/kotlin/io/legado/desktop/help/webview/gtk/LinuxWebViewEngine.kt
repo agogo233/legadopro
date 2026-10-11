@@ -8,6 +8,7 @@ import io.legado.app.utils.browseUrl
 import io.legado.desktop.help.webview.DesktopWebViewEngineBase
 import io.legado.desktop.help.webview.DesktopWebViewWindowHandleBase
 import io.legado.desktop.help.webview.NavigationState
+import io.legado.desktop.help.webview.SniffTimeoutException
 import io.legado.desktop.help.webview.ToolbarAction
 import io.legado.desktop.help.webview.WebViewFetchRequest
 import io.legado.desktop.help.webview.WebViewFetchResult
@@ -20,6 +21,7 @@ import io.legado.desktop.help.webview.gtk.GtkLibs.WEBKIT_LOAD_STARTED
 import io.legado.desktop.help.webview.gtk.LinuxWebViewEngine.fetch
 import io.legado.desktop.help.webview.injectWebViewCookies
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -131,7 +133,7 @@ internal object LinuxWebViewEngine : DesktopWebViewEngineBase() {
         session: GtkSession,
         request: WebViewFetchRequest,
     ): WebViewFetchResult {
-        val hit = CompletableDeferred<String>()
+        val hit = CompletableDeferred<Pair<String, Map<String, String>>>()
         val (overrideRegex, sourceRegex) = snifferRegexes(request)
         // cookie 注入同 runHtml: 嗅探也是真实导航, 命中前页面已按请求携带登录态
         injectWebViewCookies(request.url, platformLabel) { domain, cookie ->
@@ -139,10 +141,10 @@ internal object LinuxWebViewEngine : DesktopWebViewEngineBase() {
         }
         GtkLoop.await {
             session.onUriChanged = { uri ->
-                if (overrideRegex?.matches(uri) == true) hit.complete(uri)
+                if (overrideRegex?.matches(uri) == true) hit.complete(uri to emptyMap())
             }
-            session.onResourceStarted = { uri ->
-                if (sourceRegex?.matches(uri) == true) hit.complete(uri)
+            session.onResourceStarted = { uri, headers ->
+                if (sourceRegex?.matches(uri) == true) hit.complete(uri to headers())
             }
             session.onLoadChanged = { _, event ->
                 if (event == WEBKIT_LOAD_FINISHED) {
@@ -150,11 +152,47 @@ internal object LinuxWebViewEngine : DesktopWebViewEngineBase() {
                     injectJsOnPageReady(request) { session.executeScript(it) }
                 }
             }
+            // WebSettings 等价项 (自动起播/禁图), 对照 app 端 TvBoxSniffer.createWebView
+            session.applySnifferSettings()
             session.start(request)
         }
-        val resultUrl = withTimeoutOrNull(AppConst.timeLimit) { hit.await() }
-            ?: throw NoStackTraceException("资源嗅探超时")
-        return snifferResult(request, resultUrl)
+        val (resultUrl, headers) = withTimeoutOrNull(AppConst.timeLimit) { hit.await() }
+            ?: throw SniffTimeoutException("资源嗅探超时")
+        return snifferResult(request, resultUrl, playHeaders(headers, request.url))
+    }
+
+    /**
+     * 无头 CF 挑战求解: 复用 runHtml 的注入/导航路径, 主循环改为原生 cookie 轮询
+     * (WebKitCookieManager, 含 HttpOnly), 超时窗在本方法 withTimeout 保证
+     * (不受 fetch 的 AppConst.timeLimit 限制)。
+     */
+    override suspend fun awaitChallengeCookies(
+        url: String,
+        headerMap: Map<String, String>?,
+        delayTimeMs: Long,
+        timeoutMs: Long,
+        isSolved: (cookies: String) -> Boolean,
+    ): String {
+        if (!isAvailable()) throw NoStackTraceException("WebKitGTK 引擎不可用")
+        val session = GtkLoop.await { GtkSession.create(visible = false) }
+            ?: throw NoStackTraceException("WebKitGTK 会话创建失败")
+        try {
+            return withTimeout<String>(timeoutMs) {
+                val request = WebViewFetchRequest(url = url, headerMap = headerMap, delayTime = delayTimeMs)
+                injectWebViewCookies(request.url, platformLabel) { domain, cookie ->
+                    GtkLoop.await { session.addCookies(domain, cookie, COOKIE_TIMEOUT_MS) }
+                }
+                GtkLoop.await { session.start(request) }
+                while (true) {
+                    delay(delayTimeMs)
+                    val cookies = GtkLoop.await { session.cookies(url, COOKIE_TIMEOUT_MS) } ?: continue
+                    if (isSolved(cookies)) return@withTimeout cookies
+                }
+                error("unreachable")
+            }
+        } finally {
+            GtkLoop.post { session.destroy() }
+        }
     }
 
     override fun openWindow(request: WebViewWindowRequest): WebViewWindowHandle? {

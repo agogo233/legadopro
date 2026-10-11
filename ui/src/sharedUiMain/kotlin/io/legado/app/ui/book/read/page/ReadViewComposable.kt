@@ -19,6 +19,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.data.entities.Bookmark
 import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
 import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.ReadBookViewModelShared
@@ -47,6 +49,8 @@ import io.legado.app.ui.book.read.page.entities.column.BaseColumn
 import io.legado.app.ui.book.read.page.entities.column.ImageColumn
 import io.legado.app.ui.book.read.page.entities.column.ReviewColumn
 import io.legado.app.ui.book.read.page.entities.column.TextColumn
+import io.legado.app.ui.book.read.page.overlay.HighlightOverlay
+import io.legado.app.ui.book.read.page.overlay.PageOverlayProjector
 import io.legado.app.ui.book.read.page.overlay.TTSHighlightOverlay
 import io.legado.app.ui.compose.platform.rememberMandatoryGestureBottomPx
 import io.legado.app.ui.compose.platform.readerSystemBarInsetsPx
@@ -157,18 +161,24 @@ fun ReadViewComposable(
     onAction: (Int) -> Unit = {},
     onSelectionMenu: (String, Offset?) -> Unit = { _, _ -> },
     onDismissSelectionMenu: () -> Unit = {},
+    onUnderlineTap: (Bookmark, Rect) -> Unit = { _, _ -> },
     menuVisible: () -> Boolean = { false },
     onTextAreaMeasured: ((IntSize) -> Unit)? = null,
     externalSelection: PageSelectionState? = null,
 ) {
     val prevTextPage by viewModel.prevTextPage.collectAsState()
     val curTextPage by viewModel.curTextPage.collectAsState()
+    // 本页所属书籍名 (页眉 tip 用): 取自本页 viewModel, 不再读全局活动阅读单例
+    val bookName by viewModel.book.collectAsState()
+    val currentBookName = bookName?.name.orEmpty()
     val nextTextPage by viewModel.nextTextPage.collectAsState()
     val nextPlusTextPage by viewModel.nextPlusTextPage.collectAsState()
     // 段评气泡就地补丁等页内容原地变更版本号：自增时强制 Canvas 重绘（见 PageContentCanvas.drawTick）
     val pageDrawTick by viewModel.pageContentVersion.collectAsState()
     // 朗读高亮位置（章节 + 章内字符位置）：声明式参数，绘制期折算成各页高亮行区间
     val ttsHighlight by viewModel.ttsHighlight.collectAsState()
+    // 章内静态高亮（批注回显 + 关键词命中）：随章窗排版与 DAO 数据流重算, 逐页绘制期投影
+    val chapterHighlights by viewModel.chapterHighlights.collectAsState()
     // 按 ReadBookConfig.pageAnim 取翻页委托，配置变更时重建（对照原版 ReadView.upPageAnim）
     val composeDelegate = rememberPageDelegate(viewModel)
     val tapScope = rememberCoroutineScope()
@@ -287,6 +297,8 @@ fun ReadViewComposable(
         val latestMandatoryGestureBoundPx by rememberUpdatedState(mandatoryGestureBoundPx)
         // 页眉实测高（rememberUpdatedState：手势长驻协程不随重组重启，经 State 间接读）
         val latestHeaderTipPx by rememberUpdatedState(headerTipMeasured)
+        // 批注气泡回调 (rememberUpdatedState: onTapAt lambda 内间接读, 同上)
+        val latestOnUnderlineTap by rememberUpdatedState(onUnderlineTap)
 
         // 手势长驻协程（pointerInput）不随重组重启，经 rememberUpdatedState 间接读保证
         // 取到最新 delegate/回调/落点（delegate 在翻页动画配置变更时重建）
@@ -314,6 +326,18 @@ fun ReadViewComposable(
             // clickArea.isCenter && isAbortAnim → return）
             if (isClickCenter(x, contentY, pageWidthInt, contentHeightPx.roundToInt()) &&
                 latestDelegate.isAbortAnim
+            ) {
+                return@onTapAt
+            }
+            // 批注气泡 (用户拍板): 轻点已批注区域弹气泡并短路默认单击行为,
+            // 未命中走原九宫格逻辑。放在列级点击之后 (图片/段评列优先消费)、
+            // 九宫格分区之前
+            if (dispatchUnderlineTap(
+                    viewModel, x, contentY,
+                    latestDelegate is ScrollPageDelegateCompose,
+                    latestSystemBarTopPx.toFloat(), latestHeaderTipPx,
+                    latestOnUnderlineTap,
+                )
             ) {
                 return@onTapAt
             }
@@ -378,9 +402,11 @@ fun ReadViewComposable(
                 modifier = Modifier.fillMaxSize(),
                 batteryLevel = batteryLevel,
                 clockText = clockText,
+                bookName = currentBookName,
                 drawTick = pageDrawTick,
                 selection = selection,
                 ttsHighlight = ttsHighlight,
+                chapterHighlights = chapterHighlights,
                 onHeaderMeasured = { headerTipMeasured = it },
                 onFooterMeasured = { footerTipMeasured = it },
                 onTextAreaMeasured = onTextAreaMeasured,
@@ -396,10 +422,12 @@ fun ReadViewComposable(
                             modifier = Modifier.fillMaxSize(),
                             batteryLevel = batteryLevel,
                             clockText = clockText,
+                            bookName = currentBookName,
                             onClick = onClick,
                             drawTick = pageDrawTick,
                             selection = selection,
                             ttsHighlight = ttsHighlight,
+                            chapterHighlights = chapterHighlights,
                             // 上一页不在选区页空间内（SelectionPageSource 只有 cur/next/nextPlus），
                             // 传 -1 让选区投影整页早退，不再把当前页的行列矩形画到本页
                             pagePos = -1,
@@ -419,10 +447,12 @@ fun ReadViewComposable(
                         modifier = Modifier.fillMaxSize(),
                         batteryLevel = batteryLevel,
                         clockText = clockText,
+                        bookName = currentBookName,
                         onClick = onClick,
                         drawTick = pageDrawTick,
                         selection = selection,
                         ttsHighlight = ttsHighlight,
+                        chapterHighlights = chapterHighlights,
                         pagePos = 0,
                         onHeaderMeasured = { headerTipMeasured = it },
                         onFooterMeasured = { footerTipMeasured = it },
@@ -436,10 +466,12 @@ fun ReadViewComposable(
                             modifier = Modifier.fillMaxSize(),
                             batteryLevel = batteryLevel,
                             clockText = clockText,
+                            bookName = currentBookName,
                             onClick = onClick,
                             drawTick = pageDrawTick,
                             selection = selection,
                             ttsHighlight = ttsHighlight,
+                            chapterHighlights = chapterHighlights,
                             pagePos = 1,
                         )
                     }
@@ -459,10 +491,12 @@ fun ReadViewComposable(
                     pageHeightPx = pageHeightPx,
                     batteryLevel = batteryLevel,
                     clockText = clockText,
+                    bookName = currentBookName,
                     onClick = onClick,
                     drawTick = pageDrawTick,
                     selection = selection,
                     ttsHighlight = ttsHighlight,
+                    chapterHighlights = chapterHighlights,
                     onHeaderMeasured = { headerTipMeasured = it },
                     onFooterMeasured = { footerTipMeasured = it },
                 )
@@ -1036,6 +1070,62 @@ private fun hitColumn(
 }
 
 /**
+ * 批注气泡的命中分发 (用户拍板: 轻点已批注区域弹气泡, 短路默认单击行为)。
+ *
+ * 复用 [hitColumn] 三页命中与 TextLine.chapterPosition 账本 (列起点偏移, 每个
+ * TextColumn 消耗 charData.length、非文字列消耗 1), 与绘制侧 projectHighlight
+ * 同一区间口径; 点击列与任一批注 overlay (underlineId > 0) 相交即命中:
+ * - 实体经 overlay.underlineId 在 viewModel.underlineBookmarks 同步反查;
+ * - 锚点 = 该批注在命中页的投影并集 (projectHighlightAnchorRect, 与所见色块
+ *   同源) 折算全窗坐标 (页内 y + 页相对偏移 + 状态栏 + 页眉, 对齐选区菜单锚链路)。
+ *
+ * @param x/y 正文区坐标 (调用方已减状态栏 + 页眉折算)
+ * @return true 已命中并回调, 调用方短路九宫格动作; false 走原逻辑
+ */
+private fun dispatchUnderlineTap(
+    viewModel: ReadBookViewModelShared,
+    x: Float,
+    y: Float,
+    isScroll: Boolean,
+    systemBarTopPx: Float,
+    headerTipPx: Int,
+    onUnderlineTap: (Bookmark, Rect) -> Unit,
+): Boolean {
+    val hit = hitColumn(viewModel, x, y, isScroll) ?: return false
+    val column = hit.column as? TextColumn ?: return false
+    // 点击所在列的章内起点与长度 (账本累计, 与绘制投影同源)
+    val line = column.textLine
+    var columnStart = line.chapterPosition
+    var columnLength = 0
+    for (c in line.columns) {
+        val length = if (c is TextColumn) c.charData.length else 1
+        if (c === column) {
+            columnLength = length
+            break
+        }
+        columnStart += length
+    }
+    if (columnLength <= 0) return false
+    // 与本章批注区间求交 (相交口径同 projectHighlight 的 isSearchRangeHit)
+    val underline = viewModel.chapterHighlights.value.firstOrNull {
+        it.underlineId > 0 && it.chapterIndex == hit.page.chapterIndex &&
+            columnStart < it.endExclusive && columnStart + columnLength > it.start
+    } ?: return false
+    val bookmark = viewModel.underlineBookmarks.value
+        .firstOrNull { it.time == underline.underlineId } ?: return false
+    // 锚点: 命中批注在命中页的整段投影并集 → 全窗坐标 (仅 y 叠相对偏移/状态栏/页眉)
+    val rect = PageOverlayProjector.projectHighlightAnchorRect(hit.page, underline) ?: return false
+    val anchor = Rect(
+        rect.left,
+        rect.top + hit.relativeOffset + systemBarTopPx + headerTipPx,
+        rect.right,
+        rect.bottom + hit.relativeOffset + systemBarTopPx + headerTipPx,
+    )
+    onUnderlineTap(bookmark, anchor)
+    return true
+}
+
+/**
  * 三页访问器实现（复刻原版 ContentTextView 的 `relativePage` / `relativeOffset` /
  * `callBack.isScroll`）：页取 cur/next/nextPlus 三条页流，页相对视口偏移 = 滚动偏移 +
  * 前面各页页高之和。选择相关坐标（命中/扩选/手柄/菜单锚点）都按位置自身的 pagePos
@@ -1087,10 +1177,12 @@ private fun AutoPageRevealOverlay(
     pageHeightPx: Float,
     batteryLevel: Int,
     clockText: String,
+    bookName: String,
     onClick: (TextColumn?) -> Unit,
     drawTick: Int,
     selection: PageSelectionState? = null,
     ttsHighlight: TTSHighlightOverlay? = null,
+    chapterHighlights: List<HighlightOverlay> = emptyList(),
     onHeaderMeasured: ((Int) -> Unit)? = null,
     onFooterMeasured: ((Int) -> Unit)? = null,
 ) {
@@ -1118,10 +1210,12 @@ private fun AutoPageRevealOverlay(
                     modifier = Modifier.fillMaxSize(),
                     batteryLevel = batteryLevel,
                     clockText = clockText,
+                    bookName = bookName,
                     onClick = onClick,
                     drawTick = drawTick,
                     selection = selection,
                     ttsHighlight = ttsHighlight,
+                    chapterHighlights = chapterHighlights,
                     pagePos = 1,
                     onHeaderMeasured = onHeaderMeasured,
                     onFooterMeasured = onFooterMeasured,

@@ -14,7 +14,7 @@ import io.legado.app.model.Debug
  * native (iOS/鸿蒙) source 扩展 provider 注册入口, 对照 desktop registerDesktopSourceProviders
  * (SourceCacheProviders/ExploreKindsCacheProviders 由 Ios/OhosProviderRegistry 经
  * registerNativeSourceCacheProvider / registerNativeExploreKindsCacheProvider 注册,
- * JsExtProviders 由 registerNativeJsEngines 注册, 此处不重复)。
+ * JsCryptoProviders 由 registerNativeJsEngines 注册, 此处不重复)。
  *
  * - [SourceDebugLoggers]: 桥接 commonMain [Debug] 单例 (未注册时书源调试日志缺失)
  * - [RuleBigDataProviders]: 复用 commonMain [RuleBigDataShared] 文件持久化实现,
@@ -40,8 +40,8 @@ fun registerNativeSourceProviders() {
 
 /** 桥接 commonMain [Debug] 单例 (与 app/desktop 端实现一致)。 */
 private object NativeSourceDebugLogger : SourceDebugLogger {
-    override fun log(key: String, msg: String, print: Boolean, state: Int) {
-        Debug.log(key, msg, print = print, state = state)
+    override fun log(key: String, msg: String, print: Boolean, state: Int, showTime: Boolean) {
+        Debug.log(key, msg, print = print, state = state, showTime = showTime)
     }
 
     override fun log(msg: String) {

@@ -1,5 +1,6 @@
 package io.legado.app.model.webBook
 
+import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
@@ -57,7 +58,7 @@ object BookContent {
             appString(AppStringKey.error_get_web_content, baseUrl)
         )
         SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "≡获取成功:${baseUrl}")
-        SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, body, state = 40)
+        SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, body, state = 40, showTime = false)
         val mNextChapterUrl = if (nextChapterUrl.isNullOrEmpty()) {
             AppDbProviders.get().bookChapterDao.getChapter(book.bookUrl, bookChapter.index + 1)?.url
         } else {
@@ -138,7 +139,7 @@ object BookContent {
                 for (urlStr in contentData.second) {
                     emit(urlStr)
                 }
-            }.mapAsync(AppConfigProviders.get().threadCount) { urlStr ->
+            }.mapAsync(minOf(AppConfigProviders.get().threadCount, AppConst.MAX_THREAD)) { urlStr ->
                 val analyzeUrl = AnalyzeUrlFactories.create(
                     rawUrl = urlStr,
                     source = bookSource,

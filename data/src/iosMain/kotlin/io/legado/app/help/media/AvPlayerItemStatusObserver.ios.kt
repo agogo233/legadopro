@@ -4,14 +4,18 @@ package io.legado.app.help.media
 
 import io.legado.app.platform.kvo.LegadoKeyValueObservingProtocol
 import kotlinx.cinterop.COpaquePointer
+import kotlinx.cinterop.objcPtr
 import platform.AVFoundation.AVPlayerItem
 import platform.AVFoundation.AVPlayerItemStatusFailed
 import platform.AVFoundation.AVPlayerItemStatusReadyToPlay
 import platform.Foundation.NSKeyValueObservingOptionInitial
 import platform.Foundation.NSKeyValueObservingOptionNew
+import platform.Foundation.NSThread
 import platform.Foundation.addObserver
 import platform.Foundation.removeObserver
 import platform.darwin.NSObject
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
 
 /** AVPlayerItem.status 的可释放 KVO 观察器。 */
 class AvPlayerItemStatusObserver(
@@ -45,7 +49,18 @@ class AvPlayerItemStatusObserver(
         change: Map<Any?, *>?,
         context: COpaquePointer?,
     ) {
-        if (!observing || keyPath != STATUS_KEY || ofObject !== item) return
+        // KVO 的对象经过 ObjC -> Kotlin 桥接，按原生对象地址校验身份。
+        val sameItem = (ofObject as? AVPlayerItem)?.objcPtr() == item.objcPtr()
+        if (!observing || keyPath != STATUS_KEY || !sameItem) {
+            return
+        }
+        // 与 start/dispose 及播放器生命周期在主线程串行，防止迟到回调重复通知。
+        if (NSThread.isMainThread) notifyStatus()
+        else dispatch_async(dispatch_get_main_queue()) { notifyStatus() }
+    }
+
+    private fun notifyStatus() {
+        if (!observing) return
         when (item.status) {
             AVPlayerItemStatusReadyToPlay -> {
                 dispose()

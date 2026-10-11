@@ -3,6 +3,7 @@ package io.legado.app.ui.book.read
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Rect
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
@@ -20,6 +21,8 @@ import io.legado.app.help.book.ContentProcessorProviders
 import io.legado.app.help.book.changeSourceTo
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.help.i18n.AppStringKey
+import io.legado.app.help.i18n.appString
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.coroutine.mainDispatcher
@@ -67,6 +70,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onEmpty
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -300,6 +304,9 @@ class ReaderScreenModel(
 
     private val readBook = ReadBookShared()
     val menuController: ReadMenuController by lazy { menuControllerFactory(this) }
+
+    /** 进行中的 [initBook] 任务: 后到的初始化取消先到的, 只有当前任务有权提交结果。 */
+    private var initBookJob: Job? = null
 
     val viewModel: ReadBookViewModelShared = ReadBookViewModelShared(
         readBook = readBook,
@@ -553,6 +560,7 @@ class ReaderScreenModel(
             searchJumpJob?.cancel()
             searchJumpJob = scope.launch {
                 viewModel.loadChapter(searchResult.chapterIndex, null, false)
+                // 对照原版 skipToSearch: 跳章时 durChapterPos 归零 (原版 openChapter 默认 0)
                 // 排版产物回填滑窗后才有 pages 可定位 (装载失败的占位章同样带本章号, 不会干等)
                 viewModel.curTextChapter.first { it?.chapterIndex == searchResult.chapterIndex }
                 withContext(mainDispatcher) { jumpToPosition(searchResult) }
@@ -645,30 +653,74 @@ class ReaderScreenModel(
      * - 无书源时自动换源（而非静默失败）
      */
     fun initBook(book: Book, chapterIndex: Int?, chapterPos: Int? = null) {
-        val isSameBook = readBook.book.value?.bookUrl == book.bookUrl
-        readBook.loadBook(book)
-        // 对照原版 applyBookmarkPosition: 带跳转目标且目标位置与当前进度不同时, 先存
-        // 跳转前进度快照再跳 (返回键可恢复跳转前进度; 位置相同/无定位参数的重装不触发,
-        // 如模拟追读 initBook(book, book.durChapterIndex))
-        if (chapterIndex != null &&
-            (readBook.durChapterIndexValue != chapterIndex ||
-                (chapterPos != null && readBook.durChapterPosValue != chapterPos))
-        ) {
-            readBook.saveCurrentBookProgress()
+        // 整段在可取消任务内按序执行: [ReadBookShared.loadBook] 读章节总数会同步查库,
+        // 组合期直接调用会在 UI 线程上做 DB IO (对照原版 initData 在 execute 的 IO 协程内)。
+        // 顺序不变: 装载书籍状态 → 存跳转前进度快照 → 装载目标章 → 云进度/自动换源。
+        // 本地书文件可打开性检查随装载下沉到 [ReadBookViewModelShared.loadChapter]
+        // (对照原版 checkLocalBookFileExist 在 execute 的 IO 协程内、loadContent 之前执行)。
+        // 后到的初始化作废先到的 (loadBook 是同步 IO 不响应取消, 各提交点 ensureActive 兑现),
+        // 只有当前任务有权落装载/进度/换源。
+        initBookJob?.cancel()
+        initBookJob = scope.launch(IoDispatcher) {
+            val isSameBook = readBook.book.value?.bookUrl == book.bookUrl
+            readBook.loadBook(book)
+            ensureActive()
+            // 对照原版 applyBookmarkPosition: 带跳转目标且目标位置与当前进度不同时, 先存
+            // 跳转前进度快照再跳 (返回键可恢复跳转前进度; 位置相同/无定位参数的重装不触发,
+            // 如模拟追读 initBook(book, book.durChapterIndex))
+            if (chapterIndex != null &&
+                (readBook.durChapterIndexValue != chapterIndex ||
+                    (chapterPos != null && readBook.durChapterPosValue != chapterPos))
+            ) {
+                readBook.saveCurrentBookProgress()
+            }
+            // 对照 app 端 applyBookmarkPosition: chapterIndex 有效时跳转到指定 chapterPos。
+            // 位置随 loadChapter 传入, 由装载任务在装载前落位 (对照原版先写 durChapterPos 再 loadContent)
+            viewModel.loadChapter(
+                chapterIndex ?: book.durChapterIndex,
+                chapterPos = chapterPos?.takeIf { chapterIndex != null },
+                keepScrollOffset = false,
+            )
+            ensureActive()
+            // 对照原版 initBook: 打开书即同步云进度 (原版每次 initBook 都 syncProgress,
+            // 仅同书 + 朗读运行中跳过; 书签跳转等入口同样触发, 与原版 chapterChanged 之外的行为一致)
+            viewModel.syncProgressOnBookOpen(book, isSameBook)
+            // 对照原版 initBook: 非本地书且无书源时自动换源, 不再静默失败
+            if (!book.isLocal && readBook.bookSource.value == null) {
+                autoChangeSource(book.name, book.author)
+            }
         }
-        // 对照 app 端 applyBookmarkPosition: chapterIndex 有效时跳转到指定 chapterPos。
-        // 位置必须随 loadChapter 传入, 装载是异步的, 在外面写 durChapterPos 会被跳章分支清零
-        viewModel.loadChapter(
-            chapterIndex ?: book.durChapterIndex,
-            chapterPos = chapterPos?.takeIf { chapterIndex != null },
-            keepScrollOffset = false,
-        )
-        // 对照原版 initBook: 打开书即同步云进度 (原版每次 initBook 都 syncProgress,
-        // 仅同书 + 朗读运行中跳过; 书签跳转等入口同样触发, 与原版 chapterChanged 之外的行为一致)
-        viewModel.syncProgressOnBookOpen(book, isSameBook)
-        // 对照原版 initBook: 非本地书且无书源时自动换源, 不再静默失败
-        if (!book.isLocal && readBook.bookSource.value == null) {
-            autoChangeSource(book.name, book.author)
+    }
+
+    /**
+     * 本地书权限失效/文件被移动后, 在用户重新选定的目录里找回文件并重载目录。
+     *
+     * 对照 app 端 `BaseReadBookActivity` 的 `selectBookFolderResult` 回调:
+     * 按 `book.originName` 在所选目录里找到文件 → 改 `book.bookUrl` → 落库 → 重载目录。
+     * 找不到/未选中时给出与原版同口径的提示。
+     *
+     * @param book 需要重新定位的本地书 (调用方传阅读器现行书籍)
+     * @param dirUri 用户选定的目录 ([PlatformCapabilities.findBookFileInDir] 的入参形态)
+     */
+    fun relocateLocalBook(book: Book, dirUri: String) {
+        scope.launch {
+            val newUrl = PlatformCapabilityProviders.get().findBookFileInDir(dirUri, book.originName)
+            if (newUrl == null) {
+                readBook.upMsg("找不到文件")
+                return@launch
+            }
+            val oldUrl = book.bookUrl
+            book.bookUrl = newUrl
+            // 主键变了, 按 bookUrl 的 update 会匹配不到旧行, 必须删旧插新 (对照原版 book.save)
+            runCatching {
+                val dao = AppDbProviders.get().bookDao
+                if (dao.has(oldUrl)) dao.replace(book.copy(bookUrl = oldUrl), book)
+                else dao.insert(book)
+            }.onFailure {
+                AppLog.put("重新定位本地书失败\n${it.message}", it)
+            }
+            // 书 url 变更后旧目录/缓存全失效: [loadChapterList] 内已清当前章缓存并重载滑窗
+            viewModel.loadChapterList(book)
         }
     }
 
@@ -824,8 +876,9 @@ class ReaderScreenModel(
      * 供 Toc/书签结果回传后调用。
      */
     fun openChapter(index: Int, pos: Int? = null) {
-        // 位置必须随 loadChapter 传入, 装载是异步的, 在外面写 durChapterPos 会被跳章分支清零
-        viewModel.loadChapter(index, chapterPos = pos, keepScrollOffset = false)
+        // 走 VM.openChapter (对照原版 ReadBookActivity 的 viewModel.openChapter): 跳章位置
+        // 与装载一起进 VM, 由装载任务在装载前落位; 直调 loadChapter 会丢这条语义
+        viewModel.openChapter(index, durChapterPos = pos ?: 0)
     }
 
     override fun onPreRemoved() {
@@ -927,6 +980,129 @@ class ReaderScreenModel(
     }
 
     /**
+     * 批注回调：以选区折算的章内区间存 Bookmark(type = 1)，成功后即弹批注气泡
+     * (锚点用浮动菜单自身的选区起点方区，全窗坐标)。
+     *
+     * 偏移与原文同源 ([PageSelectionState.selectedChapterRange] 同一账本遍历), 口径同
+     * TextLine.chapterPosition (净化/替换/简繁后的排版输入文本); 章号取区间自身所属章
+     * (滚动模式下选区可含下一章页, 与当前阅读章不一定同章); 回显由 ChapterHighlightState
+     * 重锚投影, 跳转无需额外处理。菜单收尾 (关菜单 + 取消选择) 由 ReaderTextActionMenu
+     * 的 entry(onFinally) 统一完成。
+     *
+     * 跨章选区无单章区间可存, 折算返回 null, 此处提示用户后放弃本次批注。
+     */
+    fun underlineTextCallback(): (text: String, anchor: Rect) -> Unit = onUnderline@{ _, anchor ->
+        val book = viewModel.book.value ?: return@onUnderline
+        val range = selection.selectedChapterRange()
+        if (range == null) {
+            Toasters.get().toast(appString(AppStringKey.underline_cross_chapter_unsupported))
+            return@onUnderline
+        }
+        val bubbleAnchor = underlineBubbleAnchor(anchor)
+        scope.launch {
+            val bookmark = Bookmark(bookName = book.name, bookAuthor = book.author).apply {
+                chapterIndex = range.chapterIndex
+                chapterPos = range.start
+                endPos = range.endExclusive
+                chapterName = chapterTitleOf(range.chapterIndex)
+                bookText = range.text
+                type = Bookmark.TYPE_UNDERLINE
+            }
+            runCatching { AppDbProviders.get().bookmarkDao.insert(bookmark) }
+                .onSuccess {
+                    underlineBubble = UnderlineBubbleState(bookmark, bubbleAnchor)
+                }
+                .onFailure { AppLog.put("保存批注失败\n${it.message}", it) }
+        }
+    }
+
+    /**
+     * 气泡锚点: 菜单锚点方区 (按 readerMenuAnchor 取的选区起点 ±20px 方区, 中心即起点行顶)
+     * 下沿补到选区末行行底 —— 只给 40px 方区时气泡会落在本行中间, 压住被选中的字。
+     * 选区几何是正文区坐标, 与窗口坐标同尺度只差一个平移 (方区中心即起点行顶的窗口 y),
+     * 故直接加高度差; 跨页选区 (末行不在起点页) 退化为起点行行底。
+     */
+    private fun underlineBubbleAnchor(menuAnchor: Rect): Rect {
+        val startLineTop = selection.selectionAnchor()?.y ?: return menuAnchor
+        val startLineBottom = selection.startHandleOffset()?.y ?: return menuAnchor
+        val bottom = if (selection.start.pagePos == selection.end.pagePos) {
+            selection.endHandleOffset()?.y ?: startLineBottom
+        } else {
+            startLineBottom
+        }
+        val offsetY = menuAnchor.center.y - startLineTop
+        return menuAnchor.copy(bottom = (offsetY + bottom).coerceAtLeast(menuAnchor.bottom))
+    }
+
+    /** 章号对应的目录标题 (目录未装载或越界时为空串, 与批注书签的章名落库口径一致) */
+    private fun chapterTitleOf(chapterIndex: Int): String =
+        viewModel.chapterList.value.getOrNull(chapterIndex)?.title ?: ""
+
+    // region 批注气泡 (轻点命中批注区域弹出, 长按菜单创建后也自动弹出; 样式/内容改动气泡保持)
+
+    /**
+     * 批注气泡状态 (null = 不显示)。快照式: 弹出时定格命中实体与锚点矩形,
+     * 编辑/换色/上色/换线型/删除都以此快照的 bookmark.time 为目标 (time 是主键, 恒可定位)。
+     */
+    var underlineBubble by mutableStateOf<UnderlineBubbleState?>(null)
+        private set
+
+    /** 轻点命中已批注区域 (ReadViewComposable.onTapAt 命中分发回调): 弹气泡 */
+    fun onUnderlineTap(bookmark: Bookmark, anchor: Rect) {
+        underlineBubble = UnderlineBubbleState(bookmark, anchor)
+    }
+
+    fun dismissUnderlineBubble() {
+        underlineBubble = null
+    }
+
+    /**
+     * 换色/上色/换线型/编辑均直接 PATCH 落 BookmarkDao, 回显由 ChapterHighlightState 订阅的
+     * DAO flow 自动刷新; 气泡保持不关 (快照回写新值供气泡自身回显, 可连着改)。
+     * 快照实体与回显 flow 里是同一个实例, 故一律 copy 出新实例, 不原地改 var 字段。
+     */
+    fun changeUnderlineColor(color: Int?) {
+        val bubble = underlineBubble ?: return
+        underlineBubble = bubble.copy(bookmark = bubble.bookmark.copy(color = color))
+        scope.launch {
+            runCatching {
+                AppDbProviders.get().bookmarkDao.updateColor(bubble.bookmark.time, color)
+            }.onFailure { AppLog.put("批注换色失败\n${it.message}", it) }
+        }
+    }
+
+    fun changeUnderlineLineStyle(lineStyle: Int) {
+        val bubble = underlineBubble ?: return
+        underlineBubble = bubble.copy(bookmark = bubble.bookmark.copy(lineStyle = lineStyle))
+        scope.launch {
+            runCatching {
+                AppDbProviders.get().bookmarkDao.updateLineStyle(bubble.bookmark.time, lineStyle)
+            }.onFailure { AppLog.put("批注换线型失败\n${it.message}", it) }
+        }
+    }
+
+    fun saveUnderlineNote(content: String) {
+        val bubble = underlineBubble ?: return
+        underlineBubble = bubble.copy(bookmark = bubble.bookmark.copy(content = content))
+        scope.launch {
+            runCatching {
+                AppDbProviders.get().bookmarkDao.updateContent(bubble.bookmark.time, content)
+            }.onFailure { AppLog.put("保存批注失败\n${it.message}", it) }
+        }
+    }
+
+    fun deleteUnderline() {
+        val bubble = underlineBubble ?: return
+        underlineBubble = null
+        scope.launch {
+            runCatching { AppDbProviders.get().bookmarkDao.delete(bubble.bookmark) }
+                .onFailure { AppLog.put("删除批注失败\n${it.message}", it) }
+        }
+    }
+
+    // endregion
+
+    /**
      * 全文搜索回调（对照原版 menu_search_content）：设置搜索词后走既有搜索路由。
      * 由各端浮动菜单 `onSearchContent` 槽引用。
      */
@@ -982,17 +1158,11 @@ class ReaderScreenModel(
     /**
      * 进度条抬手跳转（对照 app 端 ReadMenu.onSeekStop）：
      * - `progressBarBehavior == "page"`: 直接按页跳转 [ReadBookViewModelShared.skipToPage]
-     * - 否则: 首次弹「章节跳转确认」（由平台弹, 经 [showConfirm] 回调用例回调确认后的指令）,
-     *   确认后存跳转前进度快照再跳章（返回键可恢复）; 已确认过则直接跳。
-     *
-     * 平台 `ReadMenuState.onSeekStop(progress)` 调用本方法, 只负责弹确认框:
-     * ```
-     * override fun onSeekStop(progress: Int) {
-     *     screenModel.onSeekStop(progress) { onConfirm -> 弹确认框; 确认时 onConfirm() }
-     * }
-     * ```
+     * - 否则: 首次弹「章节跳转确认」（由 [ReaderDialogEvent.ChapterJumpConfirm] 经 Route 层
+     *   渲染四端通用对话框, 确认走 [confirmChapterJump]）; 已确认过则直接跳。
+     *   平台 `ReadMenuState.onSeekStop(progress)` 调用本方法。
      */
-    fun onSeekStop(progress: Int, showConfirm: ((onConfirm: () -> Unit) -> Unit)) {
+    fun onSeekStop(progress: Int) {
         val behavior = PreferenceProviders.get()
             .getString(PreferKey.progressBarBehavior, "page")
         when (behavior) {
@@ -1006,14 +1176,18 @@ class ReaderScreenModel(
                     saveCurrentBookProgress()
                     viewModel.loadChapter(progress, null, false)
                 } else {
-                    showConfirm {
-                        confirmSkipToChapter = true
-                        saveCurrentBookProgress()
-                        viewModel.loadChapter(progress, null, false)
-                    }
+                    postDialogEvent(ReaderDialogEvent.ChapterJumpConfirm(progress))
                 }
             }
         }
+    }
+
+    /** 确认跳章 (ChapterJumpConfirm 确认回调): 记住选择 + 存跳转前快照 + 跳章 */
+    fun confirmChapterJump(progress: Int) {
+        clearDialogEvent()
+        confirmSkipToChapter = true
+        saveCurrentBookProgress()
+        viewModel.loadChapter(progress, null, false)
     }
 
     // endregion
@@ -1080,6 +1254,10 @@ sealed interface ReaderDialogEvent {
 
     /** 文本编码选择器 (对照原版 menu_set_charset → showCharsetConfig) */
     data object SetCharset : ReaderDialogEvent
+
+    /** 章节跳转确认 (对照原版 ReadMenu onStopTrackingTouch "chapter" 分支首次拖动的 alert:
+     *  确定=记住选择并存跳转前快照后跳章, 取消/关闭=复位进度条不跳) */
+    data class ChapterJumpConfirm(val progress: Int) : ReaderDialogEvent
 }
 
 /** 选中文字朗读用的一次性引擎: OneShotTts 每 new 一个都会在共享引擎上再套一层进度监听, 故单实例。 */

@@ -39,7 +39,7 @@ import kotlin.time.Duration
  *   body 字节经 httpCallback 第三参数 ArrayBuffer 裸传 (不经 base64, 二进制保真)
  *
  * ## 与 nativeMain (iosMain) 的差异
- * - iosMain 用 Ktor HttpClient (CIO engine, 纯 Kotlin 协程发起请求);
+ * - iosMain 用 Ktor HttpClient (Darwin engine, 通过 NSURLSession 发起请求);
  * - ohosMain 用 @ohos.net.http (ArkTS API, 经 napi tsfn 跨线程 dispatch)。
  */
 
@@ -483,7 +483,10 @@ internal class OhosKmpCall(
 
     override fun execute(): KmpResponse {
         // 应用层拦截器等价逻辑 (UA 注入 / Keep-Alive / Cache-Control / Accept-Encoding 不上行 /
-        // CookieJar 标记移除 + CookieJarBridge.loadRequest), 与 iOS nativeMain 实现一致
+        // CookieJar 标记移除 + CookieJarBridge.loadRequest), 与 iOS nativeMain 实现一致。
+        // 本栈不挂 Cloudflare 挑战拦截 (Android / 桌面才挂
+        // eu.kanade.tachiyomi.network.interceptor.ChallengeInterceptorBase),
+        // 遇到挑战按原版行为把挑战响应交回调用方。
         val enableCookieJar = request.header(cookieJarHeader) != null
         val prepared = request.prepareForSend()
         val response = try {

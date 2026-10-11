@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -80,13 +81,17 @@ import legado.ui.generated.resources.ic_fast_forward
 import legado.ui.generated.resources.ic_fast_rewind
 import legado.ui.generated.resources.ic_fullscreen_enter
 import legado.ui.generated.resources.ic_fullscreen_exit
+import legado.ui.generated.resources.ic_picture_in_picture
 import legado.ui.generated.resources.ic_skip_next
 import legado.ui.generated.resources.ic_skip_previous
 import legado.ui.generated.resources.next_chapter
 import legado.ui.generated.resources.pause
+import legado.ui.generated.resources.picture_in_picture
 import legado.ui.generated.resources.play
 import legado.ui.generated.resources.previous_chapter
 import legado.ui.generated.resources.resolution
+import legado.ui.generated.resources.video_lock
+import legado.ui.generated.resources.video_unlock
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.abs
@@ -336,7 +341,7 @@ fun VideoTitleBar(
  * @param visible 控制层显隐 (单击视频区切换)
  * @param playing 当前在播 (true 画暂停条 / false 画播放三角; 语义由调用方按原版
  *   media3 `shouldShowPlayButton` 算好传入)
- * @param hasMultiResolution 是否多分辨率源 (假 = 不画分辨率钮; 单一直链源点开只会是空列表)
+ * @param hasMultiResolution 是否多分辨率/清晰度档 (假 = 不画分辨率钮; 单一直链源点开只会是空列表)
  * @param onPopupVisibleChange 层内弹层 (倍速下拉 / 分辨率对话框) 显隐上报，
  *   调用方据此抑制控制栏自动隐藏 (否则淡出会把弹层一并销毁)
  */
@@ -369,6 +374,9 @@ fun VideoControlsOverlay(
     onToggleSystemFullScreen: () -> Unit = {},
     // 是否在底部控制栏渲染系统级全屏按钮 (desktop 传 true, app 用 trailingBottomContent 自行注入)
     showSystemFullScreenButton: Boolean = false,
+    // 是否渲染画中画钮 (平台支持系统画中画时 true; 桌面无此概念恒 false)
+    showPictureInPictureButton: Boolean = false,
+    onEnterPictureInPicture: () -> Unit = {},
     trailingBottomContent: @Composable (RowScope.() -> Unit) = {},
     enterTransition: EnterTransition = fadeIn(),
     exitTransition: ExitTransition = fadeOut(),
@@ -449,6 +457,16 @@ fun VideoControlsOverlay(
                             onSwitchResolution = onSwitchResolution,
                             onVisibleChange = onPopupVisibleChange,
                         )
+                    }
+                    // 画中画钮 (手动入口; 退出由用户在系统小窗上操作), 排在系统级全屏钮左侧
+                    if (showPictureInPictureButton) {
+                        IconButton(onClick = onEnterPictureInPicture) {
+                            Icon(
+                                painter = painterResource(Res.drawable.ic_picture_in_picture),
+                                contentDescription = stringResource(Res.string.picture_in_picture),
+                                tint = Color.White,
+                            )
+                        }
                     }
                     // 系统级全屏按钮 (desktop 传 showSystemFullScreenButton=true; app 用 trailingBottomContent)
                     if (showSystemFullScreenButton) {
@@ -730,7 +748,7 @@ fun SpeedButton(
             modifier = Modifier
                 .clip(DesignTokens.shapeSm)
                 .clickable { expanded = true }
-                .padding(DesignTokens.spacingMd),
+                .padding(DesignTokens.spacingDefault),
         )
         AppDropdownMenu(
             expanded = expanded,
@@ -758,7 +776,7 @@ fun SpeedButton(
 }
 
 /**
- * 分辨率钮 (显示当前分辨率名, 点击弹 AlertDialog 单选)。
+ * 档位选择钮 (显示当前档名, 点击弹 AlertDialog 单选; 传"线路"标题即线路钮, 复用同一交互)。
  */
 @Composable
 fun ResolutionButton(
@@ -766,6 +784,7 @@ fun ResolutionButton(
     currentResolutionIndex: Int,
     onSwitchResolution: (Int) -> Unit,
     onVisibleChange: (Boolean) -> Unit = {},
+    titleText: String = stringResource(Res.string.resolution),
 ) {
     var showDialog by remember { mutableStateOf(false) }
     LaunchedEffect(showDialog) { onVisibleChange(showDialog) }
@@ -782,12 +801,12 @@ fun ResolutionButton(
         modifier = Modifier
             .clip(DesignTokens.shapeSm)
             .clickable { showDialog = true }
-            .padding(DesignTokens.spacingMd),
+            .padding(DesignTokens.spacingDefault),
     )
     if (showDialog) {
         AlertDialog(
             onDismissRequest = { showDialog = false },
-            title = { Text(stringResource(Res.string.resolution)) },
+            title = { Text(titleText) },
             text = {
                 // 单选列表 (对照 app 端 VideoPlayActivity.showResolutionDialog 的 singleChoiceItems 交互;
                 // 条目不叠加额外 padding, 最小高度取主题 viewHeightLarge)
@@ -899,6 +918,25 @@ fun VideoBufferingIndicator(
     )
 }
 
+/** 锁钮直径 (停靠位计算与 [VideoLockToggle] 尺寸共用一处)。 */
+private val VideoLockToggleSize: Dp = 48.dp
+
+/** 中央五钮行高 (最高的一颗是 64dp 的播放/暂停钮, 见 [PlayPauseButton])。 */
+private val VideoCenterControlsHeight: Dp = 64.dp
+
+/** 锁钮纵向停靠位: 中央五钮正上方留一条间距。控制层内的解锁钮与锁定态共用同一处。 */
+private val VideoLockDockOffsetY: Dp =
+    -(VideoCenterControlsHeight / 2 + DesignTokens.spacingLg + VideoLockToggleSize / 2)
+
+/**
+ * 锁钮停靠位: 横向贴右侧 (边距同控制层的起始边距), 纵向见 [VideoLockDockOffsetY]。
+ * 控制层内的解锁钮与锁定态共用同一处, 避免点锁后图标跳位。
+ */
+private fun BoxScope.videoLockDock(): Modifier = Modifier
+    .align(Alignment.CenterEnd)
+    .padding(end = DesignTokens.spacingLg)
+    .offset(y = VideoLockDockOffsetY)
+
 /** 锁定/解锁钮 (原 app/desktop 两份完全相同的 private 实现, 收拢为共享实现)。 */
 @Composable
 fun VideoLockToggle(
@@ -908,7 +946,7 @@ fun VideoLockToggle(
 ) {
     Box(
         modifier
-            .size(48.dp)
+            .size(VideoLockToggleSize)
             .clip(CircleShape)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
@@ -917,7 +955,9 @@ fun VideoLockToggle(
             painter = rememberPainter("ic_lock_outline"),
             // 无 contentDescription 时读屏/无障碍下是一颗无声钮 (上一版如此)，而锁定态
             // 画面上只剩这一颗无底色、半透明的小钮，必须给它可读的名字
-            contentDescription = stringResource(if (locked) Res.string.play else Res.string.pause),
+            contentDescription = stringResource(
+                if (locked) Res.string.video_unlock else Res.string.video_lock
+            ),
             tint = Color.White.copy(alpha = if (locked) 0.5f else 1f),
             modifier = Modifier.size(32.dp),
         )
@@ -951,6 +991,10 @@ fun VideoPlayerHostContainer(
     // 桌面/iOS/鸿蒙三端全漏 (按钮恒显示暂停态、控制栏永不自动隐藏), Android 端又因监听器
     // 随渲染面进出组合而丢状态沿 (缓冲圈永转 / 丢 ENDED 不自动下一章)。
     val playback by controller.playback.collectAsState()
+    // 画中画平台真实态: null = 端不支持 (控制栏不画画中画钮); true = 已在系统小窗,
+    // 小窗内只留纯画面 (手势/控制栏/锁定等一切覆盖层都交还给系统交互), false = 页面正常渲染。
+    val pipState = platform.rememberIsInPictureInPicture()
+    val isPip = pipState == true
     // 系统级全屏以平台真实态为准: 桌面真全屏由窗口决定 (ESC / 标题栏 / 原生控制条三条入口
     // 都会改窗口全屏), 页面自存副本必然分叉成"按一次 ESC 只退一半"; 全屏切换失败的平台上
     // 该值恒 false, 页面就不会按全屏渲染。无窗口全屏概念的端返回 null → 沿用页面意图标志。
@@ -965,7 +1009,9 @@ fun VideoPlayerHostContainer(
 
     VideoPlaybackPoller(
         controlsVisible = uiState.controlsVisible,
-        autoHideActive = playback.isPlaying || playback.isBuffering,
+        // 画中画窗口期控制层不渲染, 自动隐藏计时必须停: 它会把 controlsVisible 翻成 false,
+        // 退出小窗回页面时控制栏就被“提前收走”了 (用户看到无控制器的纯画面)
+        autoHideActive = (playback.isPlaying || playback.isBuffering) && !isPip,
         // 弹层开着按"拖动中"处理: 只暂停自动隐藏计时, 位置读数照常轮询
         seeking = seeking || popupVisible,
         locked = uiState.isLocked,
@@ -1008,6 +1054,9 @@ fun VideoPlayerHostContainer(
     // (playWhenReady) + IDLE/ENDED 决定, 刻意不用 isPlaying, 否则缓冲卡顿那一瞬图标会
     // 从暂停条跳成播放三角 (原版不会), 用户以为按坏了
     val playingIconShown = !playback.showPlayIcon
+    // 无系统返回通道的平台 (iOS): 全屏期间右上角常驻退出全屏钮
+    val exitFullScreenButtonShown = !platform.supportsSystemBack &&
+        (uiState.isFullScreen || systemFullScreen) && !isPip
 
     Box(
         modifier
@@ -1017,12 +1066,14 @@ fun VideoPlayerHostContainer(
         // 1. 平台纯 Surface (对照原版 PlayerView 直挂在布局里, 不随页面转场移出组合)
         platform.RenderSurface(controller, screenModel, Modifier.fillMaxSize())
 
-        // 2. 共享手势层
-        VideoGestureOverlay(
-            handler = gestureController,
-            locked = uiState.isLocked,
-            modifier = Modifier.fillMaxSize(),
-        )
+        // 2. 共享手势层 (画中画窗口内禁用: 单击/拖动/双击都是系统小窗的交互, 不能被手势层吃掉)
+        if (!isPip) {
+            VideoGestureOverlay(
+                handler = gestureController,
+                locked = uiState.isLocked,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
 
         // 3. 错误占位 / 加载中占位 (覆盖层实现已收敛至 ChapterLoadStateOverlay, 与漫画共用;
         // 加载指示器仍用视频侧的缓冲圈, 与"缓冲中"样式统一)
@@ -1034,10 +1085,11 @@ fun VideoPlayerHostContainer(
             loadingIndicator = { VideoBufferingIndicator() },
         )
 
-        // 4. 控制层 (加载/错误态不叠; 锁定态隐藏)
-        if (!uiState.isLocked) {
+        // 4. 控制层 (错误态不叠; 锁定态/画中画隐藏; 加载中也允许唤出 —— 小窗/分辨率线路
+        //    钮要在等装载时可用; 加载期 isBuffering 恒真, 自动隐藏计时照常运行, 5s 后仍会自动隐藏)
+        if (!uiState.isLocked && !isPip) {
             VideoControlsOverlay(
-                visible = uiState.controlsVisible && error == null && !showLoading,
+                visible = uiState.controlsVisible && error == null,
                 playing = playingIconShown,
                 positionMs = positionMs,
                 durationMs = durationMs,
@@ -1074,9 +1126,8 @@ fun VideoPlayerHostContainer(
                             screenModel.setLocked(true)
                             screenModel.onToggleControls()
                         },
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .padding(start = DesignTokens.spacingLg),
+                        // 与锁定态的小锁钮同一停靠位 (见 [videoLockDock])
+                        modifier = videoLockDock(),
                     )
                 },
                 isSystemFullScreen = systemFullScreen,
@@ -1084,12 +1135,14 @@ fun VideoPlayerHostContainer(
                     screenModel.onToggleSystemFullScreen(!systemFullScreen)
                 },
                 showSystemFullScreenButton = true,
+                showPictureInPictureButton = pipState != null,
+                onEnterPictureInPicture = screenModel::onEnterPictureInPicture,
                 modifier = Modifier.fillMaxSize(),
             )
         }
 
-        // 5. 锁定态: 仅留半透明小锁钮
-        if (uiState.isLocked) {
+        // 5. 锁定态: 仅留半透明小锁钮 (画中画内无手势层, 锁定无意义, 不渲染)
+        if (uiState.isLocked && !isPip) {
             VideoLockToggle(
                 locked = true,
                 onClick = {
@@ -1098,9 +1151,7 @@ fun VideoPlayerHostContainer(
                     // 上一版不回滚 → 解锁后必须再点一次画面才出控件
                     if (!screenModel.state.value.controlsVisible) screenModel.onToggleControls()
                 },
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = DesignTokens.spacingLg),
+                modifier = videoLockDock(),
             )
         }
 
@@ -1111,8 +1162,8 @@ fun VideoPlayerHostContainer(
             )
         }
 
-        // 7. 手势反馈文字
-        gestureText?.let {
+        // 7. 手势反馈文字 (画中画内不渲染)
+        gestureText?.takeIf { !isPip }?.let {
             VideoGestureFeedbackText(
                 text = it,
                 modifier = Modifier
@@ -1125,7 +1176,7 @@ fun VideoPlayerHostContainer(
         // 顶栏在全屏时被整体隐藏, 而退全屏/开菜单的唯一入口在顶栏里, 叠上 iOS 的
         // PlatformBackHandler 是 no-op → 原本“进得去退不出, 连菜单都打不开”。
         // 不随控制栏自动隐藏 (它就是为控制栏也收起时准备的)。
-        if (!platform.supportsSystemBack && (uiState.isFullScreen || systemFullScreen)) {
+        if (exitFullScreenButtonShown) {
             IconButton(
                 onClick = {
                     if (systemFullScreen) screenModel.setSystemFullScreen(false)

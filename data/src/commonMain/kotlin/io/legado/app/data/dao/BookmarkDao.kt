@@ -64,9 +64,28 @@ interface BookmarkDao {
     @Query(
         """select * from bookmarks 
         where bookName = :bookName and bookAuthor = :bookAuthor 
-        order by chapterIndex"""
+        order by chapterIndex, chapterPos"""
     )
     suspend fun getByBook(bookName: String, bookAuthor: String): List<Bookmark>
+
+    @Query(
+        """select * from bookmarks 
+        where bookName = :bookName and bookAuthor = :bookAuthor and type = 1 
+        order by chapterIndex, chapterPos"""
+    )
+    fun flowUnderlinesByBook(bookName: String, bookAuthor: String): Flow<List<Bookmark>>
+
+    /** 批注气泡换色/上色: 只 PATCH color 列 (null = 不上色), 避免整行覆盖冲掉其他端并发写入 */
+    @Query("update bookmarks set color = :color where time = :time")
+    suspend fun updateColor(time: Long, color: Int?)
+
+    /** 批注气泡换线型: 只 PATCH lineStyle 列, 避免整行覆盖冲掉其他端并发写入 */
+    @Query("update bookmarks set lineStyle = :lineStyle where time = :time")
+    suspend fun updateLineStyle(time: Long, lineStyle: Int)
+
+    /** 批注气泡编辑: 只 PATCH content 列 (批注原文 bookText 是重锚依据, 不可经气泡修改) */
+    @Query("update bookmarks set content = :content where time = :time")
+    suspend fun updateContent(time: Long, content: String)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(vararg bookmark: Bookmark)

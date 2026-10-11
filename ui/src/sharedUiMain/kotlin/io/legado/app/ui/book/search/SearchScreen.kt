@@ -3,7 +3,6 @@ package io.legado.app.ui.book.search
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,12 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.DropdownMenuItem
@@ -55,7 +54,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +64,11 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.SearchKeyword
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.model.webBook.ExploreOption
+import io.legado.app.model.webBook.SEARCH_LAYOUT_SOURCE_GROUP
+import io.legado.app.model.webBook.SourceSearchGroup
+import io.legado.app.ui.main.home.SectionCoverRow
+import io.legado.app.ui.main.home.SectionTitleRow
+import io.legado.app.ui.book.manga.extension.PluginSearchFilterRow
 import io.legado.app.ui.bookshelf.KindLabels
 import io.legado.app.ui.bookshelf.LocalBookCoverSlot
 import io.legado.app.ui.root.LocalSharedCoverBinding
@@ -78,10 +81,8 @@ import io.legado.app.ui.bookshelf.ShelfVideoItem
 import io.legado.app.ui.bookshelf.shelfCoverHeightDp
 import io.legado.app.ui.bookshelf.UnreadBadge
 import io.legado.app.ui.bookshelf.toCoverBook
-import io.legado.app.ui.compose.component.AlertButton
-import io.legado.app.ui.compose.component.AppAlertDialog
-import io.legado.app.ui.compose.component.AppCheckbox
 import io.legado.app.ui.compose.component.AppFilletTextButton
+import io.legado.app.ui.compose.component.ExploreOptionsRow
 import io.legado.app.ui.compose.component.AppMenuCheckbox
 import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.AppTitleBar
@@ -131,6 +132,9 @@ interface SearchNavCallbacks {
     /** 点击书籍 (补 notShelf type 后进详情, 宿主实现跳转); [sharedToken] = 被点封面自签的共享配对 token。 */
     fun onBookClick(book: BaseBook, longClick: Boolean = false, sharedToken: String? = null)
 
+    /** 按源分类区块标题点击: 进单源搜索结果页 (发现 show 界面, 数据走 [source] 的搜索 url)。 */
+    fun onSourceSectionClick(source: BookSource, keyword: String)
+
     /** 进入书源管理页。 */
     fun onManageBookSources()
 
@@ -160,6 +164,7 @@ interface SearchNavCallbacks {
 object NoOpSearchNavCallbacks : SearchNavCallbacks {
     override fun onBack() {}
     override fun onBookClick(book: BaseBook, longClick: Boolean, sharedToken: String?) {}
+    override fun onSourceSectionClick(source: BookSource, keyword: String) {}
     override fun onManageBookSources() {}
     override fun onAlertSearchScope() {}
     override fun onShowSourceFilterRule() {}
@@ -181,8 +186,8 @@ object NoOpSearchNavCallbacks : SearchNavCallbacks {
  * - `WindowInsets.navigationBars.asPaddingValues()` → `rememberNavigationBarPaddingValues()` (跨平台导航栏 padding)
  * - `ShelfCover` (原 app 专属) → [coverSlot] / [shelfCoverSlot] 注入, 未传时取 [LocalBookCoverSlot]
  * - `KindLabels` / `UnreadBadge` (app 专属) → 复用书架 shared 版同名组件
- * - `binding.llFilter.setUpExploreOptions` (单源搜索选项 chip) → [SearchOptionsRow]
- *   (含多选 chip 的搜索过滤对话框, 对照 ExploreOptionView.showMultiSelectDialog)
+ * - `binding.llFilter.setUpExploreOptions` (单源搜索选项 chip) → [ExploreOptionsRow]
+ *   (与发现页参数行共用同一实现)
  * - `VideoExploreShowAdapter` / `ItemExploreVideoBinding.bindVideoCard` (视频卡) →
  *   书架 shared 版同名组件 [ShelfVideoItem]
  *
@@ -229,6 +234,7 @@ fun SearchScreen(
     val historyKeys by viewModel.historyKeys.collectAsState()
     val bookshelfBooks by viewModel.bookshelfBooks.collectAsState()
     val resultBooks by viewModel.searchBooks.collectAsState(initial = emptyList())
+    val searchGroups by viewModel.searchGroups.collectAsState(initial = emptyList<SourceSearchGroup>())
     val isSearching by viewModel.isSearching.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val focusEpoch by viewModel.focusEpoch.collectAsState()
@@ -238,10 +244,18 @@ fun SearchScreen(
     val manualStopped by viewModel.manualStopped.collectAsState()
 
     val searchOptionsVersion by viewModel.searchOptionsVersion.collectAsState()
+    val pluginFiltersVersion by viewModel.pluginFiltersVersion.collectAsState()
+    // 聚簇顶部选项行快照: 仅单源时非空 (多源选项在各源区块内); 点击直改实例, 版本号驱动重读
+    val topSearchOptions = remember(searchOptionsVersion) { viewModel.getTopOptions() }
+    // 本轮搜索源快照: 单源聚簇顶部筛选入口据此取源 (多源聚簇不展示筛选)
+    val searchSources by viewModel.searchSources.collectAsState()
 
-    // 搜索布局: 低 4 位=列数 (0/1 单列; 2..6 N 列网格), bit 4 (0x10)=视频标志
+    // 搜索布局: 低 3 位=列数 (0/1 单列; 2..6 N 列网格), bit 4 (0x10)=视频标志,
+    // bit 5 (0x20)=按源分类 (结果区按源分区块; 视频位在区块内生效)。列数位在按源分类下
+    // 不参与渲染, 但仍随布局写回保存 —— 对话框据此记住上次聚簇列数, 切回聚簇不再丢成单列。
     val searchStyle = AppConfigProviders.get().searchLayout
-    val styleCols = BookSource.exploreStyleCols(searchStyle)
+    val isSourceGroupLayout = searchStyle and SEARCH_LAYOUT_SOURCE_GROUP != 0
+    val styleCols = if (isSourceGroupLayout) 0 else BookSource.exploreStyleCols(searchStyle)
     val styleIsVideo = BookSource.exploreStyleIsVideo(searchStyle)
     val spanCount = if (styleCols <= 1) 1 else styleCols
 
@@ -320,19 +334,39 @@ fun SearchScreen(
                         shelfCoverSlot = resolvedShelfCoverSlot,
                     )
                 } else {
-                    SearchOptionsRow(
-                        options = viewModel.searchOptions,
-                        version = searchOptionsVersion,
-                        onOptionChanged = { viewModel.search(viewModel.searchKey, resetOptions = false) },
-                    )
+                    // 聚簇布局顶部选项行 (单源搜索): 按源分类布局下选项在各源区块内显示, 不重复
+                    if (!isSourceGroupLayout) {
+                        ExploreOptionsRow(
+                            options = topSearchOptions,
+                            optionsVersion = searchOptionsVersion,
+                            onOptionSelected = {
+                                viewModel.search(viewModel.searchKey, resetOptions = false)
+                            },
+                        )
+                    }
+                    // 插件源筛选入口: 仅聚簇布局且本轮只有一个源时在顶部; 多源聚簇不展示
+                    // (按源分类布局下入口在各源区块内)。会话实例由本页 VM 持有, 随页面销毁即丢。
+                    if (!isSourceGroupLayout) {
+                        PluginSearchFilterRow(
+                            source = searchSources.singleOrNull(),
+                            sessionVersion = pluginFiltersVersion,
+                            getSession = viewModel::getPluginFilterSession,
+                            ensureFilterSession = { viewModel.ensurePluginFilterSession(it) },
+                            onFiltersChanged = { source -> viewModel.restartSourceSearch(source) },
+                            onResetFilters = { source -> viewModel.resetSourceFilters(source) },
+                        )
+                    }
                     ResultArea(
                         viewModel = viewModel,
                         navCallbacks = navCallbacks,
                         books = resultBooks,
+                        groups = searchGroups,
+                        isSourceGroupLayout = isSourceGroupLayout,
                         spanCount = spanCount,
                         styleIsVideo = styleIsVideo,
                         styleCols = styleCols,
                         bookshelfVersion = bookshelfVersion,
+                        pluginFiltersVersion = pluginFiltersVersion,
                         coverSlot = resolvedCoverSlot,
                     )
                 }
@@ -607,191 +641,6 @@ private fun ColumnScope.InputHelp(
     }
 }
 
-// ===== 单源搜索选项 =====
-
-@Composable
-private fun SearchOptionsRow(
-    options: List<ExploreOption>,
-    version: Int,
-    onOptionChanged: () -> Unit,
-) {
-    if (options.isEmpty()) return
-    var localVersion by remember { mutableIntStateOf(0) }
-    var dialogOptionName by remember { mutableStateOf<String?>(null) }
-    @Suppress("UNUSED_EXPRESSION") version
-    localVersion
-    Column(Modifier.fillMaxWidth()) {
-        options.forEach { option ->
-            key(option.name) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingXs),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (option.multiSelect) {
-                        // 对齐原版 setUpExploreOptions 多选: title + 已选 chip,
-                        // 任一 chip 点击均打开多选对话框 (整行点击区域)
-                        SearchOptionChip(
-                            text = option.name,
-                            bold = true,
-                            onClick = { dialogOptionName = option.name },
-                        )
-                        option.options.forEach { (label, value) ->
-                            if (value in option.selectedValues) {
-                                Spacer(Modifier.width(DesignTokens.spacingXs))
-                                SearchOptionChip(
-                                    text = label,
-                                    onClick = { dialogOptionName = option.name },
-                                )
-                            }
-                        }
-                    } else {
-                        SearchOptionChip(
-                            text = option.name,
-                            bold = true,
-                            onClick = {
-                                if (option.resetToDefault()) {
-                                    localVersion++
-                                    onOptionChanged()
-                                }
-                            },
-                        )
-                        Spacer(Modifier.width(DesignTokens.spacingXs))
-                        option.options.forEach { (label, value) ->
-                            SearchOptionChip(
-                                text = label,
-                                selected = option.selectedValue == value,
-                                onClick = {
-                                    val changed = if (option.selectedValue == value) false else {
-                                        option.selectedValue = value
-                                        true
-                                    }
-                                    if (changed) {
-                                        localVersion++
-                                        onOptionChanged()
-                                    }
-                                },
-                            )
-                            Spacer(Modifier.width(DesignTokens.spacingXs))
-                        }
-                    }
-                }
-            }
-        }
-    }
-    options.firstOrNull { it.multiSelect && it.name == dialogOptionName }?.let { option ->
-        MultiSelectOptionDialog(
-            option = option,
-            onDismiss = { dialogOptionName = null },
-            onConfirm = { selectedValues ->
-                if (selectedValues != option.selectedValues) {
-                    option.selectedValues.clear()
-                    option.selectedValues.addAll(selectedValues)
-                    localVersion++
-                    onOptionChanged()
-                }
-                dialogOptionName = null
-            },
-        )
-    }
-}
-
-/**
- * 搜索选项 chip: 收拢到共享 [AppFilletTextButton] (对应原版 setUpExploreOptions 的
- * item_fillet_text + selector_fillet_btn_bg)。标题加粗+0.8 透明, 选中项全亮, 未选中半透明
- * (alpha 作用于整颗 chip 含背景, 对齐原版 setUpExploreOptions 语义)。
- */
-@Composable
-private fun SearchOptionChip(
-    text: String,
-    bold: Boolean = false,
-    selected: Boolean = true,
-    onClick: () -> Unit,
-) {
-    AppFilletTextButton(
-        text = text,
-        alpha = if (bold) 0.8f else if (selected) 1f else 0.5f,
-        bold = bold,
-        onClick = onClick,
-    )
-}
-
-@Composable
-private fun MultiSelectOptionDialog(
-    option: ExploreOption,
-    onDismiss: () -> Unit,
-    onConfirm: (Set<String>) -> Unit,
-) {
-    var query by remember(option) { mutableStateOf("") }
-    var working by remember(option) { mutableStateOf(option.selectedValues.toSet()) }
-    val visibleOptions = remember(option, query) {
-        val filter = query.trim()
-        if (filter.isEmpty()) {
-            option.options
-        } else {
-            option.options.filter { (label, value) ->
-                label.contains(filter, ignoreCase = true) ||
-                    value.contains(filter, ignoreCase = true)
-            }
-        }
-    }
-    AppAlertDialog(
-        onDismissRequest = onDismiss,
-        title = option.name,
-        neutralButton = AlertButton(stringResource(Res.string.clear), dismissOnClick = false) {
-            working = emptySet()
-        },
-        cancelButton = AlertButton(stringResource(Res.string.cancel)),
-        okButton = AlertButton(
-            text = stringResource(Res.string.ok),
-            dismissOnClick = false,
-            onClick = { onConfirm(working) },
-        ),
-    ) {
-        AppSearchField(
-            value = query,
-            onValueChange = { query = it },
-            hint = stringResource(Res.string.search),
-            modifier = Modifier.padding(
-                start = DesignTokens.spacingDefault,
-                top = DesignTokens.spacingDefault,
-                bottom = DesignTokens.spacingXs
-            ),
-        )
-        LazyColumn(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(max = 400.dp),
-        ) {
-            items(visibleOptions) { (label, value) ->
-                val checked = value in working
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .toggleable(
-                            value = checked,
-                            role = Role.Checkbox,
-                        ) { selected ->
-                            working = if (selected) working + value else working - value
-                        }
-                        .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingXs),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AppCheckbox(checked = checked, onCheckedChange = null)
-                    Text(
-                        text = label,
-                        color = AppTheme.colors.primaryText,
-                        fontSize = 15.sp,
-                        modifier = Modifier.padding(start = DesignTokens.spacingDefault),
-                    )
-                }
-            }
-        }
-    }
-}
-
 // ===== 结果列表 =====
 
 @Composable
@@ -799,13 +648,27 @@ private fun ColumnScope.ResultArea(
     viewModel: SearchViewModel,
     navCallbacks: SearchNavCallbacks,
     books: List<SearchBook>,
+    groups: List<SourceSearchGroup>,
+    isSourceGroupLayout: Boolean,
     spanCount: Int,
     styleIsVideo: Boolean,
     styleCols: Int,
     bookshelfVersion: Int,
+    pluginFiltersVersion: Int,
     coverSlot: @Composable (SearchBook, Modifier, isVideoCover: Boolean) -> Unit,
 ) {
     @Suppress("UNUSED_EXPRESSION") bookshelfVersion // 书架增删时重组刷新绿点
+    if (isSourceGroupLayout) {
+        SourceGroupResultArea(
+            viewModel,
+            navCallbacks,
+            groups,
+            styleIsVideo,
+            pluginFiltersVersion,
+            coverSlot,
+        )
+        return
+    }
     // 统一响应式网格: 列数 0/1 走行样式 item, 宽屏经 rememberResponsiveColumns(1) 自动加列
     // (对齐书架 LIST 档 / 阅读记录页 / 发现页), 不再分 LazyColumn 单列分支
     val state = rememberLazyGridState()
@@ -901,6 +764,100 @@ private fun ColumnScope.ResultArea(
                 }
             }
         }
+    }
+}
+
+// ===== 结果区 (按源分类布局) =====
+
+/**
+ * 按源分类结果区: 一个书源一个区块 (源名标题行 + 该源结果横向封面行),
+ * 视觉同主页展示项区块 (SectionTitleRow + SectionCoverRow); 组顺序 = 源完成顺序。
+ * 标题行整行可点 → 单源搜索结果页 (AppRoute.SourceSearchShow, 发现 show 界面 + 搜索 url)。
+ */
+@Composable
+private fun ColumnScope.SourceGroupResultArea(
+    viewModel: SearchViewModel,
+    navCallbacks: SearchNavCallbacks,
+    groups: List<SourceSearchGroup>,
+    styleIsVideo: Boolean,
+    pluginFiltersVersion: Int,
+    coverSlot: @Composable (SearchBook, Modifier, isVideoCover: Boolean) -> Unit,
+) {
+    val state = rememberLazyListState()
+    // 触底续搜 (同聚簇分支: 对齐原 canScrollVertically(1)==false -> scrollToBottom)
+    LaunchedEffect(state) {
+        snapshotFlow { state.layoutInfo.totalItemsCount to state.canScrollForward }
+            .distinctUntilChanged()
+            .collect { (count, forward) ->
+                if (count > 0 && !forward) viewModel.scrollToBottom()
+            }
+    }
+    LazyColumn(
+        state = state,
+        modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f),
+    ) {
+        items(groups, key = { it.source.bookSourceUrl }) { group ->
+            SourceSection(
+                viewModel,
+                navCallbacks,
+                group,
+                styleIsVideo,
+                pluginFiltersVersion,
+                coverSlot,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceSection(
+    viewModel: SearchViewModel,
+    navCallbacks: SearchNavCallbacks,
+    group: SourceSearchGroup,
+    styleIsVideo: Boolean,
+    pluginFiltersVersion: Int,
+    coverSlot: @Composable (SearchBook, Modifier, isVideoCover: Boolean) -> Unit,
+) {
+    // 区块留白对照主页展示项 (SectionHolder.root: top default=8 / bottom xs=4)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = DesignTokens.spacingDefault, bottom = DesignTokens.spacingXs),
+    ) {
+        SectionTitleRow(group.source.bookSourceName) {
+            navCallbacks.onSourceSectionClick(group.source, viewModel.searchKey)
+        }
+        // 插件源筛选入口 (仅插件源声明了筛选器时一行): 紧跟源标题, 在参数选项行之上
+        PluginSearchFilterRow(
+            source = group.source,
+            sessionVersion = pluginFiltersVersion,
+            getSession = viewModel::getPluginFilterSession,
+            ensureFilterSession = { viewModel.ensurePluginFilterSession(it) },
+            onFiltersChanged = { viewModel.restartSourceSearch(it) },
+            onResetFilters = { viewModel.resetSourceFilters(it) },
+        )
+        // 该源搜索 url 声明的可配置项 chip 行 (无声明为零行): 点选只重搜该源
+        val optionsVersion by viewModel.searchOptionsVersion.collectAsState()
+        val sourceOptions = remember(group.source.bookSourceUrl, optionsVersion) {
+            viewModel.getSourceOptions(group.source.bookSourceUrl)
+        }
+        ExploreOptionsRow(
+            options = sourceOptions,
+            optionsVersion = optionsVersion,
+            onOptionSelected = { viewModel.onSourceOptionChanged(group.source.bookSourceUrl) },
+        )
+        // 横向行: 视频位跟搜索布局 (同 home 区块视频封面卡); 封面渲染走与聚簇模式
+        // 同款 coverSlot (书架命中分流缓存区)
+        SectionCoverRow(
+            books = group.books,
+            onBookClick = { book, token -> navCallbacks.onBookClick(book, sharedToken = token) },
+            onBookLongClick = { book, token -> navCallbacks.onBookClick(book, true, token) },
+            isVideoStyle = styleIsVideo,
+            blockId = "search-source-${group.source.bookSourceUrl}",
+            coverSlot = coverSlot,
+        )
     }
 }
 

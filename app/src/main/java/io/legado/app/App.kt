@@ -45,6 +45,7 @@ import io.legado.app.help.config.ThemeConfig.applyDayNightInit
 import io.legado.app.help.config.migrateLegacyHomeSp
 import io.legado.app.help.config.registerAndroidLocalConfigStore
 import io.legado.app.help.config.registerAndroidPreferenceProvider
+import io.legado.app.lib.theme.MonetColorExtract
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.coroutine.registerAndroidDebugState
 import io.legado.app.help.file.registerAndroidAppFilesDir
@@ -70,16 +71,24 @@ import io.legado.app.help.tts.registerAndroidSystemTtsEngine
 import io.legado.app.help.ui.registerAndroidOpenUrlProvider
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.ui.registerAndroidUserAgentProvider
+import io.legado.app.help.image.MangaPluginImageFetcherProviders
 import io.legado.app.model.BookCoverShared
 import io.legado.app.model.CacheBook
 import io.legado.app.model.fileBook.registerAndroidFileBookProviders
 import io.legado.app.model.fileBook.registerEpubApplicationContext
+import io.legado.app.model.manga.JvmMangaPluginImageFetcher
 import io.legado.app.model.registerAndroidAudioPlayProviders
 import io.legado.app.model.registerAndroidReadBookPlatform
 import io.legado.app.model.registerAndroidRealScreen
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.registerAndroidJsEngines
 import io.legado.app.model.webBook.registerAndroidBookInfoRefresher
+import io.legado.app.help.tvbox.AndroidTvBoxHostPlatform
+import io.legado.app.help.tvbox.AndroidTvBoxSniffer
+import io.legado.app.help.tvbox.TvBoxPlatforms
+import io.legado.app.help.tvbox.TvBoxSniffPlatforms
+import io.legado.app.help.tvbox.registerComposeTvBoxAssetProvider
+import io.legado.app.model.tvbox.TvBoxManager
 import io.legado.app.model.webBook.registerAndroidWebBookProviders
 import io.legado.app.service.WebService
 import io.legado.app.ui.book.changesource.registerAndroidChangeBookSourcePlatform
@@ -127,6 +136,8 @@ class App : Application() {
         registerAndroidDebugState(this)
         // 注册 shared 模块的 ApplicationContext, 供 commonMain 的 stringRes(resId) 使用
         registerSharedAppContext(this)
+        // 注册漫画扩展 (eu.kanade.tachiyomi.*) 兼容层运行时绑定 (Injekt: Application/Json/NetworkHelper)
+        eu.kanade.tachiyomi.registerExtensionCompat(this)
         // 注册图片加载失败兜底图字节 (image_loading_error.png 单点持于 :ui composeResources)
         ImageErrorBytesProviders.register {
             runBlocking { Res.readBytes("drawable/image_loading_error.png") }
@@ -172,8 +183,13 @@ class App : Application() {
         BookStorageProviders.register(AndroidBookStorage)
         BookImageStorageProviders.register(AndroidBookImageStorage)
         LocalBookLocators.register(AndroidLocalBookLocator())
+        // 注册插件源图片获取 (commonMain MangaImageBytesLoader 的插件源分支经
+        // MangaPluginImageFetcherProviders 委托扩展自身 client 下载图片, 扩展拦截器
+        // — 禁漫图片分割重排等 — 才能生效); 须在 MangaExtensionManager 源注册表
+        // 可用之后, 图片加载首次触发之前 (实现 JVM+Android 共用, 桌面端同构注册)
+        MangaPluginImageFetcherProviders.register(JvmMangaPluginImageFetcher())
         // 注册 RegexErrorHandler (longToastOnUi/saveCrashInfo2File/restart),
-        // 供 shared jvmAndAndroidMain 的 RegexReplacerImpl 在替换超时分支调用;
+        // 供 shared androidMain 的 AndroidRegexReplacer 在替换超时分支调用;
         // 须在 registerAndroidWebBookProviders 之前 (任何 RegexReplacers.get().replace 之前)
         registerAndroidRegexErrorHandler()
         // 注册 CronetProvider (桥接 app 端 Cronet object 与 AppConfig.isCronet);
@@ -188,6 +204,14 @@ class App : Application() {
         // 须在 CookieStoreProvider 之后 (bridge 通过 CookieStoreProviders.get() 间接访问存储)
         registerSharedCookieJarBridge()
         registerAndroidWebBookProviders()
+        // TVBox 影视源宿主: 平台钩子 (jar 类加载/上下文) 与网页嗅探 (WebView)
+        // 先注册, 再幂等 init (重载已持久化配置 + 注册 TVBox 取数委派; 与漫画/视频插件
+        // 委派并列, 各实现身份互斥, 与注册顺序无关)
+        TvBoxPlatforms.register(AndroidTvBoxHostPlatform(this))
+        // TVBox JS 引导脚本走 composeResources 单一数据源 (与 DefaultData 同款 provider 注入)
+        registerComposeTvBoxAssetProvider()
+        TvBoxSniffPlatforms.register(AndroidTvBoxSniffer)
+        TvBoxManager.init()
         // 注册 Coil3 BookImageLoader (Compose 图片加载, 替代 Glide 迁移批 1 共享面接线)
         // 依赖 OkHttpClientProviders (上一步 registerAndroidWebBookProviders 已注册),
         // ImageLoader 内部 lazy 构建故注册本身不触发网络栈初始化
@@ -242,6 +266,9 @@ class App : Application() {
         // app 端通过 callback 把下载完成事件回放到活动阅读实例)
         CacheBook.registerCallback()
         registerAndroidPreferenceProvider()
+        // 莫奈取色自动跟随:开关仍开着则冷启动补挂壁纸颜色监听 (只挂监听不派生, 8 键已持久化);
+        // 必须在 registerAndroidPreferenceProvider 之后 (恢复判定读跟随开关 pref)
+        MonetColorExtract.restoreListenerIfNeeded(this)
         // 旧版 SP 主页设置/收藏迁移 (e8b2c5837d 改存 filesDir JSON 后旧数据弃读, 见 LegacyHomeSpMigration);
         // 须在 registerAndroidAppFilesDir (onCreate 早段) 之后、Home 首次 load 之前
         migrateLegacyHomeSp(defaultSharedPreferences)

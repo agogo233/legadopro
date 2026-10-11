@@ -18,6 +18,11 @@ val enableOhosTarget = providers.gradleProperty("enableOhosTarget").orNull?.toBo
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // JitPack 的同坐标 XMLUtil 发布缺少 iOS 变体；该组只使用 Maven Central 的完整发布。
+        exclusiveContent {
+            forRepository { mavenCentral() }
+            filter { includeGroup("io.github.pdvrieze.xmlutil") }
+        }
         maven { url = uri("https://jitpack.io") }
         google()
         mavenCentral()
@@ -61,6 +66,9 @@ include(":modules:quickjs")
 include(":modules:quickjs-test")
 include(":modules:quickjs-android-native")
 include(":modules:quickjs-processor")
+// 内嵌第三方库 (vendored) 的独立承载模块, 不混进本项目源码树
+include(":modules:rjpath")
+include(":modules:treeview")
 // :shared 按职能切分后的共享子模块 (依赖单向: foundation <- data <- core <- ui)
 include(":foundation")
 include(":data")
@@ -73,4 +81,5 @@ include(":desktop-core")
 include(":headless")
 if (enableOhosTarget) {
     include(":modules:ksoup-ohos")
+    include(":modules:epub4kmp-ohos")
 }

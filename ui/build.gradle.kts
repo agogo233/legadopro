@@ -110,15 +110,14 @@ kotlin {
                 sharedLib {
                     baseName = "legado_shared"
                     if (buildType == NativeBuildType.RELEASE) {
-                        // 激进优化: optimized=true 开 Kotlin 编译优化 pass, clang 走
-                        // clangOptFlags.ohos_arm64 (默认 -O3 -ffunction-sections)。模块分割后
-                        // LLVM 单任务输入变小, 配合 10g daemon 堆 (历史 optimized=true 需 10g)
-                        // 预期不再 OOM (单体 :shared 时代 -O1 曾在 16GB 机器硬崩溃, 退出码
-                        // -1073741795)。-Xbackend-threads 并行 LLVM codegen 提速;
-                        // -fdata-sections 配合链接期 --gc-sections 做死代码消除 (R8 对标)。
+                        // optimized=true 开 Kotlin 编译优化 pass, clang 走 clangOptFlags.ohos_arm64。
+                        // -O3 在 16G 内存机器上 clang 指令选择 OOM (zipFiles 实测), 钉 -O2;
+                        // 配 10g daemon 堆过 K/N 后端 Devirtualization 分析。
+                        // -Xbackend-threads 并行 LLVM codegen 提速; -fdata-sections 配合链接期
+                        // --gc-sections 做死代码消除 (R8 对标)。
                         optimized = true
                         freeCompilerArgs += "-Xbackend-threads=8"
-                        freeCompilerArgs += "-Xoverride-konan-properties=clangOptFlags.ohos_arm64=-O3 -ffunction-sections -fdata-sections"
+                        freeCompilerArgs += "-Xoverride-konan-properties=clangOptFlags.ohos_arm64=-O2 -ffunction-sections -fdata-sections"
                         linkerOpts("-s", "--gc-sections")
                     }
                     export("org.jetbrains.compose.export:export:$composeVersion")
@@ -147,6 +146,7 @@ kotlin {
                 implementation(libs.kotlin.stdlib)
                 api(project(":foundation"))
                 api(project(":data"))
+                implementation(project(":modules:rjpath"))
                 api(project(":core"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.atomicfu)
@@ -169,6 +169,9 @@ kotlin {
                 implementation("org.jetbrains.compose.material:material:$composeVersion")
                 implementation("org.jetbrains.compose.ui:ui:$composeVersion")
                 implementation(libs.compose.lifecycle.runtime.multiplatform)
+                // JSON 树形展示 (vendored, 含长按取 JSONPath)。声明在本源集: JsonTree 的公开签名
+                // 引用 Compose 类型 (Modifier/PaddingValues/TextStyle 等), commonMain 无 Compose 依赖。
+                implementation(project(":modules:treeview"))
             }
         }
         // 鸿蒙无变体三方库隔离层 (与 :shared 同款)
@@ -190,6 +193,10 @@ kotlin {
             maybeCreate("iosAndOhosUiMain").apply {
                 dependsOn(sharedUiMain)
                 dependsOn(skikoUiMain)
+                dependencies {
+                    implementation(libs.epub4kmp.core)
+                    implementation(libs.kmp.zip.okio)
+                }
             }
         } else null
 
@@ -236,7 +243,7 @@ kotlin {
                 dependencies {
                     implementation(libs.androidx.sqlite.framework)
                     implementation(libs.ktor.client.core)
-                    implementation(libs.ktor.client.cio)
+                    implementation(libs.ktor.client.darwin)
                     implementation(libs.coil3.network.ktor3)
                 }
             }
@@ -278,6 +285,8 @@ kotlin {
                 implementation(libs.junit)
                 implementation(libs.jetbrains.kotlin.test)
                 implementation(libs.kotlin.reflect)
+                // HtmlTree/JsonPathChain 测试直接构造 JsonElement/JsonObject
+                implementation(libs.kotlinx.serialization.json)
             }
         }
         matching { it.name == "androidHostTest" }.configureEach {
@@ -295,6 +304,13 @@ if (enableOhosTarget) {
     // 不能为鸿蒙单独加 @OptIn —— 只在这一条编译上开 opt-in (与旧 :shared 同款)。
     tasks.matching { it.name == "compileKotlinOhosArm64" }.configureEach {
         (this as? org.jetbrains.kotlin.gradle.tasks.KotlinNativeCompile)?.compilerOptions?.optIn
-            ?.add("androidx.compose.animation.ExperimentalSharedTransitionApi")
+            ?.addAll(
+                listOf(
+                    "androidx.compose.animation.ExperimentalSharedTransitionApi",
+                    // 本机 K/N 2.2.21 (CPF) 里 kotlin.time.Clock 仍带 ExperimentalTime,
+                    // CI 2.3.20 已转正, 故只在这条编译上开 opt-in。
+                    "kotlin.time.ExperimentalTime",
+                )
+            )
     }
 }

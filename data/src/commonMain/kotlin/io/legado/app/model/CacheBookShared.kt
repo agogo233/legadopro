@@ -1,5 +1,6 @@
 package io.legado.app.model
 
+import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.data.AppDbProviders
@@ -9,6 +10,7 @@ import io.legado.app.data.entities.BookSource
 import io.legado.app.exception.ConcurrentException
 import io.legado.app.help.book.BookHelpProviders
 import io.legado.app.help.book.BookStorageProviders
+import io.legado.app.help.casUpdate
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.coroutine.CompositeCoroutine
 import io.legado.app.help.coroutine.Coroutine
@@ -22,6 +24,7 @@ import io.legado.app.utils.concurrent.newConcurrentMap
 import io.legado.app.utils.concurrent.newConcurrentSet
 import io.legado.app.utils.onEachParallel
 import io.legado.app.utils.postEvent
+import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
@@ -44,6 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
+import kotlin.math.min
 
 /**
  * 跨平台 CacheBook 调度核心 (commonMain): 章节预下载调度。
@@ -68,8 +72,18 @@ object CacheBookShared {
     /** KMP 互斥锁 (替代 @Synchronized, Native 端 @Synchronized 无效) */
     private val lock = SynchronizedObject()
 
-    /** 按 bookUrl 索引的下载模型 map (对照 app 端 CacheBook.cacheBookMap) */
-    val cacheBookMap = newConcurrentMap<String, CacheBookModelShared>()
+    /**
+     * 按 bookUrl 索引的下载模型 map (对照 app 端 CacheBook.cacheBookMap)。
+     *
+     * 读多写少 (写仅发生在书籍任务建立/移除, 书籍量级) 且调度循环每秒全量遍历:
+     * 写侧在 [cacheBookMapRef] 上复制新 map CAS 发布, 读与遍历取当前快照 —— 零锁、
+     * 零分配, 快照发布后不再变更, 遍历天然不抛并发修改异常 (对齐原版
+     * ConcurrentHashMap 的弱一致迭代语义)。外部调用方仅做 get/isEmpty/keys 只读访问。
+     */
+    val cacheBookMap: Map<String, CacheBookModelShared>
+        get() = cacheBookMapRef.value
+
+    private val cacheBookMapRef = atomic<Map<String, CacheBookModelShared>>(emptyMap())
 
     /**
      * 工作状态控制 (对照 app 端 CacheBook.workingState)。
@@ -141,7 +155,7 @@ object CacheBookShared {
             return cacheBook
         }
         cacheBook = CacheBookModelShared(bookSource, book)
-        cacheBookMap[book.bookUrl] = cacheBook
+        cacheBookMapRef.casUpdate { it + (book.bookUrl to cacheBook) }
         return cacheBook
     }
 
@@ -158,7 +172,7 @@ object CacheBookShared {
     /** 清理所有下载任务 + 清空 map (对照 app 端 CacheBook.close) */
     fun close() {
         cacheBookMap.forEach { it.value.stop() }
-        cacheBookMap.clear()
+        cacheBookMapRef.casUpdate { emptyMap() }
         successDownloadSet.clear()
         errorDownloadMap.clear()
     }
@@ -194,7 +208,7 @@ object CacheBookShared {
                 var emitted = false
 
                 cacheBookMap.forEach { (_, model) ->
-                    if (!model.isLoading()) {
+                    if (model.hasWaitingDownloads()) {
                         emit(model)
                         emitted = true
                     }
@@ -207,7 +221,7 @@ object CacheBookShared {
             }
         }.onStart {
             postEvent(EventBus.UP_DOWNLOAD_STATE, "")
-        }.onEachParallel(AppConfigProviders.get().threadCount) {
+        }.onEachParallel(min(AppConfigProviders.get().threadCount, AppConst.MAX_THREAD)) {
             coroutineScope {
                 it.download(this, coroutineContext)
             }
@@ -280,9 +294,10 @@ object CacheBookShared {
 
         private val waitDownloadSet = linkedSetOf<Int>()
         private val onDownloadSet = linkedSetOf<Int>()
+        private val batchDownloadSet = mutableSetOf<Int>()
         private val tasks = CompositeCoroutine()
         private var isStopped = false
-        private var waitingRetry = false
+        private var retryingCount = 0
         private var isLoading = false
         /** 章节列表缓存 (addDownload 后由调用方设置, 避免每次查 DB) */
         var chapterList: List<BookChapter>? = null
@@ -295,17 +310,21 @@ object CacheBookShared {
         }
 
         fun isRun(): Boolean = synchronized(lock) {
-            return waitDownloadSet.isNotEmpty() || onDownloadSet.isNotEmpty() || isLoading
+            return waitDownloadSet.isNotEmpty() || onDownloadSet.isNotEmpty() || retryingCount > 0 || isLoading
         }
 
         fun isStop(): Boolean = synchronized(lock) {
             // 内联 isRun() 逻辑, 避免同锁重入 (atomicfu synchronized Native 端可能不可重入)
-            val isRunning = waitDownloadSet.isNotEmpty() || onDownloadSet.isNotEmpty() || isLoading
-            return isStopped || (!isRunning && !waitingRetry)
+            val isRunning = waitDownloadSet.isNotEmpty() || onDownloadSet.isNotEmpty() || retryingCount > 0 || isLoading
+            return isStopped || !isRunning
         }
 
         fun isLoading(): Boolean = synchronized(lock) {
             return isLoading
+        }
+
+        fun hasWaitingDownloads(): Boolean = synchronized(lock) {
+            return !isLoading && waitDownloadSet.isNotEmpty()
         }
 
         fun setLoading() = synchronized(lock) {
@@ -314,9 +333,11 @@ object CacheBookShared {
 
         fun stop() = synchronized(lock) {
             waitDownloadSet.clear()
+            batchDownloadSet.clear()
             tasks.clear()
             isStopped = true
             isLoading = false
+            retryingCount = 0
             postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
         }
 
@@ -332,23 +353,25 @@ object CacheBookShared {
         fun addDownload(start: Int, end: Int) = synchronized(lock) {
             isStopped = false
             for (i in start..end) {
+                batchDownloadSet.add(i)
                 if (!onDownloadSet.contains(i)) {
                     waitDownloadSet.add(i)
                 }
             }
-            cacheBookMap[book.bookUrl] = this
+            cacheBookMapRef.casUpdate { it + (book.bookUrl to this) }
             isLoading = false
             postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
         }
 
         private fun onSuccess(chapter: BookChapter) = synchronized(lock) {
             onDownloadSet.remove(chapter.index)
+            batchDownloadSet.remove(chapter.index)
             successDownloadSet.add(chapter.primaryStr())
             errorDownloadMap.remove(chapter.primaryStr())
         }
 
         private fun onPreError(chapter: BookChapter, error: Throwable) = synchronized(lock) {
-            waitingRetry = true
+            retryingCount++
             if (error !is ConcurrentException) {
                 errorDownloadMap[chapter.primaryStr()] =
                     (errorDownloadMap[chapter.primaryStr()] ?: 0) + 1
@@ -361,32 +384,34 @@ object CacheBookShared {
             if ((errorDownloadMap[chapter.primaryStr()] ?: 0) < 3 && !isStopped) {
                 waitDownloadSet.add(chapter.index)
             } else {
+                batchDownloadSet.remove(chapter.index)
                 AppLog.put(
                     "下载${book.name}-${chapter.title}失败\n${error.message}",
                     error
                 )
             }
-            waitingRetry = false
+        }
+
+        private fun onRetryFinished() = synchronized(lock) {
+            if (retryingCount > 0) retryingCount--
         }
 
         private fun onError(chapter: BookChapter, error: Throwable) = synchronized(lock) {
-            // 内联 onPreError + onPostError 逻辑, 避免同锁重入 (atomicfu synchronized Native 端可能不可重入)
-            waitingRetry = true
+            // 阅读页单章请求没有批量调度器, 失败只记次数, 不留下无人处理的等待任务。
             if (error !is ConcurrentException) {
                 errorDownloadMap[chapter.primaryStr()] =
                     (errorDownloadMap[chapter.primaryStr()] ?: 0) + 1
             }
             onDownloadSet.remove(chapter.index)
-            //重试3次
-            if ((errorDownloadMap[chapter.primaryStr()] ?: 0) < 3 && !isStopped) {
+            if (chapter.index in batchDownloadSet && !isStopped) {
                 waitDownloadSet.add(chapter.index)
-            } else {
+            }
+            if ((errorDownloadMap[chapter.primaryStr()] ?: 0) >= 3) {
                 AppLog.put(
                     "下载${book.name}-${chapter.title}失败\n${error.message}",
                     error
                 )
             }
-            waitingRetry = false
         }
 
         private fun onCancel(index: Int) = synchronized(lock) {
@@ -394,9 +419,16 @@ object CacheBookShared {
             if (!isStopped) waitDownloadSet.add(index)
         }
 
+        private fun onDirectCancel(index: Int) = synchronized(lock) {
+            onDownloadSet.remove(index)
+            if (index in batchDownloadSet && !isStopped) waitDownloadSet.add(index)
+        }
+
         private fun onFinally() = synchronized(lock) {
-            if (waitDownloadSet.isEmpty() && onDownloadSet.isEmpty()) {
-                cacheBookMap.remove(book.bookUrl)
+            if (waitDownloadSet.isEmpty() && onDownloadSet.isEmpty() && retryingCount == 0) {
+                cacheBookMapRef.casUpdate { cur ->
+                    if (cur[book.bookUrl] === this) cur - book.bookUrl else cur
+                }
             }
             postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
         }
@@ -424,8 +456,10 @@ object CacheBookShared {
             val chapterIndex = synchronized(lock) {
                 val idx = waitDownloadSet.firstOrNull()
                 if (idx == null) {
-                    if (!isLoading && onDownloadSet.isEmpty()) {
-                        cacheBookMap.remove(book.bookUrl)
+                    if (!isLoading && onDownloadSet.isEmpty() && retryingCount == 0) {
+                        cacheBookMapRef.casUpdate { cur ->
+                            if (cur[book.bookUrl] === this) cur - book.bookUrl else cur
+                        }
                     }
                     return
                 }
@@ -440,7 +474,10 @@ object CacheBookShared {
             // 锁外: chapter DAO 查询 (suspend, 不能在 synchronized 块内调用)
             val chapter = AppDbProviders.get().bookChapterDao.getChapter(book.bookUrl, chapterIndex)
             if (chapter == null) {
-                synchronized(lock) { onDownloadSet.remove(chapterIndex) }
+                synchronized(lock) {
+                    onDownloadSet.remove(chapterIndex)
+                    batchDownloadSet.remove(chapterIndex)
+                }
                 return
             }
             // 锁内: 状态检查 + LAZY 任务构造; start() 必须在锁外 (见 KDoc 第 5 条)
@@ -454,11 +491,13 @@ object CacheBookShared {
                     /** 修正下载计数 */
                     postEvent(EventBus.SAVE_CONTENT, Pair(book, chapter))
                     onDownloadSet.remove(chapterIndex)
+                    batchDownloadSet.remove(chapterIndex)
                     return
                 }
                 val bookHelp = BookHelpProviders.get()
                 if (bookHelp.hasImageContent(book, chapter)) {
                     onDownloadSet.remove(chapterIndex)
+                    batchDownloadSet.remove(chapterIndex)
                     return
                 }
                 if (BookStorageProviders.get().hasContent(book, chapter)) {
@@ -476,8 +515,12 @@ object CacheBookShared {
                     }.onError {
                         onPreError(chapter, it)
                         //出现错误等待一秒后重新加入待下载列表
-                        delay(1000)
-                        onPostError(chapter, it)
+                        try {
+                            delay(1000)
+                            onPostError(chapter, it)
+                        } finally {
+                            onRetryFinished()
+                        }
                     }.onCancel {
                         onCancel(chapterIndex)
                     }.onFinally {
@@ -493,6 +536,9 @@ object CacheBookShared {
                         start = CoroutineStart.LAZY,
                     ) {
                         val content = getContentAwait(bookSource, book, chapter, nextChapterUrl)
+                        if (!BookStorageProviders.get().hasContent(book, chapter)) {
+                            error("章节正文未写入缓存")
+                        }
                         bookHelp.saveImages(bookSource, book, chapter, content, 2)
                         //正文落盘由 getContentAwait 内部完成 (WebBook.getContentAwait needSave=true
                         //默认调 BookHelpProviders.get().saveContent), 与 app 端原版一致,
@@ -504,8 +550,12 @@ object CacheBookShared {
                     }.onError {
                         onPreError(chapter, it)
                         //出现错误等待一秒后重新加入待下载列表
-                        delay(1000)
-                        onPostError(chapter, it)
+                        try {
+                            delay(1000)
+                            onPostError(chapter, it)
+                        } finally {
+                            onRetryFinished()
+                        }
                         downloadFinish(chapter, "获取正文失败\n${it.message}")
                     }.onCancel {
                         onCancel(chapterIndex)
@@ -534,11 +584,16 @@ object CacheBookShared {
             try {
                 val nextChapterUrl = chapterList?.getOrNull(chapter.index + 1)?.url
                 val content = getContentAwait(bookSource, book, chapter, nextChapterUrl)
-                onSuccess(chapter)
+                if (BookStorageProviders.get().hasContent(book, chapter)) {
+                    onSuccess(chapter)
+                } else {
+                    onDirectCancel(chapter.index)
+                }
                 return content
             } catch (e: Exception) {
                 if (e is CancellationException) {
-                    onCancel(chapter.index)
+                    onDirectCancel(chapter.index)
+                    throw e
                 }
                 onError(chapter, e)
                 return "获取正文失败\n${e.message}"
@@ -578,13 +633,17 @@ object CacheBookShared {
                 ) {
                     getContentAwait(bookSource, book, chapter, nextChapterUrl)
                 }.onSuccess { content ->
-                    onSuccess(chapter)
+                    if (BookStorageProviders.get().hasContent(book, chapter)) {
+                        onSuccess(chapter)
+                    } else {
+                        onDirectCancel(chapter.index)
+                    }
                     downloadFinish(chapter, content, resetPageOffset)
                 }.onError {
                     onError(chapter, it)
                     downloadFinish(chapter, "获取正文失败\n${it.message}", resetPageOffset)
                 }.onCancel {
-                    onCancel(chapter.index)
+                    onDirectCancel(chapter.index)
                     downloadFinish(chapter, "download canceled", resetPageOffset, true)
                 }.onFinally {
                     postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)

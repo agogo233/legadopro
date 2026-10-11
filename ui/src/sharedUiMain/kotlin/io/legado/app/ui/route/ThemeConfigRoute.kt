@@ -7,9 +7,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Icon
 import androidx.compose.material.Text
+import io.legado.app.model.webBook.SEARCH_LAYOUT_SOURCE_GROUP
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -55,6 +57,9 @@ import legado.ui.generated.resources.font_scale_summary
 import legado.ui.generated.resources.ic_arrow_drop_down
 import legado.ui.generated.resources.ok
 import legado.ui.generated.resources.search_layout
+import legado.ui.generated.resources.search_style_by_book
+import legado.ui.generated.resources.search_style_by_source
+import legado.ui.generated.resources.search_style_mode
 import legado.ui.generated.resources.source_edit_max_line_summary
 import legado.ui.generated.resources.source_edit_text_max_line
 import legado.ui.generated.resources.theme_setting
@@ -71,7 +76,8 @@ import org.jetbrains.compose.resources.stringResource
  * fontScale 用 [NumberPickerDialog] 实现 (对照 app 端 showNumberPicker);
  * onSearchLayout 已在 shared 用 [SearchLayoutConfigDialog] 重建 (对照 ThemeConfigHost.configSearch);
  * onBookshelfLayout/onBottomNavConfig/onThemeList/onCustomizeDayTheme/onCustomizeNightTheme
- * 通过 [PlatformCapabilityProviders] 注入各端实现 (app 端 ThemeConfigHost 已实现, 其他端按需 override)。
+ * 通过 [PlatformCapabilityProviders] 注入各端实现 (app 端 ThemeConfigHost 已实现, 其他端按需 override);
+ * 莫奈取色同走平台能力 (Android 端 MonetColorExtract 实现), 显隐另加 eInk 门。
  */
 @Composable
 fun ThemeConfigRoute(
@@ -111,6 +117,9 @@ fun ThemeConfigRoute(
             onCustomizeNightTheme = {
                 PlatformCapabilityProviders.get().showCustomizeNightThemeDialog()
             },
+            onMonetColorExtract = {
+                PlatformCapabilityProviders.get().applyMonetColorFromWallpaper()
+            },
             onFontScale = { showFontScalePicker = true },
             onSourceEditMaxLine = { showSourceEditMaxLinePicker = true },
         )
@@ -138,6 +147,11 @@ fun ThemeConfigRoute(
         }
     }
 
+    // 莫奈取色显隐: 平台能力门 (Android 12+; 其他端能力默认 false 隐藏) +
+    // eInk 门 (对齐 AppTheme 读取层判定: isEInkMode 时读取层强制白底黑字, 取色无意义)
+    val monetColorExtractSupported = PlatformCapabilityProviders.get().monetColorExtractSupported &&
+        !appConfig.isEInkMode
+
     Column(Modifier.fillMaxSize()) {
         AppTitleBar(
             title = titleStr,
@@ -153,6 +167,7 @@ fun ThemeConfigRoute(
             onThemeList = { screenModel.dispatch(ThemeConfigUiEvent.ThemeList) },
             onCustomizeDayTheme = { screenModel.dispatch(ThemeConfigUiEvent.CustomizeDayTheme) },
             onCustomizeNightTheme = { screenModel.dispatch(ThemeConfigUiEvent.CustomizeNightTheme) },
+            onMonetColorExtract = { screenModel.dispatch(ThemeConfigUiEvent.MonetColorExtract) },
             onFontScale = { screenModel.dispatch(ThemeConfigUiEvent.FontScale) },
             sourceEditMaxLineSummary = state.sourceEditMaxLineSummary,
             onSourceEditMaxLine = { screenModel.dispatch(ThemeConfigUiEvent.SourceEditMaxLine) },
@@ -160,6 +175,8 @@ fun ThemeConfigRoute(
             // setAlternateIconName 实现; 桌面/鸿蒙无平台机制 → 该行隐藏)
             iconChangeSupported = PlatformCapabilityProviders.get().launcherIconChangeSupported,
             onIconChange = { PlatformCapabilityProviders.get().changeLauncherIcon(it) },
+            // 莫奈取色: 平台能力注入 + eInk 隐藏 (见上方 monetColorExtractSupported)
+            monetColorExtractSupported = monetColorExtractSupported,
         )
     }
 
@@ -256,6 +273,13 @@ private fun SearchLayoutConfigDialog(
 ) {
     val colors = AppTheme.colors
     val styles = stringArrayResource(Res.array.explore_item_style)
+    val modes = listOf(
+        stringResource(Res.string.search_style_by_book),
+        stringResource(Res.string.search_style_by_source),
+    )
+    var isSourceGroup by remember {
+        mutableStateOf(currentLayout and SEARCH_LAYOUT_SOURCE_GROUP != 0)
+    }
     var isVideo by remember {
         mutableStateOf(BookSource.exploreStyleIsVideo(currentLayout))
     }
@@ -267,17 +291,40 @@ private fun SearchLayoutConfigDialog(
         onDismissRequest = onDismiss,
         title = stringResource(Res.string.search_layout),
         okButton = AlertButton(text = stringResource(Res.string.ok)) {
-            // 对照 app 端 makeLayoutStyle: 视频置 EXPLORE_STYLE_VIDEO_FLAG, cols 取低 3 位
-            val newLayout = (if (isVideo) BookSource.EXPLORE_STYLE_VIDEO_FLAG else 0) or
-                (selectedCols and BookSource.EXPLORE_STYLE_COLS_MASK)
+            // 视频位两种模式都保留 (按源分类区块同 home 页视频封面卡);
+            // 列数位两种模式都写入: 按源分类下只是不参与渲染, 但保留它才能记住上次聚簇列数,
+            // 否则 "聚簇 N 列 → 按源分类 → 回聚簇" 会丢成单列
+            val videoFlag = if (isVideo) BookSource.EXPLORE_STYLE_VIDEO_FLAG else 0
+            val colsFlag = selectedCols and BookSource.EXPLORE_STYLE_COLS_MASK
+            val newLayout = videoFlag or colsFlag or
+                    (if (isSourceGroup) SEARCH_LAYOUT_SOURCE_GROUP else 0)
             onConfirm(newLayout)
         },
         cancelButton = AlertButton(text = stringResource(Res.string.cancel)),
     ) {
         Column(Modifier.padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingDefault)) {
-            // 第一行: explore_style 标签 + 普通/视频 下拉 (对照原 Spinner sp_item_style)
+            // 第一行: 布局模式标签 + 按书聚簇/按源分类 下拉
             Row(
                 Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(Res.string.search_style_mode),
+                    color = colors.primaryText,
+                    modifier = Modifier.padding(end = DesignTokens.spacingDefault),
+                )
+                LayoutStyleDropdown(
+                    options = modes,
+                    selectedIndex = if (isSourceGroup) 1 else 0,
+                ) { index ->
+                    isSourceGroup = index == 1
+                }
+            }
+            // 样式行两种模式都可用; 列数行仅聚簇布局有意义, 按源分类下禁用 (弱化 + 不响应)
+            val clusterOnly = Modifier.alpha(if (isSourceGroup) 0.4f else 1f)
+            // 第二行: explore_style 标签 + 普通/视频 下拉 (对照原 Spinner sp_item_style)
+            Row(
+                Modifier.fillMaxWidth().padding(top = DesignTokens.spacingDefault),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -292,9 +339,9 @@ private fun SearchLayoutConfigDialog(
                     isVideo = index == 1
                 }
             }
-            // 第二行: explore_cols 标签 + AppSlider 0..6 + 当前值
+            // 第三行: explore_cols 标签 + AppSlider 0..6 + 当前值
             Row(
-                Modifier
+                clusterOnly
                     .fillMaxWidth()
                     .padding(top = DesignTokens.spacingDefault),
                 verticalAlignment = Alignment.CenterVertically,
@@ -312,6 +359,7 @@ private fun SearchLayoutConfigDialog(
                     AppSlider(
                         value = selectedCols,
                         max = 6,
+                        enabled = !isSourceGroup,
                         onValueChange = { selectedCols = it },
                     )
                 }
@@ -331,6 +379,7 @@ private fun SearchLayoutConfigDialog(
 private fun LayoutStyleDropdown(
     options: List<String>,
     selectedIndex: Int,
+    enabled: Boolean = true,
     onSelect: (Int) -> Unit,
 ) {
     val colors = AppTheme.colors
@@ -338,7 +387,7 @@ private fun LayoutStyleDropdown(
     Box {
         Row(
             Modifier
-                .clickable { expanded = true }
+                .clickable(enabled = enabled) { expanded = true }
                 .padding(horizontal = DesignTokens.spacingXs, vertical = DesignTokens.spacingXs),
             verticalAlignment = Alignment.CenterVertically,
         ) {

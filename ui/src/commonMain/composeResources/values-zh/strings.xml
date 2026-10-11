@@ -35,6 +35,7 @@
     <string name="import_local">本地导入</string>
     <string name="import_on_line">网络导入</string>
     <string name="group_sources_by_domain">按域名分组显示</string>
+    <string name="update_log">更新日志</string>
     <string name="help">帮助</string>
     <string name="edit">编辑</string>
     <string name="to_top">置顶</string>
@@ -165,6 +166,9 @@
     <string name="use_regex">使用正则表达式</string>
     <string name="add_replace_rule">新建替换</string>
     <string name="sure_del">是否确认删除？</string>
+    <string name="chapter_jump_confirm">章节跳转确认</string>
+    <string name="chapter_jump_confirm_msg">确定要跳转章节吗？</string>
+    <string name="same_title_removed_none">未找到可移除的重复标题</string>
     <string name="draw">提醒</string>
     <string name="timeout_millisecond">超时毫秒数</string>
     <string name="respondTime">响应时间：%1$d ms</string>
@@ -234,6 +238,9 @@
     <string name="search_content">全文搜索</string>
     <string name="search_content_size">搜索结果</string>
     <string name="search_layout">搜索布局</string>
+    <string name="search_style_mode">布局模式</string>
+    <string name="search_style_by_book">按书聚簇</string>
+    <string name="search_style_by_source">按源分类</string>
     <string name="searchHistory">搜索历史</string>
     <string name="source_filter_rule">屏蔽规则</string>
     <string name="start">开始</string>
@@ -373,6 +380,8 @@
     <string name="cover_show_name_summary">封面上显示书名</string>
     <string name="customize_day_theme">自定义白天主题</string>
     <string name="customize_night_theme">自定义夜间主题</string>
+    <string name="monet_color_extract">莫奈取色</string>
+    <string name="monet_color_extract_failed">未能获取壁纸颜色</string>
     <string name="dark_theme">深色模式</string>
     <string name="default_cover">默认封面</string>
     <string name="default_home_page">默认主页</string>
@@ -859,6 +868,35 @@
     <string name="non_null_name_url">名称和 URL 不能为空</string>
     <string name="resolution">分辨率</string>
     <string name="reload">重新加载</string>
+    <string name="manga_extension">Tachiyomi 插件</string>
+    <string name="manga_extension_desc">安装与管理 Tachiyomi 漫画/视频插件</string>
+    <string name="manga_extension_repos">插件仓库</string>
+    <string name="manga_extension_add_repo">添加仓库</string>
+    <string name="manga_extension_repo_url">仓库地址</string>
+    <string name="manga_extension_trust">信任</string>
+    <string name="manga_extension_untrusted">未信任插件</string>
+    <string name="manga_extension_untrusted_desc">该插件签名校验未通过，信任后才能装载其源。是否信任？</string>
+    <string name="manga_extension_not_loaded_filtered">被内容分级过滤设置屏蔽</string>
+    <string name="manga_extension_not_loaded_unsigned">插件无有效签名</string>
+    <string name="manga_extension_not_loaded_unsupported_lib">扩展库版本不受支持</string>
+    <string name="manga_extension_not_loaded_malformed">插件元数据缺失</string>
+    <string name="manga_extension_not_loaded_failed">加载失败: %1$s</string>
+    <string name="manga_extension_uninstall_confirm">确定卸载该插件？</string>
+    <string name="manga_extension_install">安装</string>
+    <string name="manga_extension_available">未安装</string>
+    <string name="manga_extension_update">更新</string>
+    <string name="manga_extension_uninstall">卸载</string>
+    <string name="manga_extension_empty">暂无插件</string>
+    <string name="manga_extension_languages">语言</string>
+    <string name="manga_extension_setting">设置</string>
+    <string name="manga_extension_kind_video">视频</string>
+    <string name="manga_extension_kind_manga">漫画</string>
+    <string name="manga_extension_filter_kind">类型</string>
+    <string name="manga_extension_content_safe">安全</string>
+    <string name="manga_extension_no_result">无匹配插件</string>
+    <string name="manga_extension_pref_empty">该插件没有可配置项</string>
+    <string name="manga_extension_pref_error">插件设置读取失败，详情见应用日志</string>
+    <string name="manga_search_filters">筛选</string>
     <string name="manga_color_filter">滤镜</string>
     <string name="contrast">对比度</string>
     <string name="enable_manga_gray">开启图片灰色</string>
@@ -1206,8 +1244,6 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="book_source_disabled">已禁用书源</string>
     <string name="import_local_book_failed_log">导入本地书籍失败
 %1$s</string>
-    <string name="get_toc_failed_log">获取目录失败
-%1$s</string>
     <string name="download_remote_book_failed_log">下载远程书籍&lt;%1$s&gt;失败</string>
     <string name="intro_action_failed_log">简介动作执行失败
 %1$s</string>
@@ -1297,6 +1333,7 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="font_scale_summary">当前字体大小：%.1f</string>
     <string name="font_weight_text">中/粗/细</string>
     <string name="full_screen">全屏</string>
+    <string name="picture_in_picture">画中画</string>
     <string name="import_default_rule">导入默认规则</string>
     <string name="upload_url">上传 URL</string>
     <string name="test">测试</string>
@@ -1688,4 +1725,78 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="media_runtime_downloading">正在下载媒体播放组件：%1$s</string>
     <string name="media_runtime_download_failed">媒体播放组件下载失败：%1$s</string>
     <string name="media_runtime_not_installed">未安装媒体播放组件</string>
+    <string name="html_tree_parse_failed">HTML 树解析失败: %1$s</string>
+    <string name="copy_outer_html">复制 outerHTML</string>
+    <string name="copy_inner_html">复制 innerHTML</string>
+    <string name="copy_css_selector">复制 CSS 选择器</string>
+    <string name="tree_view">树状图</string>
+    <string name="source_text">原文</string>
+    <string name="json_tree_parse_failed">JSON 树解析失败: %1$s</string>
+    <string name="source_toolbox">书源工具箱</string>
+    <string name="toolbox_stage_general">通用</string>
+    <string name="toolbox_stage_search">搜索</string>
+    <string name="toolbox_stage_explore">发现</string>
+    <string name="toolbox_stage_detail">详情</string>
+    <string name="toolbox_stage_toc">目录</string>
+    <string name="toolbox_stage_content">正文</string>
+    <string name="toolbox_url_hint">URL(支持书源语法)</string>
+    <string name="toolbox_request">请求</string>
+    <string name="toolbox_run">运行</string>
+    <string name="toolbox_action_text">文本</string>
+    <string name="toolbox_action_text_list">字符串列表</string>
+    <string name="toolbox_action_elements">元素列表</string>
+    <string name="toolbox_source_none">未指定书源</string>
+    <string name="toolbox_response">响应</string>
+    <string name="toolbox_no_response">尚未请求, 请先请求一次</string>
+    <string name="toolbox_source_cleared">已清除所选书源</string>
+    <string name="toolbox_input_hint">规则或 JS 代码</string>
+    <string name="copy_key">复制键</string>
+    <string name="copy_value">复制值</string>
+    <string name="copy_key_value">复制键值对</string>
+    <string name="copy_json_path">复制 JSONPath</string>
+    <string name="view_value">查看</string>
+
+    <!-- 批注回显 (Bookmark.type=1) 与关键词高亮 -->
+    <string name="keyword_highlight">关键词高亮</string>
+    <string name="keyword_highlight_empty">暂无关键词高亮</string>
+    <string name="keyword_highlight_add">添加关键词高亮</string>
+    <string name="keyword">关键词</string>
+    <string name="keyword_highlight_scope">作用范围，选填书名或者书源 URL</string>
+    <string name="keyword_highlight_scope_all">全局</string>
+    <string name="keyword_highlight_scope_limited">限定 %1$d 项</string>
+
+    <!-- 批注气泡与呈现样式 (批注/关键词高亮共用) -->
+    <string name="underline_note">批注</string>
+    <string name="underline_note_hint">写点什么</string>
+    <string name="highlight_color">高亮颜色</string>
+    <string name="highlight_colored">上色</string>
+    <string name="highlight_style">线型</string>
+    <string name="highlight_style_none">无</string>
+    <string name="highlight_style_underline">下划线</string>
+    <string name="highlight_style_wavy">波浪线</string>
+    <string name="highlight_style_strikethrough">删除线</string>
+
+    <!-- TVBox 影视源管理页 -->
+    <string name="tvbox">TVBox 源</string>
+    <string name="tvbox_desc">管理 TVBox 影视源配置与站点</string>
+    <string name="tvbox_add_source">添加配置来源</string>
+    <string name="tvbox_no_source">暂无配置来源，点右上角 + 填入 TVBox 配置地址</string>
+    <string name="tvbox_sites">站点</string>
+    <string name="tvbox_no_site">暂无站点</string>
+    <string name="tvbox_searchable">可搜索</string>
+    <string name="tvbox_filterable">可筛选</string>
+    <string name="tvbox_jars">Spider 脚本包</string>
+    <string name="tvbox_jar_idle">未下载</string>
+    <string name="tvbox_jar_loading">下载装载中</string>
+    <string name="tvbox_jar_ready">已就绪</string>
+    <string name="tvbox_jar_failed">装载失败</string>
+    <string name="tvbox_jar_sites">站点数 %1$s</string>
+    <string name="tvbox_unsupported">暂不支持</string>
+    <string name="tvbox_remove_source_confirm">删除该配置来源？其虚拟书源行会一并清理。</string>
+    <string name="tvbox_loading">正在拉取配置…</string>
+    <string name="tvbox_delete_source">删除来源</string>
+    <string name="underline_cross_chapter_unsupported">批注仅支持单章内选区</string>
+    <string name="keyword_highlight_exclude_scope">排除范围，选填书名或者书源 URL</string>
+    <string name="video_lock">锁定</string>
+    <string name="video_unlock">解锁</string>
 </resources>

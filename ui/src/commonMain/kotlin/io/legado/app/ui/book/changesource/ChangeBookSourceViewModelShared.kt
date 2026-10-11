@@ -380,6 +380,8 @@ class ChangeBookSourceViewModelShared(
     fun startSearch() {
         Coroutine.async(scope) {
             stopSearch()
+            // 开始全新搜索即作废旧会话: 避免旧会话被单槽钉住与新结果双份叠放
+            ChangeSourceSessionCache.clear()
             if (searchBooks.isNotEmpty()) searchBooks.clear()
             searchCallback?.upAdapter()
             bookSources.clear()
@@ -439,6 +441,7 @@ class ChangeBookSourceViewModelShared(
     fun startSearch(origin: String) {
         Coroutine.async(scope) {
             stopSearch()
+            ChangeSourceSessionCache.clear()
             bookSources.clear()
             tocMap.clear()
             bookMap.clear()
@@ -956,6 +959,17 @@ class ChangeBookSourceViewModelShared(
     }
 
     /**
+     * 整书换源落地后调用: 本会话归属改写为新书。
+     *
+     * 落库的新书继承新源解析的书名/作者, 下次进入换源页按新书键取会话;
+     * 会话键以本类 name/author 字段为准, [onCleared] 存会话即按改写后的键落槽。
+     */
+    fun updateSessionOwner(book: Book) {
+        name = book.name
+        author = book.author
+    }
+
+    /**
      * 释放资源 (对照原 `onCleared`)。
      *
      * app 端 ViewModel.onCleared 调用: 先存本次会话供下次进入复用, 再关闭 searchPool。
@@ -1040,6 +1054,13 @@ private object ChangeSourceSessionCache {
     fun put(newSession: ChangeSourceSession) {
         synchronized(lock) {
             session = newSession
+        }
+    }
+
+    /** 释放当前会话 (开始新搜索时调用, 避免旧会话与新搜索结果双份叠放)。 */
+    fun clear() {
+        synchronized(lock) {
+            session = null
         }
     }
 }

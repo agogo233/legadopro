@@ -327,11 +327,21 @@ private val sharedLibs = extensions.getByType<VersionCatalogsExtension>().named(
 fun KotlinDependencyHandler.sharedJvmAndroidDeps() {
     api(sharedLibs.findLibrary("quick-chinese-transfer-core").get())
     implementation(sharedLibs.findLibrary("hutool-crypto").get())
+    // TVBox catvod 壳类 (bean/utils) 的 Gson 反序列化; 版本与 app 模块声明一致
+    implementation(sharedLibs.findLibrary("gson").get())
     api(project(":modules:quickjs"))
     api(sharedLibs.findLibrary("okhttp").get())
     implementation(sharedLibs.findLibrary("coil3-network-okhttp").get())
+    // catvod 壳类 (com.github.catvod.net.OkHttp) 的 ArrayMap 契约面; 原先靠 coil3 传递引入,
+    // 上游 Coil 变更即编译断裂, 显式声明与 app 同版本
+    implementation(sharedLibs.findLibrary("androidx-collection").get())
     implementation(sharedLibs.findLibrary("nanohttpd-nanohttpd").get())
     implementation(sharedLibs.findLibrary("nanohttpd-websocket").get())
+    // Mihon index.pb (index_v2) 仓库索引解析 (help.extension.repo.RepoHelper)
+    implementation(sharedLibs.findLibrary("kotlinx-serialization-protobuf").get())
+    // keiyoushi 扩展兼容层 (eu.kanade.tachiyomi.*) 的 DI; 扩展 dex 运行时按宿主 classpath 解析 Injekt,
+    // 桌面端加载器亦需, 故 api (catalog 注释: fork 含 uy.kohesive.injekt.api 包面)
+    api(sharedLibs.findLibrary("injekt-core").get())
 }
 
 kotlin {
@@ -341,6 +351,17 @@ kotlin {
         namespace = "io.legado.data"
         compileSdk = 37
         minSdk = 24
+        // 真机测试源集 (androidDeviceTest)。jvmAndAndroidTest 只在 JVM 上跑,
+        // 而 libcore 的 java.util.regex.Matcher 与 JDK 语义不同 (reset 里 input.toString()),
+        // 依赖平台正则语义的用例必须落到设备上跑。
+        withDeviceTest {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
+        // hutool-crypto 与 hutool-core 都带 META-INF/INDEX.LIST, 设备测试打包时重复
+        // (主 APK 侧由 :app 的 packaging 块处理, 库模块的设备测试 APK 需自带)
+        packaging {
+            resources.excludes.add("META-INF/INDEX.LIST")
+        }
     }
 
     if (enableIosTarget) {
@@ -389,6 +410,7 @@ kotlin {
                 implementation(libs.kotlin.stdlib)
                 api(project(":foundation"))
                 api(project(":modules:js-api"))
+                implementation(project(":modules:rjpath"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.atomicfu)
                 api(libs.okio)
@@ -399,6 +421,10 @@ kotlin {
                 // 替换为 :modules:ksoup-ohos, 其余平台照常解析标准 ksoup。
                 implementation(libs.ksoup)
                 implementation(libs.kotlinx.serialization.json)
+                // 兼容层 AnimeFilterList 的 @Stable 注解: 引官方 CMP runtime (jvm/android 变体齐全,
+                // 鸿蒙模式 cmp 被切 fork 后无 jvm 变体会挂全 target 解析); ohos 配置由
+                // OhosTargetConventionPlugin 替换为 fork 版构件
+                implementation(sharedLibs.findLibrary("runtime-jvm").get())
             }
         }
         // 实体源码 src/roomEntitiesMain/kotlin 直接挂 commonMain (与 :shared 同款:
@@ -423,6 +449,8 @@ kotlin {
                 implementation(libs.androidx.sqlite.bundled)
                 // EpubFilePlatform.jvm 的 Skia 图片编码 (与 desktop-core 同款 skiko-awt)
                 implementation("org.jetbrains.skiko:skiko-awt:0.144.6")
+                // TVBox 配置/站点解析用 org.json (Android 走 SDK 内置, JVM 走同名构件)
+                implementation(sharedLibs.findLibrary("json").get())
             }
         }
         val nativeMain = if (enableIosTarget || enableOhosTarget) {
@@ -435,6 +463,9 @@ kotlin {
                     implementation(libs.ktor.server.core)
                     implementation(libs.ktor.server.cio)
                     implementation(libs.ktor.server.websockets)
+                    // EpubParser 全链只被 nativeMain 消费: 依赖声明在此, Android/desktop
+                    // 不解析; ohos 配置经 OhosTargetConventionPlugin 替换为 :modules:epub4kmp-ohos
+                    implementation(libs.epub4kmp.core)
                 }
             }
         } else null
@@ -445,7 +476,7 @@ kotlin {
                 dependencies {
                     implementation(libs.androidx.sqlite.framework)
                     implementation(libs.ktor.client.core)
-                    implementation(libs.ktor.client.cio)
+                    implementation(libs.ktor.client.darwin)
                 }
                 // 非 mac: nskeyvalueobserving cinterop (需 Xcode sysroot) 无法生成,
                 // KVO 观察器 (依赖其协议类型) 排除, 由 iosWindowsCheckMain 源根的
@@ -522,6 +553,33 @@ kotlin {
         }
         jvmTest {
             dependsOn(jvmAndAndroidTest)
+        }
+        // 真机测试: 正则语义依赖 libcore (与 JDK 不同), jvmAndAndroidTest 在 JVM 上跑不到,
+        // 故设备侧用例单独落 androidDeviceTest (withDeviceTest 已在 android {} 中启用)。
+        // 用 maybeCreate: KMP Android 插件不为 deviceTest 生成 Kotlin DSL 类型化访问器。
+        maybeCreate("androidDeviceTest").dependencies {
+            implementation(libs.junit)
+            implementation(libs.bundles.androidTest)
+        }
+        // native 端测试 (iOS/鸿蒙): EpubParser 已下沉 nativeMain, jvmAndAndroidTest 看不到它
+        // (epub4kmp 只在 nativeMain 声明), 故解析器用例放这里。仅 enableIosTarget/Ohos 时存在。
+        // 注意: 不能 dependsOn(nativeMain) —— main 树与 test 树不可互接 (KGP 报
+        // "Invalid Source Set Dependency Across Trees"), 测试编译经叶子目标关联到主源集,
+        // 故此处只接 commonTest。本仓 applyDefaultHierarchyTemplate=false, 叶子测试源集须手工接。
+        if (enableIosTarget || enableOhosTarget) {
+            val nativeTest = maybeCreate("nativeTest").apply {
+                dependsOn(commonTest.get())
+                dependencies {
+                    implementation(libs.jetbrains.kotlin.test)
+                }
+            }
+            if (enableIosTarget) {
+                maybeCreate("iosArm64Test").dependsOn(nativeTest)
+                maybeCreate("iosSimulatorArm64Test").dependsOn(nativeTest)
+            }
+            if (enableOhosTarget) {
+                maybeCreate("ohosArm64Test").dependsOn(nativeTest)
+            }
         }
     }
 }
