@@ -5,7 +5,6 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.IntentData
 import io.legado.app.help.sourceLoginOverlayPayload
-import io.legado.app.help.update.UpdateCheckInfo
 import io.legado.app.ui.about.CRASH_NOTICE_OVERLAY_KEY
 import io.legado.app.ui.association.OpenUrlConfirmPayload
 import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
@@ -148,21 +147,6 @@ internal suspend fun buildOverlayEntries(): List<DialogPreviewEntry.Overlay> {
         AppOverlay.Dialog(it)
     }
 
-    // 更新弹窗 (payload 走 IntentData 侧信道, 样本版本号不代表任何真实发布)
-    dialog("update_dialog", nameText("更新弹窗"), "updateDialog") {
-        AppOverlay.Dialog(
-            it,
-            payload = IntentData.put(
-                UpdateCheckInfo(
-                    versionName = "0.0.0-preview",
-                    releaseNote = "预览: 更新说明正文",
-                    downloadUrl = "",
-                    fileName = "",
-                    landingUrl = "",
-                )
-            ),
-        )
-    }
     // 跳转确认 (payload 同样走侧信道)
     dialog("open_url_confirm", nameText("跳转确认"), "openUrlConfirm") {
         AppOverlay.Dialog(
