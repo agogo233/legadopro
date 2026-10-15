@@ -7,6 +7,7 @@ import androidx.core.net.toUri
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.find

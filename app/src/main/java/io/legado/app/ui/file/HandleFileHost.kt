@@ -251,12 +251,6 @@ private fun HandleFileDialogContent(request: HandleFileRequest) {
                 )
             }
 
-            111 -> param.fileData?.let { fileData ->
-                viewModel.upload(fileData.name, fileData.data, fileData.type) { url ->
-                    deliverResult(url.toUri())
-                }
-            }
-
             112 -> inputDirDialog = true
             else -> {
                 val path = item.title
@@ -360,15 +354,7 @@ private fun buildSelectList(
         HandleFileContract.DIR_SYS -> getDirActions(true)
         HandleFileContract.DIR -> getDirActions()
         HandleFileContract.FILE -> getFileActions()
-        HandleFileContract.EXPORT -> arrayListOf(
-            SelectItem(
-                androidAppString("upload_url"),
-                111
-            )
-        ).apply {
-            addAll(getDirActions())
-        }
-
+        HandleFileContract.EXPORT -> getDirActions()
         HandleFileContract.IMAGE -> getImageActions()
         else -> arrayListOf()
     }.apply { otherActions?.let { addAll(it) } }
