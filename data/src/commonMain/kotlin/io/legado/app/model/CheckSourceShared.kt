@@ -6,6 +6,8 @@ import io.legado.app.data.entities.BookSource
 import io.legado.app.exception.ContentEmptyException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.exception.TocEmptyException
+import io.legado.app.help.i18n.AppStringKey
+import io.legado.app.help.i18n.appString
 import io.legado.app.help.source.SourceCacheProvider
 import io.legado.app.help.source.SourceCacheProviders
 import io.legado.app.help.source.exploreKinds
@@ -101,6 +103,29 @@ object CheckSourceShared {
             checkContentOverride = value
         }
     private var checkContentOverride: Boolean? = null
+
+    /** 配置摘要 (供 OtherConfigHost 显示)。 */
+    val summary: String get() = upSummary()
+
+    /**
+     * 拼接校验项摘要 (对应原 `CheckSource.upSummary()`)。
+     *
+     * 行为与原完全一致: 按顺序拼接 search/discovery/source_tab_info/chapter_list/main_body,
+     * 最后格式化为 `(timeout秒) checkItem` 字符串。
+     */
+    private fun upSummary(): String {
+        var checkItem = ""
+        if (checkSearch) checkItem = "$checkItem ${appString(AppStringKey.search)}"
+        if (checkDiscovery) checkItem = "$checkItem ${appString(AppStringKey.discovery)}"
+        if (checkInfo) checkItem = "$checkItem ${appString(AppStringKey.source_tab_info)}"
+        if (checkCategory) checkItem = "$checkItem ${appString(AppStringKey.chapter_list)}"
+        if (checkContent) checkItem = "$checkItem ${appString(AppStringKey.main_body)}"
+        return appString(
+            AppStringKey.check_source_config_summary,
+            (timeout / 1000).toString(),
+            checkItem
+        )
+    }
 
     /**
      * 持久化配置到 CacheManager (对应原 `CheckSource.putConfig()`)。

@@ -346,6 +346,7 @@
     <string name="text_default">Default</string>
     <string name="name">Name</string>
     <string name="check_source_config">Check setting</string>
+    <string name="check_source_config_summary">Check timeout: %1$ss\nCheck item:%2$s</string>
     <string name="check_source_timeout">Single book source check timeout (seconds)</string>
     <string name="check_source_item">Check item</string>
     <string name="cannot_empty">The input content cannot be empty</string>
