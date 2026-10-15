@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.Icon
-import androidx.compose.material.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,6 +32,7 @@ import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.image.BookImageLoaders
 import io.legado.app.help.toast.Toasters
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.model.BookCoverShared
 import io.legado.app.model.BookCoverShared.CoverRatio
 import io.legado.app.model.BookCoverShared.DefaultCoverEntry
@@ -44,6 +44,7 @@ import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.DefaultCoverNineImage
 import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.NinePatchImageOrImage
@@ -122,9 +123,7 @@ fun DefaultCoverGalleryDialogHost(
         properties = AppDialogSizes.properties(),
     ) {
         AppTheme {
-            Surface(
-                shape = DesignTokens.dialogShape,
-                color = AppTheme.colors.fillet,
+            AppDialogSurface(
                 modifier = Modifier.appDialogSize(fullHeight = true),
             ) {
                 Column(Modifier.fillMaxSize()) {
@@ -273,18 +272,21 @@ private suspend fun addDefaultCoverFromPicker(prefKey: String) {
     withContext(IoDispatcher) {
         runCatching {
             // 先烘焙 (失败中止, 不留孤儿原图/entry), 成功后再落图集原图
-            if (entry.ninePatch) {
-                val nineDest = FileUtilsCommon.getPath(coverOriginalDir(), "${entry.id}.9.png")
-                if (!FileUtilsCommon.exist(nineDest)) FileUtilsCommon.writeBytes(nineDest, bytes)
+            val dest = if (entry.ninePatch) {
+                FileUtilsCommon.getPath(coverOriginalDir(), "${entry.id}.9.png")
             } else {
                 if (!bakeCoverVariantsToCache(bytes, entry.id)) {
                     error("bake cover failed")
                 }
-                val dest = FileUtilsCommon.getPath(
+                FileUtilsCommon.getPath(
                     coverOriginalDir(),
                     "${entry.id}.${normalizeImageSuffix(path.substringAfterLast('.'))}"
                 )
-                if (!FileUtilsCommon.exist(dest)) FileUtilsCommon.writeBytes(dest, bytes)
+            }
+            // 已存在即复用 (同字节数=同内容); 落盘整份归位: 半截文件会被上面的存在性判定
+            // 当成有效封面, 之后就再也不会重新生成
+            if (!FileUtilsCommon.exist(dest) && !writeBytesAtomically(dest, bytes)) {
+                error("封面写入图集失败: $dest")
             }
         }
     }.onFailure {

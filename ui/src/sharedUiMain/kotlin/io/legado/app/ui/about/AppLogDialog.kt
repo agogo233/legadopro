@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -24,6 +23,7 @@ import androidx.compose.ui.Modifier
 import io.legado.app.constant.AppLog
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.appDialogSize
@@ -40,7 +40,7 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * 应用日志对话框内容 (KMP 共享, app + desktop 复用)。
  *
- * 对应 app 端 `io.legado.app.ui.about.AppLogDialog` 的 Content，去掉对 BaseComposeDialogFragment /
+ * 对应 app 端 `io.legado.app.ui.about.AppLogDialog` 的 Content，去掉对 原命令式对话框基类(已删除) /
  * showDialogFragment / LogUtils / autoLinkText 的依赖，改为纯 @Composable:
  * - 标题栏: 返回 + "日志" + 清空按钮
  * - 列表: LazyColumn，行=时间+消息，带异常的行可点击查看堆栈
@@ -134,11 +134,9 @@ fun AppLogDialog(
         onDismissRequest = onDismiss,
         properties = AppDialogSizes.properties(),
     ) {
-        // 圆角/底色对齐 BaseComposeDialogFragment.filletBackground + alert DSL AppAlertDialogContent
-        Surface(
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
-            modifier = Modifier.appDialogSize(fullHeight = true),
+        // 圆角/底色收口在 AppDialogSurface, 尺寸走对话框统一口径 (项目其它对话框同款)
+        AppDialogSurface(
+            modifier = Modifier.appDialogSize(),
         ) {
             AppLogDialogContent(onDismiss)
         }

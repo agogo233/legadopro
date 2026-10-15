@@ -19,7 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +40,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.help.config.ManualThemeColorChangeProviders
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ThemeConfigData
 import io.legado.app.help.config.ThemeConfigProviders
@@ -48,6 +48,7 @@ import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.model.commitBackgroundImage
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.AppRadioButton
 import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.AppSlider
@@ -251,6 +252,9 @@ fun ThemeCustomizeDialog(
     }
 
     fun saveToPrefs() {
+        // 用户手动改色: 有跟随壁纸机制的端 (Android) 在此拆掉机关, 否则刚写入的颜色会被
+        // 下一次壁纸变化重写回壁纸色 (无该机制的端未注册, 直接跳过)
+        ManualThemeColorChangeProviders.getOrNull()?.onManualColorChange()
         if (isNight) {
             prefs.putInt(PreferKey.cNPrimary, bg)
             prefs.putInt(PreferKey.cNAccent, accent)
@@ -368,13 +372,11 @@ fun ThemeCustomizeDialog(
         onDismissRequest = onDismiss,
         properties = AppDialogSizes.properties(),
     ) {
-        // 圆角/底色对齐 BaseComposeDialogFragment.filletBackground (AppDialog 窗口本身无背景,
+        // 圆角/底色对齐 原命令式对话框基类(已删除).filletBackground (AppDialog 窗口本身无背景,
         // 不包 Surface 会整窗透明, 内容直接压在页面上 —— 同 ThemeListDialog 记过的坑)。
         // 高度随内容 (上限 appDialogSize), 对齐 app 端 Column(fillMaxWidth) 的包裹语义
-        Surface(
+        AppDialogSurface(
             modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
         ) {
             Column(Modifier.fillMaxWidth()) {
                 DialogTitleBar(
@@ -575,8 +577,7 @@ private fun ColorRow(label: String, color: Int, onClick: () -> Unit) {
 }
 
 /**
- * 读日/夜自定义色 pref, 未设置 (0) 回落默认色
- * (对照 app 端 ThemeConfig.readCustomTheme 的 getPrefInt 回落 readDefaultColors)。
+ * 读日/夜自定义色 pref, 未设置 (0) 回落默认色。
  */
 private fun readCustomColors(prefs: io.legado.app.help.config.PreferenceProvider, isNight: Boolean):
     Triple<Int, Int, Int> {

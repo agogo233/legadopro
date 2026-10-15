@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Icon
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -31,12 +30,14 @@ import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.ui.book.search.SearchScopeDialog
 import io.legado.app.ui.compose.component.AppCheckbox
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.AppSwitch
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.AppUnderlineTextField
 import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
+import io.legado.app.utils.RuleRegexes
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.add
 import legado.ui.generated.resources.cancel
@@ -69,9 +70,9 @@ private val fieldLabels = listOf(
 )
 
 /**
- * 书源屏蔽规则编辑对话框 (KMP 共享, app + desktop 复用)。
+ * 书源筛选规则编辑对话框 (KMP 共享, app + desktop 复用)。
  *
- * 对应 app 端 `io.legado.app.ui.book.filter.SourceFilterEditDialog` (BaseComposeDialogFragment),
+ * 对应 app 端 `io.legado.app.ui.book.filter.SourceFilterEditDialog` (原命令式对话框基类(已删除)),
  * 去掉 Fragment / Bundle / appDb / toastOnUi 依赖, 改为纯 @Composable + 回调:
  * - 调用方传入 [rule] (null=新增, 对应 app 端到达端按 id 重查的结果), [onConfirm] / [onDismiss];
  * - 作用范围仍复用 [SearchScopeDialog] (已下沉), 与 app 端 showDialogFragment<SearchScopeDialog>() 等价。
@@ -126,7 +127,9 @@ fun SourceFilterEditDialog(
      */
     fun confirm() {
         val patternStr = pattern.trim()
-        if (patternStr.isEmpty() || runCatching { Regex(patternStr) }.isFailure) {
+        // 校验经 [RuleRegexes] 的平台实现: native 端 `Regex(pattern)` 的编译是递归下降且无栈保护,
+        // 畸形规则会在这一步把线程栈写穿闪退
+        if (patternStr.isEmpty() || RuleRegexes.get().validate(patternStr, multiline = false) != null) {
             Toasters.get().toast(invalidPatternText)
             return
         }
@@ -150,9 +153,7 @@ fun SourceFilterEditDialog(
         onDismiss()
     }
 
-    Surface(
-        shape = DesignTokens.dialogShape,
-        color = colors.fillet,
+    AppDialogSurface(
         modifier = Modifier.fillMaxWidth().padding(DesignTokens.spacingDefault),
     ) {
         Column(Modifier.fillMaxWidth()) {

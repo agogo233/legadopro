@@ -1,39 +1,16 @@
 package io.legado.app.ui.book.read.page
 
-import android.net.Uri
-import android.os.Build
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.Typeface
-import io.legado.app.ui.platform.sharedAppContext
-import io.legado.app.utils.isContentScheme
 
 /**
- * Android actual: 按路径加载 [android.graphics.Typeface] (见 [loadAndroidTypeface]), 包进
- * Compose [Typeface]。普通路径对照原版 `TextStyleProvider.getTypeface` 走
- * `Typeface.createFromFile`; SAF content URI 的授权通道 (`openFileDescriptor` +
- * `Typeface.Builder`) 为本次新增 (原版该路径下 `createFromFile` 直接失败)。
+ * Android actual: 走 [readerFontTypeface], content 地址 (SAF 字体目录里的文件) 与普通路径
+ * 同一条路 —— 排版度量侧 ([io.legado.app.ui.book.read.page.provider.AndroidTextMeasurer])
+ * 读的就是同一份文件。
+ *
+ * 读完把本次读到的文件标识 (大小 + 最后修改时刻) 登记下来, 度量侧据此复用已加载字形;
+ * 读不到时本条已建字形仍在用就继续用它 (两侧同一个字形, 字体不因源暂时读不到而退回默认),
+ * 从未建出字形才登记读不到, 由 [resolveReaderFontFamily] 回落默认字体。
  */
 actual fun loadReaderFontFamily(path: String): FontFamily? =
-    loadAndroidTypeface(path)?.let { FontFamily(Typeface(it)) }
-
-/**
- * 按路径加载 [android.graphics.Typeface], 渲染侧 [loadReaderFontFamily] 与度量侧
- * (app 端 `MainActivity.readerMeasureTypeface`) 共用同一函数, 保证两侧读同一字体。
- *
- * - 普通文件路径: `Typeface.createFromFile`
- * - content URI (SAF 授权字体): `contentResolver.openFileDescriptor` + `Typeface.Builder` (API 26+);
- *   低于 O 无 Builder, 返回 null 回落默认字体 (与度量侧同源, 两侧一致)
- * - 失败返回 null, 由 [resolveReaderFontFamily] 统一回退
- */
-fun loadAndroidTypeface(path: String): android.graphics.Typeface? = runCatching {
-    when {
-        path.isContentScheme() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
-            val ctx = sharedAppContext ?: return@runCatching null
-            ctx.contentResolver.openFileDescriptor(Uri.parse(path), "r")
-                ?.use { android.graphics.Typeface.Builder(it.fileDescriptor).build() }
-        }
-        path.isContentScheme() -> null
-        path.isNotEmpty() -> android.graphics.Typeface.createFromFile(path)
-        else -> null
-    }
-}.getOrNull()
+    readerFontTypeface(path)?.let { FontFamily(Typeface(it)) }

@@ -1,10 +1,13 @@
 package io.legado.app.help.book
 
+import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.storage.DataStorageProviders
+import io.legado.app.help.writeTextAtomically
 import io.legado.app.utils.File
 import kotlinx.coroutines.runBlocking
+import okio.IOException
 
 /**
  * [BookStorage] iOS/鸿蒙 (Native target) 共用真实实现 (基于 [kotlin.io.File])。
@@ -13,7 +16,8 @@ import kotlinx.coroutines.runBlocking
  * iOS 与鸿蒙两端 BookStorage 主体逻辑完全一致 (章节缓存 I/O: saveText/getContent/hasContent/
  * delContent/clearCache/updateCacheFolder/clearInvalidCache), 仅 iOS 端原用 NSFileManager + NSData,
  * 鸿蒙端用 kotlin.io.File; Kotlin/Native 在 iOS/linuxArm64 (鸿蒙) 上均支持 [kotlin.io.File],
- * 故统一改为 [kotlin.io.File] 实现下沉到 nativeMain 共用, 平台源集用 typealias 别名 + 各自 register 函数。
+ * 故统一改为 [kotlin.io.File] 实现下沉到 nativeMain 共用,
+ * iOS/鸿蒙宿主启动链各调一次 [registerNativeBookStorage]。
  *
  * # 目录结构
  * - rootPath: `{AppFilesDirs.filesDir}/book_cache/` (沙盒 / 用户工作目录下持久化)
@@ -27,7 +31,8 @@ import kotlinx.coroutines.runBlocking
  * - [hasContent]: [File.exists]
  * - [delContent]/[clearCache]: [File.deleteRecursively] (递归删除整本书缓存目录)
  * - [getChapterFiles]: [File.listFiles] + 过滤普通文件 (排除子目录)
- * - [updateCacheFolder]: [File.renameTo] (与 JVM Files.move / iOS NSFileManager.moveItemAtPath 等价)
+ * - [updateCacheFolder]: [File.renameTo] 查返回值 (与 JVM Files.move / iOS NSFileManager.moveItemAtPath 等价),
+ *   失败时原目录原地不动并如实记日志
  * - [clearInvalidCache]/[clearInvalidBookFolders]: 委托 [BookHelpShared] 统一编排
  *   (遍历 + 累计大小 + 按修改时间淘汰, 三端共用)
  *
@@ -82,11 +87,12 @@ class NativeBookStorage(
 
     override fun saveText(book: Book, chapter: BookChapter, text: String) {
         if (text.isEmpty()) return
-        val file = File(resolveChapterFile(book, chapter))
-        // 父目录不存在则递归创建 (与 Android FileUtils.createFileIfNotExist / iOS createDirectoryAtPath 行为对齐)
-        file.parentFile?.mkdirs()
-        // 直接 writeText (默认 UTF-8) (kotlin.io.File 无原子写 API, 与 JVM Files.write 行为一致)
-        file.writeText(text)
+        val path = resolveChapterFile(book, chapter)
+        // 整份落盘 (同目录临时件 + 改名就位): 阅读页会与本次写入并发整读同一章节文件,
+        // 直接 writeText 会在写完前把文件截断, 并发读方拿到的是半截正文
+        if (!writeTextAtomically(path, text)) {
+            throw IOException("章节正文写入失败: $path")
+        }
     }
 
     override fun getContent(book: Book, chapter: BookChapter): String? {
@@ -143,7 +149,11 @@ class NativeBookStorage(
         newDir.parentFile?.mkdirs()
         // renameTo 替换已存在目标 (与 JVM StandardCopyOption.REPLACE_EXISTING / iOS moveItemAtPath 行为对齐)
         // 注意: kotlin.io.File.renameTo 在目标已存在时行为依赖平台 (POSIX rename 会原子替换)
-        oldDir.renameTo(newDir)
+        // 返回值必须查: 该名字下已有残留目录时改名失败, 旧目录原地不动; 静默当成成功会让缓存目录
+        // 没跟着书走 (章节全部重下, 旧目录留成待淘汰的死缓存)
+        if (!oldDir.renameTo(newDir)) {
+            AppLog.put("章节缓存目录改名失败, 原目录未动: ${oldDir.path} → ${newDir.path}")
+        }
     }
 
     override fun clearInvalidCache(maxSize: Long) {

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -27,10 +26,10 @@ import io.legado.app.constant.EventBus
 import io.legado.app.help.HomeTabHelpShared
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.RuleManageScaffold
 import io.legado.app.ui.compose.component.appDialogSize
-import io.legado.app.ui.compose.reorderable.RuleItemScope
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.utils.FlowBus
@@ -45,6 +44,7 @@ import legado.ui.generated.resources.ic_baseline_sort_24
 import legado.ui.generated.resources.sort
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import sh.calvin.reorderable.ReorderableCollectionItemScope
 
 /**
  * 主页分组管理：item 点击进入该分组的展示项管理；编辑按钮改标题/删除；+ 添加分组；拖动排序。
@@ -76,11 +76,9 @@ fun HomeTabManageDialog(onDismiss: () -> Unit) {
         properties = AppDialogSizes.properties(),
     ) {
         // 不能套 fillMaxSize: 撑满窗口会让整窗都算"框内", 点外部永远关不掉; 居中由 RootMeasurePolicy 负责。
-        // 全高型: 高度锁定 0.7 屏高
-        Surface(
+        // 全高型: 高度锁定 0.8 屏高
+        AppDialogSurface(
             modifier = Modifier.appDialogSize(fullHeight = true),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
         ) {
             RuleManageScaffold(
                 items = tabs,
@@ -142,7 +140,7 @@ fun HomeTabManageDialog(onDismiss: () -> Unit) {
  * 分组管理里操作按钮是"编辑", 展示项管理里是"删除" (原版两个 Adapter 共用该布局)。
  */
 @Composable
-internal fun RuleItemScope.HomeManageItem(
+internal fun ReorderableCollectionItemScope.HomeManageItem(
     title: String,
     desc: String,
     actionText: String,

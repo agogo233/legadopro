@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import io.legado.app.data.entities.BookSource
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
 import io.legado.app.ui.compose.component.OverflowMenu
@@ -89,15 +89,8 @@ fun SourcePickerDialog(
         onDismissRequest = onDismiss,
         properties = AppDialogSizes.properties(),
     ) {
-        Surface(
-            shape = DesignTokens.dialogShape,
-            color = colors.fillet,
-            modifier = Modifier.appDialogSize(fullHeight = true).padding(
-                start = DesignTokens.spacingDefault,
-                top = DesignTokens.spacingLg,
-                end = DesignTokens.spacingDefault,
-                bottom = DesignTokens.spacingDefault,
-            ),
+        AppDialogSurface(
+            modifier = Modifier.appDialogSize(fullHeight = true),
         ) {
             Column(Modifier.fillMaxSize()) {
                 // 顶部标题栏: 返回箭头 + 标题 (与原版 Row + IconButton(ic_arrow_back) + Text(选择书源) 对齐)

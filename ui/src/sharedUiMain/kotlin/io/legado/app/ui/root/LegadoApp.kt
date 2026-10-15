@@ -50,10 +50,16 @@ import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.showSourceLogin
 import io.legado.app.model.ActiveReadBookRegistry
 import io.legado.app.model.AudioPlayShared
+import io.legado.app.model.CheckSourceShared
 import io.legado.app.ui.about.AppLogDialog
+import io.legado.app.ui.about.CRASH_NOTICE_OVERLAY_KEY
 import io.legado.app.ui.about.CrashLogItem
 import io.legado.app.ui.about.CrashLogsDialog
+import io.legado.app.ui.about.CrashNoticeDialog
+import io.legado.app.ui.about.crashNoticeMessage
+import io.legado.app.ui.association.DeepLinkImportRequest
 import io.legado.app.ui.association.DeepLinkImportType
+import io.legado.app.ui.association.LegadoDeepLinkHandler
 import io.legado.app.ui.association.OpenUrlConfirmOverlayContent
 import io.legado.app.ui.book.changecover.ChangeCoverDialog
 import io.legado.app.ui.book.changecover.ChangeCoverPlatformProviders
@@ -61,14 +67,17 @@ import io.legado.app.ui.book.changecover.ChangeCoverViewModelShared
 import io.legado.app.ui.book.group.GroupEditDialog
 import io.legado.app.ui.book.group.GroupSelectDialog
 import io.legado.app.ui.book.group.GroupViewModelShared
+import io.legado.app.ui.book.read.HeadlessReadAloud
 import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.ReadConfigChange
 import io.legado.app.ui.book.read.readerAutoPageActive
 import io.legado.app.ui.bookshelf.LocalBookCoverSlot
 import io.legado.app.ui.bookshelf.toCoverBook
 import io.legado.app.ui.browser.WebViewSheetContent
+import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
 import io.legado.app.ui.compose.component.AppSelectorDialog
+import io.legado.app.ui.dialog.TextInputDialog
 import io.legado.app.ui.compose.component.directionKeyFocusNavigation
 import io.legado.app.ui.compose.platform.LocalEventBusProvider
 import io.legado.app.ui.compose.platform.LocalThemeStoreProvider
@@ -77,6 +86,7 @@ import io.legado.app.ui.compose.platform.dismissTopLayer
 import io.legado.app.ui.compose.platform.handleBackKey
 import io.legado.app.ui.compose.platform.performBack
 import io.legado.app.ui.compose.theme.AppTheme
+import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.compose.theme.LocalEInk
 import io.legado.app.ui.config.BookshelfLayoutConfigDialog
 import io.legado.app.ui.config.BottomNavConfigDialog
@@ -91,13 +101,13 @@ import io.legado.app.ui.widget.dialog.PhotoViewOverlayDialog
 import io.legado.app.ui.widget.dialog.decodePhotoOverlayPayload
 import io.legado.app.ui.widget.dialog.photoOverlayTextColor
 import io.legado.app.ui.widget.keyboard.KeyboardAssistsConfigOverlayContent
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.loading
+import legado.ui.generated.resources.check_source_config
+import legado.ui.generated.resources.search_book_key
 import org.jetbrains.compose.resources.stringResource
 
 /**
@@ -146,6 +156,12 @@ fun LegadoApp(
         // Lazy 回收、转场期间移出渲染列表而变化, 与"页面是否可见/存活"不是同一件事。
         val foreground by AppForegroundState.isForeground.collectAsState()
         val routeLifecycles = remember { RouteLifecycleStore() }
+        // 前后台翻转直接入账: 该翻转可能发生在界面不再重组时 (桌面窗口隐入托盘后不再出帧,
+        // 但 effects 仍能在 EDT 上跑), 故只启动一次常驻收集, 不靠重组重启 ——
+        // 用 collectAsState 的当前值驱动的话, 隐藏后没人重组, 变更永远送不到页面
+        LaunchedEffect(routeLifecycles) {
+            AppForegroundState.isForeground.collect { routeLifecycles.setForeground(it) }
+        }
         // 栈事实或前后台变化时在渲染子节点前对齐状态:
         // 必须在子组件组合前同步, 否则子组件首帧读到 INITIALIZED 导致副作用推迟一帧启动并引发额外重组
         val stackTopId = entries.lastOrNull()?.id
@@ -206,6 +222,11 @@ fun LegadoApp(
                     // keepLight 计时管理），桌面/移动端按 keepLight 直接驱动平台常亮
                     keepScreenOn = readerKeepScreenOnPolicy() || readerAutoPageActive,
                 )
+            } else if (route is AppRoute.MangaReader) {
+                // 漫画页跟随"屏幕方向"设置 (对照原版 ReadMangaActivity 继承 BaseReadActivity 的
+                // setOrientation: 同样把 AppConfig.screenOrientation 的 "0"~"4" 映射成系统方向)。
+                // 只覆盖方向, 其余字段 (fullscreen/keepScreenOn/systemBars) 沿用 WindowPolicies.Manga。
+                WindowPolicies.Manga.copy(orientation = readerOrientationPolicy())
             } else {
                 WindowPolicies.forRoute(route)
             }
@@ -236,6 +257,11 @@ fun LegadoApp(
                     orientation = readerOrientationPolicy(),
                     keepScreenOn = readerKeepScreenOnPolicy() || readerAutoPageActive,
                 )
+            } else if (route is AppRoute.MangaReader) {
+                // 漫画页跟随"屏幕方向"设置 (对照原版 ReadMangaActivity 继承 BaseReadActivity 的
+                // setOrientation: 同样把 AppConfig.screenOrientation 的 "0"~"4" 映射成系统方向)。
+                // 只覆盖方向, 其余字段 (fullscreen/keepScreenOn/systemBars) 沿用 WindowPolicies.Manga。
+                WindowPolicies.Manga.copy(orientation = readerOrientationPolicy())
             } else {
                 route?.let { WindowPolicies.forRoute(it) } ?: WindowPolicies.Default
             }
@@ -304,7 +330,9 @@ fun LegadoApp(
         ) {
         // 官方共享转场作用域: 页栈与 Overlay 栈都必须在它之内 —— 共享元素的起止位全靠
         // 本作用域根的 lookahead 坐标换算, 跳窗口在 compose-ui 里直接抛
-        // "layouts are not part of the same hierarchy", 故大图查看器不能再走独立 Dialog 窗口
+        // "layouts are not part of the same hierarchy", 故**参与共享转场的**大图查看器
+        // (有源封面配对端点) 必须留在本窗口内的覆盖层; 无配对端点的查看器改由独立对话框
+        // 窗口承载 (见 PhotoViewOverlayDialog), 这样才能盖得住发起它的对话框
         SharedTransitionLayout(Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalSharedTransitionScope provides this) {
         Box(
@@ -661,9 +689,21 @@ private suspend fun handleLaunchRequest(
             )
         )
 
-        is LaunchRequest.ProcessText -> navigator.push(
-            AppRoute.Search(key = request.text, submit = true)
-        )
+        // 分享/处理文本 (判据见 [shareTextTarget], 全端同一份):
+        // - 文本空白: 不打开任何页面, 也不提示
+        // - 整段文本是链接: 当书籍地址走 legado://addToBookshelf 的导入链 —— 复用其既有消费点
+        //   ([LegadoDeepLinkHandler] → 深链导入宿主 → AddToBookshelfShared.add), 不在端侧另写加书逻辑
+        // - 其余: 整段文本送搜索页
+        is LaunchRequest.ProcessText -> when (shareTextTarget(request.text)) {
+            ShareTextTarget.NOTHING -> Unit
+
+            ShareTextTarget.ADD_TO_BOOKSHELF -> LegadoDeepLinkHandler.enqueue(
+                DeepLinkImportRequest(DeepLinkImportType.ADD_TO_BOOKSHELF, request.text)
+            )
+
+            ShareTextTarget.SEARCH ->
+                navigator.push(AppRoute.Search(key = request.text, submit = true))
+        }
 
         // 外部投来的文件: 视频直接进播放页 (不是“书”, 不得先去导入页转一手),
         // 其余走导入书籍流程
@@ -699,6 +739,12 @@ private suspend fun handleLaunchRequest(
                 if (book != null) navigator.push(book.toReadRoute())
                 else navigator.push(AppRoute.Main(MainTab.BOOKSHELF))
             }
+
+            // 直接朗读: 朗读快捷方式 (iOS 主屏快捷项 / 鸿蒙桌面快捷方式 → route:read_aloud)
+            // → 原版 ShortCuts 的 readAloud 快捷方式 (AssociationActivity 读 action extra →
+            // MediaButtonReceiver.readAloud(appCtx, false)): 朗读/有声书在跑就暂停继续, 阅读页在
+            // 就交页面切换, 都没有才从最近阅读的书无头准备正文并起朗读 (不打开阅读页)
+            "read_aloud" -> HeadlessReadAloud.startFromShortcut()
 
             // 音频通知点击 → 打开当前播放书籍的音频界面 (对齐 origin activityPendingIntent<AudioPlayActivity>:
             // 直接用内存 AudioPlay.book 进音频页, 不依赖 DB 解析; bookUrl 仅作冷启动兜底)
@@ -762,6 +808,8 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         "bookVariable" -> BookVariableOverlayDialogContent(overlay, navigator)
         "change_cover" -> ChangeCoverDialogContent(overlay, navigator)
         "app_log" -> AppLogOverlayDialogContent(overlay, navigator)
+        // 崩溃后重启提示 (对照原版 MainActivity.notifyAppCrash 的 alert)
+        CRASH_NOTICE_OVERLAY_KEY -> CrashNoticeOverlayDialogContent(overlay, navigator)
         "httpTtsEdit" -> HttpTtsEditOverlayDialogContent(overlay, navigator)
 
         // java.copy 确认对话框 (完整文本在 IntentData, payload 只带 key, 见 CopyConfirmDialog.kt)
@@ -796,8 +844,12 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         "bookshelf_layout" -> BookshelfLayoutOverlayDialogContent(overlay, navigator)
         "bottom_nav_config" -> BottomNavConfigOverlayDialogContent(overlay, navigator)
 
-        // 校验设置 (对照 app 端 CheckSourceConfig Fragment)
+        // 校验设置 (对照 app 端 CheckSourceConfig Fragment; 书源管理页"校验书源"对话框的中性钮入口)
         "check_source_config" -> CheckSourceConfigOverlayDialogContent(overlay, navigator)
+
+        // 校验书源 (对照 app 端 BookSourceActivity.checkSource: 关键词输入 + 校验设置中性钮)
+        // payload 为待校验源的 bookSourceUrl, 逗号分隔
+        "check_book_source" -> CheckBookSourceOverlayDialogContent(overlay, navigator)
 
         // 跳转确认 (对照 app 端 OpenUrlConfirmDialog; payload=IntentData key 携带 OpenUrlConfirmPayload)
         "openUrlConfirm" -> OpenUrlConfirmOverlayContent(overlay, navigator)
@@ -837,7 +889,7 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
 
         "txtTocRuleExport" -> RuleExportDialogContent(overlay, navigator, "exportTxtTocRule.json")
 
-        // 屏蔽规则
+        // 筛选规则
         "sourceFilterRuleEdit" -> SourceFilterEditDialogContent(overlay, navigator)
         "sourceFilterRuleList" -> SourceFilterRuleListDialogContent(overlay, navigator)
         "sourceFilterRuleImportLocal" ->
@@ -849,7 +901,7 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         "sourceFilterRuleExport" ->
             RuleExportDialogContent(overlay, navigator, "exportSourceFilterRule.json")
 
-        // 导出分发 (保存到文件, 对照 app 端 HandleFileContract.EXPORT) + 导出成功
+        // 导出分发 (上传 URL / 保存到文件, 对照 app 端 HandleFileContract.EXPORT) + 导出成功
         "exportDispatch" -> ExportDispatchDialogContent(overlay, navigator)
         "exportSuccess" -> ExportSuccessDialogContent(overlay, navigator)
 
@@ -950,16 +1002,9 @@ private fun GroupSelectDialogContent(overlay: AppOverlay.Dialog, navigator: AppN
     val initialGroupId = overlay.payload?.toLongOrNull() ?: 0L
     val scope = rememberCoroutineScope()
     val groupViewModel = remember(scope) { GroupViewModelShared(scope) }
-    var groups by remember { mutableStateOf<List<BookGroup>>(emptyList()) }
     var editingGroup by remember { mutableStateOf<BookGroup?>(null) }
     var addingGroup by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        AppDbProviders.get().bookGroupDao.flowSelect().conflate().flowOn(IoDispatcher).collect {
-            groups = it
-        }
-    }
     GroupSelectDialog(
-        groups = groups,
         initialGroupId = initialGroupId,
         onConfirm = { groupId ->
             navigator.dismissOverlay(
@@ -1045,6 +1090,21 @@ private fun ChangeCoverDialogContent(overlay: AppOverlay.Dialog, navigator: AppN
 @Composable
 private fun AppLogOverlayDialogContent(overlay: AppOverlay.Dialog, navigator: AppNavigator) {
     AppLogDialog(onDismiss = { navigator.dismissOverlay(overlay.key) })
+}
+
+// 崩溃后重启提示 (key=CRASH_NOTICE_OVERLAY_KEY, payload=标题串)
+@Composable
+private fun CrashNoticeOverlayDialogContent(overlay: AppOverlay.Dialog, navigator: AppNavigator) {
+    CrashNoticeDialog(
+        title = overlay.payload.orEmpty(),
+        message = crashNoticeMessage(),
+        onConfirm = {
+            navigator.dismissOverlay(overlay.key)
+            // 对照原版 yesButton 分支: 打开崩溃日志列表
+            navigator.showOverlay(AppOverlay.Dialog("crash_logs"))
+        },
+        onDismiss = { navigator.dismissOverlay(overlay.key) },
+    )
 }
 
 // 未知 key 兜底: 记日志并立即关闭。不画假对话框, 避免新 key 漏接线时静默通过
@@ -1160,6 +1220,36 @@ private fun BottomNavConfigOverlayDialogContent(
     )
 }
 
+// 校验书源对话框 (对照 app 端 BookSourceActivity.checkSource: 关键词输入 + 校验设置中性钮)。
+// 中性钮 dismissOnClick=false: 打开校验设置时本框不关 (与原版 getButton(BUTTON_NEUTRAL) 手动监听同语义)
+@Composable
+private fun CheckBookSourceOverlayDialogContent(
+    overlay: AppOverlay.Dialog,
+    navigator: AppNavigator,
+) {
+    val urls = remember(overlay.payload) {
+        overlay.payload.orEmpty().split(',').filter { it.isNotEmpty() }
+    }
+    TextInputDialog(
+        title = stringResource(Res.string.search_book_key),
+        hint = stringResource(Res.string.search_book_key),
+        initialValue = CheckSourceShared.keyword,
+        neutralButton = AlertButton(
+            text = stringResource(Res.string.check_source_config),
+            dismissOnClick = false,
+            onClick = {
+                navigator.showOverlay(AppOverlay.Dialog("check_source_config"))
+            },
+        ),
+        onConfirm = { keyword ->
+            keyword.takeIf { it.isNotEmpty() }?.let { CheckSourceShared.keyword = it }
+            navigator.dismissOverlay(overlay.key)
+            PlatformCapabilityProviders.get().startCheckBookSource(urls)
+        },
+        onDismiss = { navigator.dismissOverlay(overlay.key) },
+    )
+}
+
 // 校验设置对话框 (对照 app 端 CheckSourceConfig Fragment 壳)
 // Toast 通过 shared Toasters (各端 actual: app=toastOnUi, desktop=Toasters)
 @Composable
@@ -1173,7 +1263,7 @@ private fun CheckSourceConfigOverlayDialogContent(
     )
 }
 
-// 通用 Sheet: AppBottomSheetDialog 承载 (项目统一底部弹层: 0.7 锚点高, 顶栏等
+// 通用 Sheet: AppBottomSheetDialog 承载 (项目统一底部弹层: 0.8 锚点高, 顶栏等
 // 无可滚动区可下拉拖拽关闭), 关闭后移除该 Overlay。
 // 当前仅 "web_view" (startBrowser asBottomSheet=true 半屏模式): 浏览器本体与全屏路由
 // 共用 WebViewScreen (见 WebViewSheetContent), 高度/圆角/拖拽由 AppBottomSheetDialog 承载。
@@ -1189,15 +1279,15 @@ private fun SheetOverlayContent(overlay: AppOverlay.Sheet, navigator: AppNavigat
     ) {
         AppTheme {
             Surface(
-                color = AppTheme.colors.background,
+                color = AppTheme.colors.bottomBackground,
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 顶部圆角 20dp (对照原版 JsActivity BottomSheetDialog 的 GradientDrawable
-                    // 20dp 顶部圆角); 外层同色背景矩形会填掉内层 Column 裁剪掉的顶角, 这里同样裁圆角。
-                    // 全屏态贴齐窗口四边, 圆角去掉 (对齐全屏路由页的观感)
+                    // 顶部圆角收口于 sheetShape (对照原版 JsActivity BottomSheetDialog 的
+                    // GradientDrawable 顶部圆角); 外层同色背景矩形会填掉内层 Column 裁剪掉的顶角,
+                    // 这里同样裁圆角。全屏态贴齐窗口四边, 圆角去掉 (对齐全屏路由页的观感)
                     .then(
                         if (fullScreen) Modifier
-                        else Modifier.clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                        else Modifier.clip(DesignTokens.sheetShape)
                     ),
             ) {
                 if (overlay.key == "web_view") {

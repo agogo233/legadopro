@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,6 +27,7 @@ import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.AppDropdownMenu
 import io.legado.app.ui.compose.component.AppSwitch
 import io.legado.app.ui.compose.component.AppTextButton
@@ -58,7 +58,7 @@ import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 
 /**
- * 展示当前 scope 下命中 (已启用且范围覆盖) 的屏蔽规则, 对照 app 端同名 DialogFragment 下沉。
+ * 展示当前 scope 下命中 (已启用且范围覆盖) 的筛选规则, 对照 app 端同名 DialogFragment 下沉。
  * 点击编辑 → 弹 [SourceFilterEditDialog]; 底部"管理全部" → [onManageAll] 跳规则管理页。
  *
  * @param scope SearchScope 字符串 (null/空 = 全部书源)
@@ -97,11 +97,9 @@ fun SourceFilterRuleListDialog(
         properties = AppDialogSizes.properties(),
     ) {
         // 不能套 fillMaxSize: 撑满窗口会让整窗都算"框内", 点外部永远关不掉; 居中由 RootMeasurePolicy 负责。
-        Surface(
-            // 原版 isFullHeight = true, 高度固定 0.7 屏高
+        AppDialogSurface(
+            // 原版 isFullHeight = true, 高度固定 0.8 屏高
             modifier = Modifier.appDialogSize(fullHeight = true),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
         ) {
             RuleManageScaffold(
                 items = rules,
@@ -157,7 +155,7 @@ fun SourceFilterRuleListDialog(
     }
 
     if (addingNew || editing != null) {
-        // SourceFilterEditDialog 只画 Surface (原 BaseComposeDialogFragment 的 Content), 需补窗口外壳
+        // SourceFilterEditDialog 只画 Surface (原 原命令式对话框基类(已删除) 的 Content), 需补窗口外壳
         AppDialog(
             onDismissRequest = {
                 addingNew = false
@@ -166,10 +164,8 @@ fun SourceFilterRuleListDialog(
             properties = AppDialogSizes.properties(),
         ) {
             // 不能套 fillMaxSize: 撑满窗口会让整窗都算"框内", 点外部永远关不掉; 居中由 RootMeasurePolicy 负责。
-            Surface(
+            AppDialogSurface(
                 modifier = Modifier.appDialogSize(),
-                shape = DesignTokens.shapeDefault,
-                color = colors.fillet,
             ) {
                 SourceFilterEditDialog(
                     rule = editing,

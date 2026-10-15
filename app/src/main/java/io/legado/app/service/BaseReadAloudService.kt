@@ -4,6 +4,7 @@ package io.legado.app.service
 
 import android.annotation.SuppressLint
 import android.app.PendingIntent
+import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -14,6 +15,9 @@ import android.telephony.TelephonyManager
 import androidx.annotation.CallSuper
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import io.legado.app.R
 import io.legado.app.base.BaseService
 import io.legado.app.constant.AppConst
@@ -30,8 +34,9 @@ import io.legado.app.help.media.AudioFocusController
 import io.legado.app.help.media.BecomingNoisyReceiver
 import io.legado.app.help.media.MediaPlaybackLock
 import io.legado.app.help.media.MediaPlaybackNotification
+import io.legado.app.help.media.PhoneCallPauseHandler
+import io.legado.app.help.media.PhoneCallState
 import io.legado.app.help.media.SleepTimer
-import io.legado.app.help.tts.ReadAloudQueue
 import io.legado.app.lib.permission.Permissions
 import io.legado.app.lib.permission.PermissionsCompat
 import io.legado.app.model.ActiveReadAloudHostPorts
@@ -63,12 +68,17 @@ abstract class BaseReadAloudService : BaseService() {
 
     companion object {
         @JvmStatic
-        var isRun = false
-            private set
+        val isRun: Boolean get() = _isRunFlow.value
 
         @JvmStatic
         var pause = true
             private set
+
+        /** 朗读服务运行态状态流: [isRun] 的唯一来源, 重放当前值, 等待朗读结束的收尾源 */
+        private val _isRunFlow = MutableStateFlow(false)
+
+        @JvmStatic
+        val isRunFlow: StateFlow<Boolean> = _isRunFlow.asStateFlow()
 
         @JvmStatic
         val timeMinute: Int
@@ -125,18 +135,40 @@ abstract class BaseReadAloudService : BaseService() {
     }
 
     internal val readBook: ReadBookShared? get() = ActiveReadAloudHostPorts.currentReadBook
+
+    /**
+     * 控制器交给本服务的当前段: 文本、令牌、已排版章节。
+     *
+     * 控制器在调用方线程或引擎回调线程里写 (start/切章), 读侧在 TTS 进度回调的 binder 线程、
+     * ExoPlayer 回调与主线程, 三个字段各自当前值即最终值, 只需可见性。
+     */
+    @Volatile
     internal var currentPlaybackText: String = ""
         private set
+
+    @Volatile
     internal var currentPlaybackToken: Long = 0L
         private set
 
+    @Volatile
     internal var textChapter: TextChapterShared? = null
-    internal var pageIndex = 0
-    private var needResumeOnCallStateIdle = false
+
+    /**
+     * 来电三态状态机 (日志文案/恢复标记语义与下沉前逐字一致)。
+     *
+     * 平台监听器的注册/注销仍由本类负责 (系统权限与生命周期是 Android 专属)。
+     */
+    private val phoneCallHandler = PhoneCallPauseHandler(
+        isPaused = { pause },
+        onPause = { pauseReadAloud() },
+        onResume = { resumeReadAloud() },
+    )
     private var registeredPhoneStateListener = false
     private var upNotificationJob: Coroutine<*>? = null
     private var chapterWatchJob: Job? = null
     private var cover: Bitmap = BookCover.notificationDefaultCover
+
+    /** 通知标题用书名; 阅读实例摘除后实时取不到, 随每次通知刷新续缓存 */
 
     /** 上一次发出的通知快照,用于跳过无变化的 rebuild。 */
     private data class NotificationSnapshot(
@@ -155,6 +187,8 @@ abstract class BaseReadAloudService : BaseService() {
 
     private var requestedChapterPosition = 0
 
+    private val planBuilder = ReadAloudPlanBuilder()
+
     private val androidChapterData = object : ReadAloudChapterDataPort {
         override val chapterCount: Int get() = readBook?.simulatedChapterSize ?: 0
 
@@ -168,30 +202,11 @@ abstract class BaseReadAloudService : BaseService() {
                 ?: return null
             textChapter = chapter
             readAloudByPage = AppConfig.readAloudByPage
-            val paragraphs =
-                ReadAloudQueue.splitParagraphs(chapter.getNeedReadAloud(0, readAloudByPage, 0))
-            if (paragraphs.isEmpty()) return null
-            val target = chapterPosition.coerceAtLeast(0)
-            var offset = 0
-            var index = 0
-            if (fromLastSpeakable) {
-                index =
-                    paragraphs.indexOfLast { !it.matches(io.legado.app.constant.AppPattern.notReadAloudRegex) }
-                if (index < 0) return null
-                offset = paragraphs.take(index).sumOf { it.length + 1 }
-            } else {
-                while (index + 1 < paragraphs.size && offset + paragraphs[index].length + 1 <= target) {
-                    offset += paragraphs[index].length + 1
-                    index++
-                }
-            }
-            return ReadAloudChapterPlan(
-                paragraphs = paragraphs,
-                paragraphIndex = index,
-                paragraphOffset = if (fromLastSpeakable) 0 else
-                    (target - offset).coerceIn(0, paragraphs[index].length),
-                // Android 计划的位置必须是请求目标；段起点另由 paragraphOffset 描述。
-                chapterPosition = if (fromLastSpeakable) offset else target,
+            // 段落计划与 shared 朗读宿主共用同一构建器 (安卓获得段界 skip 钳制)
+            return planBuilder.buildPlan(
+                chapter.getNeedReadAloud(0, readAloudByPage, 0),
+                chapterPosition,
+                fromLastSpeakable,
             )
         }
     }
@@ -199,8 +214,20 @@ abstract class BaseReadAloudService : BaseService() {
     @CallSuper
     override fun onCreate() {
         super.onCreate()
-        isRun = true
+        // 系统杀进程后重启服务 (无启动意图) 时没有任何可朗读实例: 直接退出, 不挂假"正在朗读"通知
+        if (readBook == null) {
+            stopSelf()
+            return
+        }
+        _isRunFlow.value = true
         pause = false
+        // 控制器读完末章只置终态, 段末推进不经过本服务: 跟随终态收服务, 通知与运行态一起收束
+        // (对照原版 nextChapter 里"没有下一章就 stopSelf")
+        lifecycleScope.launch {
+            readAloudController.state.collectLatest { state ->
+                if (state == ReadAloudControllerShared.ReadAloudState.COMPLETED) stopSelf()
+            }
+        }
         sleepTimer = SleepTimer(
             scope = lifecycleScope,
             postMinute = { ActiveReadAloudHostPorts.positionPublisher.publishTimer(it) },
@@ -238,7 +265,7 @@ abstract class BaseReadAloudService : BaseService() {
     override fun onDestroy() {
         super.onDestroy()
         playbackLock.release()
-        isRun = false
+        _isRunFlow.value = false
         pause = true
         ReadTimeRecorder.endImmediately(ReadTimeRecorder.Source.READ_ALOUD)
         audioFocus.abandon()
@@ -260,6 +287,10 @@ abstract class BaseReadAloudService : BaseService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null && readBook == null) {
+            stopSelf()
+            return Service.START_NOT_STICKY
+        }
         when (intent?.action) {
             IntentAction.play -> startReadAloud(
                 intent.getBooleanExtra("play", true),
@@ -285,9 +316,9 @@ abstract class BaseReadAloudService : BaseService() {
         if (chapterWatchJob?.isActive != true) armChapterWatch()
         val chapter = readBook?.curTextChapter?.value
         val chapterIndex = chapter?.chapterIndex ?: readBook?.durChapterIndexValue ?: return
-        this.pageIndex = pageIndex.coerceIn(0, chapter?.lastIndex?.coerceAtLeast(0) ?: 0)
+        val startPageIndex = pageIndex.coerceIn(0, chapter?.lastIndex?.coerceAtLeast(0) ?: 0)
         requestedChapterPosition = if (chapter != null) {
-            chapter.getReadLength(this.pageIndex) + startPos
+            chapter.getReadLength(startPageIndex) + startPos
         } else {
             (readBook?.durChapterPosValue ?: 0) + startPos
         }.coerceAtLeast(0)
@@ -324,7 +355,7 @@ abstract class BaseReadAloudService : BaseService() {
 
     open fun play() {
         playbackLock.acquire()
-        isRun = true
+        _isRunFlow.value = true
         pause = false
         upReadAloudNotification()
         upMediaSessionPlaybackState(PlaybackStateCompat.STATE_PLAYING)
@@ -462,7 +493,7 @@ abstract class BaseReadAloudService : BaseService() {
             pause -> androidAppString("read_aloud_pause")
             current > 0 -> androidAppString("read_aloud_timer", current)
             else -> androidAppString("read_aloud_t")
-        } + ": ${readBook?.bookValue?.name}"
+        } + ": ${readBook?.bookValue?.name.orEmpty()}"
         val subtitle = readBook?.curTextChapter?.value?.title?.takeUnless { it.isBlank() }
             ?: androidAppString("read_aloud_s")
         val playPause = if (pause) {
@@ -527,6 +558,12 @@ abstract class BaseReadAloudService : BaseService() {
     }
 
     override fun startForegroundNotification() {
+        // 挂前台通知的决策点: 没有朗读实例就没有可播内容, 不挂"正在朗读"假通知
+        // (进程重启后权限授予回调也会走到这里, 不能只在 onCreate/onStartCommand 把关)
+        if (readBook == null) {
+            stopSelf()
+            return
+        }
         execute {
             try {
                 val notification = createNotification()
@@ -600,26 +637,13 @@ abstract class BaseReadAloudService : BaseService() {
     inner class ReadAloudPhoneStateListener : PhoneStateListener() {
         override fun onCallStateChanged(state: Int, phoneNumber: String?) {
             super.onCallStateChanged(state, phoneNumber)
-            when (state) {
-                TelephonyManager.CALL_STATE_IDLE -> {
-                    if (needResumeOnCallStateIdle) {
-                        AppLog.put("来电结束,继续朗读")
-                        resumeReadAloud()
-                    } else AppLog.put("来电结束")
+            phoneCallHandler.onCallStateChanged(
+                when (state) {
+                    TelephonyManager.CALL_STATE_IDLE -> PhoneCallState.Idle
+                    TelephonyManager.CALL_STATE_RINGING -> PhoneCallState.Ringing
+                    else -> PhoneCallState.OffHook
                 }
-
-                TelephonyManager.CALL_STATE_RINGING -> {
-                    if (!pause) {
-                        AppLog.put("来电响铃,暂停朗读")
-                        needResumeOnCallStateIdle = true
-                        pauseReadAloud()
-                    } else AppLog.put("来电响铃")
-                }
-
-                TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    AppLog.put("来电接听,不做处理")
-                }
-            }
+            )
         }
     }
 

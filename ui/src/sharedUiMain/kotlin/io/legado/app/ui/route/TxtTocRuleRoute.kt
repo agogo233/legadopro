@@ -16,7 +16,6 @@ import androidx.compose.material.CircularProgressIndicator
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.material.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +44,7 @@ import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppSheetSurface
 import io.legado.app.ui.compose.component.AppRadioButton
 import io.legado.app.ui.compose.component.AppSwitch
 import io.legado.app.ui.compose.component.AppTitleBar
@@ -210,9 +210,7 @@ fun TxtTocRuleDialogHost(
         properties = AppDialogSizes.properties(),
     ) {
         AppTheme {
-            Surface(
-                shape = DesignTokens.dialogShape,
-                color = AppTheme.colors.background,
+            AppSheetSurface(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 TxtTocRuleDialogContent(

@@ -9,15 +9,17 @@ import io.legado.app.help.archive.registerNativeArchiveProvider
 import io.legado.app.help.book.registerNativeBookHelpAccessor
 import io.legado.app.help.book.registerNativeBookStorage
 import io.legado.app.help.openURL
-import io.legado.app.help.storage.registerNativeDataStorage
 import io.legado.app.help.storage.registerNativeBackupRestoreHook
+import io.legado.app.help.storage.registerNativeCrashMarkerProvider
+import io.legado.app.help.storage.registerOhosDataStorage
 import io.legado.app.help.book.registerNativeBookImageStorage
 import io.legado.app.help.book.registerNativeContentProcessorAccessor
-import io.legado.app.help.book.registerNativeLocalBookLocator
+import io.legado.app.help.book.registerOhosLocalBookLocator
 import io.legado.app.help.crash.OhosCrashHandler
 import io.legado.app.help.crash.refreshNativeCrashLogPaths
 import io.legado.app.help.file.registerOhosAppFilesDir
 import io.legado.app.help.log.registerNativeAppLogHost
+import io.legado.app.help.regex.registerNativeRegexErrorHandler
 import io.legado.app.help.file.registerNativeFileDownloader
 import io.legado.app.help.image.NativeBitmapProvider
 import io.legado.app.help.image.OhosImageOps
@@ -34,7 +36,9 @@ import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider
 import io.legado.app.help.registerOhosMainThread
 import io.legado.app.help.service.registerNativeUpdateBookCallback
+import io.legado.app.help.service.registerOhosCacheBookServiceNotifications
 import io.legado.app.help.service.registerOhosServiceLauncher
+import io.legado.app.help.service.registerOhosWebServiceNotifications
 import io.legado.app.help.source.registerNativeSourceHelpAccessor
 import io.legado.app.help.source.registerNativeSourceProviders
 import io.legado.app.help.source.registerNativeVerificationUiProvider
@@ -42,6 +46,7 @@ import io.legado.app.help.toast.registerOhosToaster
 import io.legado.app.help.tts.OhosHttpTtsPlayer
 import io.legado.app.help.tts.TtsEngineProvider
 import io.legado.app.help.tts.registerOhosSystemTtsEngine
+import io.legado.app.ui.association.registerUiRuleSubAutoUpdateHook
 import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.help.ui.registerOhosOpenUrlProvider
 import io.legado.app.help.ui.registerNativeUserAgentProvider
@@ -56,7 +61,9 @@ import io.legado.app.napi.OhosNativeBridge
 import io.legado.app.napi.registerOhosNativeBridge
 import io.legado.app.ui.book.changesource.registerNativeChangeBookSourcePlatform
 import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.RuleRegexes
 import io.legado.app.utils.registerOhosScreenInfoProvider
+import io.legado.app.utils.registerRuleRegexForJsonPath
 import kotlinx.serialization.decodeFromString
 import io.legado.app.ui.book.manage.registerNativeBookshelfManagePlatform
 import io.legado.app.ui.book.read.page.provider.registerSkiaTextMeasurer
@@ -162,6 +169,8 @@ fun registerOhosProviders() {
     // (EntryAbility 的 want.uri) 在本函数返回后即可能取串, 等首帧组合才注册会落到 key 名兜底。
     // 排在 1.06 Preference 之前与平台无关, 只须在任何取值调用之前)
     registerComposeStringProviders()
+    // 规则订阅每日自动更新的导入实现 (复用 :ui 的导入链, 见 RuleSubAutoUpdateHook)
+    registerUiRuleSubAutoUpdateHook()
 
     // 1.06 Preference provider (须在 AppLog 宿主之前: 宿主的 recordLog 门直读 PreferenceProviders,
     // 晚注册则这中间的 AppLog.put 全按 recordLog=false 走, 不落盘)
@@ -170,6 +179,17 @@ fun registerOhosProviders() {
     // 1.1 AppLog 宿主 (崩溃日志落盘到 {filesDir}/logs, 供 CrashLogProvider 收集;
     // 须在 AppFilesDirs 之后 (日志目录从 filesDir 派生)、任何 AppLog.put 之前)
     registerNativeAppLogHost()
+
+    // 1.15 正则替换超时处理器 (超时提示走 Toasters, 崩溃落盘走 NativeCrashLogWriter;
+    // 须在 Toaster/AppLog/AppFilesDirs 之后、registerNativeWebBookProviders() 之前)
+    registerNativeRegexErrorHandler()
+
+    // 1.16 规则正则引擎: 鸿蒙暂无等价能力 (K/N stdlib 的 kotlin.text.Regex 在两端相同,
+    // 匹配按迭代次数递归会写穿线程栈, 且无中断检查点), 此处显式回退默认实现 ——
+    // 与 iOS 的 ICU 引擎不同, 该端仍存在爆栈风险, 待后续方案落地后在此换成新实现。
+    // 本行存在的意义: 把"本端未换引擎"变成可搜索的显式事实, 不靠"没写就是默认"推断。
+    RuleRegexes.register(null)
+    registerRuleRegexForJsonPath()
 
     // 2. 配置 provider (AppConfigAccessor 委托 1.06 已注册的 PreferenceProvider)
     registerNativeAppConfigAccessor()
@@ -202,10 +222,10 @@ fun registerOhosProviders() {
     // 4. 书籍缓存 provider (BookStorage + BookHelp, 依赖 AppFilesDirs)
     // 与 desktop Main.kt 中 `BookStorageProviders.register + BookHelpProviders.register` 顺序对齐
     // DataStorage 须最先: BookStorage 的 rootPath 取自 chapterCacheDir
-    registerNativeDataStorage()
+    registerOhosDataStorage()
     registerNativeBookStorage()
     registerNativeBookImageStorage()
-    registerNativeLocalBookLocator()
+    registerOhosLocalBookLocator()
     registerNativeBookHelpAccessor()
 
     // 4.5 ContentProcessor provider (复用 commonMain 的 ContentProcessorShared, 依赖 AppDb 已就绪)
@@ -269,13 +289,18 @@ fun registerOhosProviders() {
     registerNativeFileDownloader()
     // 8.5 通知进度 (走 1.05 已注册的 napi 桥; Toaster 与桥本身同因已前置到 1.05)
     registerOhosNotificationProgress()
-    // 8.6 UpdateBook callback 须在 Toaster + NotificationProgress 之后 (本 callback 委托这两个 provider)、
-    // ServiceLauncher 之前 (NativeServiceLauncher.updateBookShared lazy 构造时取 UpdateBookCallbacks.getDefault)
+    // 8.6 UpdateBook callback 须在 Toaster + NotificationProgress 之后 (本 callback 委托这两个 provider);
+    // 消费方在懒构造更新引擎时取 UpdateBookCallbacks.getDefault, 故须先于其创建
     // KP8+: 已下沉到 nativeMain (NativeUpdateBookCallback 真实化, 桥接 NotificationProgresses + Toasters)
     registerNativeUpdateBookCallback()
     // CacheBook callback 须在 ServiceLauncher 之前 (缓存流程未注册时 CacheBookCallbacks.get() 直接 error)
     registerNativeCacheBookCallback()
     registerOhosServiceLauncher()
+    // 8.6b 缓存书籍 / Web 服务的通知: 各自的通知态由既有信号驱动 (缓存: 启动器 + EventBus.UP_DOWNLOAD;
+    // Web 服务: EventBus.WEB_SERVICE), 不新造调度。缓存那个要包一层已注册的 ServiceLauncher,
+    // 故必须在其之后; Web 服务那个须早于任何一次服务启停 (用户操作触发)。
+    registerOhosCacheBookServiceNotifications()
+    registerOhosWebServiceNotifications()
     // 注册业务层 CookieStoreProvider (commonMain SharedCookieStore, Room cookieDao 持久化)
     // 与 desktop registerDefaultJvmCookieStoreProvider / app registerAndroidCookieStoreProvider
     // / iOS registerDefaultIosCookieStoreProvider 对齐
@@ -323,6 +348,8 @@ fun registerOhosProviders() {
     // 备份/恢复钩子 (lastBackup 时间戳 + 恢复完成提示; zip 复制/解压走 BackupFileOps 默认实现,
     // 与 iOS 端共用 nativeMain NativeBackupRestoreHook; 未注册时默认空实现静默丢这些副作用)
     registerNativeBackupRestoreHook()
+    // 异常退出标记 (对照原版 LocalConfig.appCrash; 须在启动期提示读取之前)
+    registerNativeCrashMarkerProvider()
 
     // 8.8 阅读排版真实字形度量器 (Skia Font 度量, 取代 SimpleTextMeasurer 等宽近似;
     // 须在任何章节排版之前, 依赖 skiko 随 compose ui 已就绪)

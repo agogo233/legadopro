@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.CircularProgressIndicator
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -15,6 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogSizing
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import legado.ui.generated.resources.Res
@@ -31,7 +32,7 @@ import org.jetbrains.compose.resources.stringResource
  *
  * UI 逐项对齐原版 (严禁改变样式):
  * - 容器: Row padding 顶 16dp / 左右底 8dp, 垂直居中, 水平居中
- * - 指示器: CircularProgressIndicator size=30dp, color=accent, strokeWidth=2dp
+ * - 指示器: CircularProgressIndicator size=30dp, color=accent
  * - 间距: Spacer width=8dp
  * - 文本: message, color=primaryText
  *
@@ -52,7 +53,6 @@ fun WaitDialogContent(
         CircularProgressIndicator(
             modifier = Modifier.size(30.dp),
             color = colors.accent,
-            strokeWidth = 2.dp,
         )
         Spacer(Modifier.width(DesignTokens.spacingDefault))
         Text(message, color = colors.primaryText)
@@ -87,9 +87,10 @@ fun WaitDialog(
             dismissOnBackPress = true,
             dismissOnClickOutside = false,
         ),
+        sizing = AppDialogSizing.Unconstrained,
     ) {
         val colors = AppTheme.colors
-        Surface(shape = DesignTokens.dialogShape, color = colors.fillet) {
+        AppDialogSurface {
             WaitDialogContent(message = message)
         }
     }

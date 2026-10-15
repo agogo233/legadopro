@@ -28,7 +28,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -44,6 +43,7 @@ import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppDialog
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDialogSurface
 import io.legado.app.ui.compose.component.AppRadioButton
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.DialogTitleBar
@@ -69,7 +69,7 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * 服务器列表选择对话框 (KMP 共享, app/desktop/iOS 复用)。
  *
- * 对照 app 端 [io.legado.app.ui.book.import.remote.ServersDialog] (BaseComposeDialogFragment):
+ * 对照 app 端 [io.legado.app.ui.book.import.remote.ServersDialog] (原命令式对话框基类(已删除)):
  * - 原版依赖 Fragment + viewModels + AppConfig.remoteServerId + activity Callback,
  *   含 Android 专属 API (Fragment / Context / DialogFragment)。
  * - 桌面/iOS 端无 Fragment 体系, 改为纯 @Composable + [Dialog], 由调用方注入数据与回调。
@@ -123,10 +123,8 @@ fun ServersDialog(
         onDismissRequest = onDismiss,
         properties = AppDialogSizes.properties(),
     ) {
-        Surface(
+        AppDialogSurface(
             modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
         ) {
             Column {
                 DialogTitleBar(

@@ -43,6 +43,7 @@ object PreferKey {
     const val bookshelfGridWidth = "bookshelfGridWidth"
     const val bookshelfSort = "bookshelfSort"
     const val bookExportFileName = "bookExportFileName"
+
     const val bookImportFileName = "bookImportFileName"
     const val episodeExportFileName = "episodeExportFileName"
     const val recordLog = "recordLog"
@@ -105,7 +106,6 @@ object PreferKey {
     const val doublePageHorizontal = "doubleHorizontalPage"
     const val readUrlOpenInBrowser = "readUrlInBrowser"
     const val defaultBookTreeUri = "defaultBookTreeUri"
-    const val checkSource = "checkSource"
     const val tocUiUseReplace = "tocUiUseReplace"
     const val tocCountWords = "tocCountWords"
     const val enableReadRecord = "enableReadRecord"
@@ -182,4 +182,12 @@ object PreferKey {
     const val windowWidth = "desktopWindowWidth"
     const val windowHeight = "desktopWindowHeight"
     const val windowMaximized = "desktopWindowMaximized"
+
+    /**
+     * 关闭主窗口时是否缩小到托盘 (false = 退出程序)。
+     *
+     * 键不存在 = 用户尚未选择过, 首次关闭时弹询问框; 设置页开关与询问框读写同一个键,
+     * 任一处选定过就不再询问。
+     */
+    const val closeToTray = "desktopCloseToTray"
 }

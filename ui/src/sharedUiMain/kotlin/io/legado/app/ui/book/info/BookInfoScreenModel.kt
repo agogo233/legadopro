@@ -94,13 +94,19 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
     )
     val state: StateFlow<BookInfoUiState> = _state.asStateFlow()
 
-    // 等待对话框显隐 (对照 BookInfoViewModelShared._waitDialogData, webFile 流程的加载指示)
+    // 等待对话框显隐 (原 app 端 waitDialogData, webFile 流程的加载指示)
     private val _waitDialog = MutableStateFlow<Boolean?>(null)
     val waitDialog: StateFlow<Boolean?> = _waitDialog.asStateFlow()
 
-    // 动作事件 (对照 BookInfoViewModelShared._actionLive, webFile 流程的 selectBooksDir 回调)
+    // 动作事件 (原 app 端 actionLive, webFile 流程的 selectBooksDir 回调)。
+    //
+    // replay = 0 (不是 LiveData → signalFlow 惯用的 1): 这是一次性**请求**而不是粘性状态,
+    // 唯一的消费者是 BookInfoRoute 的组合期收集协程 —— 它随本页被压栈/Lazy 回收而结束、
+    // 返回本页时重新收集。若保留 replay = 1, 用户处理完 (或取消) 那次请求后去别的页面再回来,
+    // 缓存的"去设置目录"会被重放, 每次返回都平白弹一次目录选择器。
+    // 发出点全部在同页用户操作 (点"阅读"/"上架") 触发的协程里, 消费者必然已就位, 不会丢事件。
     private val _actionLive = MutableSharedFlow<String>(
-        replay = 1,
+        replay = 0,
         extraBufferCapacity = 8,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
@@ -125,7 +131,7 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
      * 落地加载是否已开工。放在 ScreenModel 而不是 remember: 模型随路由 entry 存活
      * (ScreenModelStore.retain), 从阅读页/目录页/编辑页返回本页时组合体重建而模型不重建 ——
      * 对照原版 `BookInfoViewModel.initData` 的 `curBook != null → return`, 不重复查库/回源,
-     * 也不再二次执行 rss 书的 tocUrl/bookUrl 换位 (二次执行会把 bookUrl 写成 "data:")。
+     * 也不再二次执行 rss 书的 tocUrl 补位。
      */
     var bootStarted: Boolean = false
 

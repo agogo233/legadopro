@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -32,6 +33,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -59,6 +62,7 @@ import io.legado.app.ui.compose.platform.PlatformDialogDim
 import io.legado.app.ui.compose.platform.platformStatusBarPadding
 import io.legado.app.ui.compose.platform.rememberVisibleStatusBarHeightPx
 import io.legado.app.ui.compose.theme.AppTextMenuState
+import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.LocalAppTextMenuState
 import io.legado.app.ui.compose.theme.ProvidePlatformTextMenu
 import io.legado.app.ui.root.PlatformCapabilityProviders
@@ -121,6 +125,22 @@ fun Modifier.sheetDragExclusion(): Modifier {
 val LocalSheetDismissRequest = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /**
+ * 动画进行中屏蔽本节点子树的指针输入: Initial 阶段消费全部事件。
+ *
+ * 对话框/弹层滑入滑出与缩放淡出 (进度 < 1) 期间, 内容里的点击手势收不到未消费的 down
+ * (down 被消费 awaitFirstDown 不成立, up 被消费即判手势取消), 动画途中的点击落在
+ * 正在离场的旧按钮上不会触发。
+ */
+internal fun Modifier.blockInputWhile(active: Boolean): Modifier = pointerInput(active) {
+    if (!active) return@pointerInput
+    awaitPointerEventScope {
+        while (true) {
+            awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+        }
+    }
+}
+
+/**
  * 在"当前独立窗口"内安装 per-window 文本菜单通道 (Android 新通道)。
  *
  * Compose CompositionLocal 跨 Dialog 窗口继承: Dialog 内长按文本时 framework 会用**本窗口**
@@ -153,6 +173,14 @@ fun AppDialog(
     properties: DialogProperties = AppDialogSizes.properties(),
     /** 背景暗化: 原版 BaseDialogFragment 默认保留 dim */
     dim: Boolean = true,
+    /** false = 跳过对话框进入/退出动画 (供满屏自管内容做窗口承载, 如无配对端点的大图查看器) */
+    animate: Boolean = true,
+    /**
+     * 尺寸语义, 由宿主施加 (正文无需再各自钳制): 缺省 [AppDialogSizing.Adaptive] = 宽 0.9 锚点
+     * (上限 800dp) + 高随内容收缩、封顶 0.8 锚点。
+     * 满屏自管内容的窗口承载 (animate=false) 与显式传 [AppDialogSizing.Unconstrained] 者不受钳制。
+     */
+    sizing: AppDialogSizing = AppDialogSizing.Adaptive,
     content: @Composable () -> Unit,
 ) {
     // 顶层覆盖物返回拦截: 对话框打开期间返回键 (桌面端 ESC / 统一链) 优先关闭对话框,
@@ -160,7 +188,7 @@ fun AppDialog(
     // 播退出动画, E-Ink 无动画直接关闭 (对齐 E-Ink 分支 Dialog 直连 onDismissRequest)。
     var dismissing by remember { mutableStateOf(false) }
     BackLayerHandler(enabled = true) {
-        if (AppConfigProviders.get().isEInkMode) onDismissRequest() else dismissing = true
+        if (!animate || AppConfigProviders.get().isEInkMode) onDismissRequest() else dismissing = true
     }
     if (AppConfigProviders.get().isEInkMode) {
         Dialog(
@@ -168,7 +196,37 @@ fun AppDialog(
             properties = properties,
             content = {
                 WithWindowTextMenu {
-                    Box(Modifier.directionKeyFocusNavigation(LocalFocusManager.current)) { content() }
+                    Box(
+                        Modifier
+                            .appDialogSize(sizing)
+                            .directionKeyFocusNavigation(LocalFocusManager.current),
+                        contentAlignment = Alignment.Center,
+                    ) { content() }
+                }
+            },
+        )
+        return
+    }
+    if (!animate) {
+        // 无动画分支: 满屏自管内容的窗口承载。内容铺满容器并让开顶部平台装饰
+        // ([LocalOverlayTopInset], 桌面端窗口控制条 40dp), 全屏内容坐标系与页面可用区对齐;
+        // 此类调用方自管点击关闭 (dismissOnClickOutside=false), 不依赖平台外点关闭;
+        // 暗度由内容自绘 (需要时仍可 dim=true 补平台 dim)
+        Dialog(
+            onDismissRequest = onDismissRequest,
+            properties = properties,
+            content = {
+                WithWindowTextMenu {
+                    if (dim) PlatformDialogDim()
+                    val topInset = LocalOverlayTopInset.current
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(if (topInset > 0.dp) Modifier.padding(top = topInset) else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        content()
+                    }
                 }
             },
         )
@@ -214,8 +272,12 @@ fun AppDialog(
             // native 控制条的物理覆盖区, 本就点不到; 移动端 inset=0 零影响
             Box(
                 Modifier
+                    .appDialogSize(sizing)
                     .directionKeyFocusNavigation(LocalFocusManager.current)
-                    .then(if (topInset > 0.dp) Modifier.padding(top = topInset) else Modifier),
+                    .then(if (topInset > 0.dp) Modifier.padding(top = topInset) else Modifier)
+                    // 进出场动画期间内容不派生输入 (渐入未稳/渐出途中的点击不生效)
+                    .blockInputWhile(p < 1f),
+                contentAlignment = Alignment.Center,
             ) {
                 Box(
                     Modifier.graphicsLayer {
@@ -230,6 +292,45 @@ fun AppDialog(
             }
         }
     }
+}
+
+/**
+ * 居中对话框正文统一容器：8dp 圆角 (shapeDefault) + fillet 底色收口于此, 与命令式宿主
+ * filletBackground 同规格; 居中对话框正文一律用它, 不再各自声明 shape。
+ * 贴底弹层面板用 [AppSheetSurface]。
+ */
+@Composable
+fun AppDialogSurface(
+    modifier: Modifier = Modifier,
+    shape: Shape = AppTheme.DesignTokens.shapeDefault,
+    color: Color = AppTheme.colors.fillet,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = shape,
+        color = color,
+        content = content,
+    )
+}
+
+/**
+ * 贴底弹层统一面板容器：仅上两角 16dp (sheetShape) + 底栏色 (bottomBackground)
+ * 收口于此, 形状与底色均不开放修改, 保证全仓弹层同一观感;
+ * [AppBottomSheetDialog] 面板一律用它 (含占满所属弹层区域的换源/换章节源/TXT 目录规则三处)。
+ * 需要自己撑满容器且不带圆角的承载 (如半屏 WebView 的全屏态) 仍用 Surface 自行裁剪。
+ */
+@Composable
+fun AppSheetSurface(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = AppTheme.DesignTokens.sheetShape,
+        color = AppTheme.colors.bottomBackground,
+        content = content,
+    )
 }
 
 /**
@@ -283,6 +384,8 @@ fun AppBottomSheetDialog(
     properties: DialogProperties = AppDialogSizes.properties(),
     maxHeight: Dp? = null,
     fullScreen: Boolean = false,
+    /** 外部请求收起: 置 true 走退出动画 (E-Ink 直接关闭), 完成后回调 onDismissRequest */
+    dismissed: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     // 顶层覆盖物返回拦截 (同 [AppDialog]): 底部弹层打开期间返回键优先收起弹层
@@ -303,6 +406,9 @@ fun AppBottomSheetDialog(
     // 内容区拖拽禁区 (平台 WebView 等 interop 视图自行消化竖直手势, 见 [SheetDragExclusion])
     val dragExclusion = remember { SheetDragExclusion() }
     if (AppConfigProviders.get().isEInkMode) {
+        LaunchedEffect(dismissed) {
+            if (dismissed) onDismissRequest()
+        }
         Dialog(onDismissRequest = onDismissRequest, properties = properties) {
             WithWindowTextMenu {
                 CompositionLocalProvider(
@@ -332,7 +438,7 @@ fun AppBottomSheetDialog(
             // (面板整体下移, translationY 相加; 触发关闭时退出动画从当前位置继续下滑,
             // 无跳变); 松手后吸附默认锚点/视觉全屏或弹簧回弹复位
             var dragOffset by remember { mutableStateOf(0f) }
-            // 默认锚点高 (px): 面板未展开时的实测高度 (内容 wrap 封顶 0.7 锚点高的自然高),
+            // 默认锚点高 (px): 面板未展开时的实测高度 (内容 wrap 封顶 0.8 锚点高的自然高),
             // 由 onSizeChanged 在 dragOffset == 0 时同步; 展开拖拽期间保持初值作"缩回目标",
             // 回弹到默认锚点后恢复跟随 (桌面窗口 resize 时默认锚点自动更新)
             var defaultAnchorPx by remember { mutableStateOf(0) }
@@ -507,6 +613,10 @@ fun AppBottomSheetDialog(
                     )
                 )
             }
+            // 外部收起请求与内部路径 (返回键/点外部/拖拽) 同走退出动画
+            LaunchedEffect(dismissed) {
+                if (dismissed) dismissing = true
+            }
             // 退出: 下滑淡出播完再关闭
             LaunchedEffect(dismissing) {
                 if (dismissing) {
@@ -530,7 +640,7 @@ fun AppBottomSheetDialog(
             }
             val p = progress.value
             val dragOffsetPx = dragOffset
-            // 滑入/滑出位移取"0.7 锚点高与面板实测高的较大值": 常规弹层实测高 ≤ 0.7 锚点高,
+            // 滑入/滑出位移取"0.8 锚点高与面板实测高的较大值": 常规弹层实测高 ≤ 0.8 锚点高,
             // 取值不变; 全屏态面板更高, 靠实测高才能整块滑出窗口而不残留顶部一截
             val anchorSlidePx = with(LocalDensity.current) { AppDialogSizes.fullHeight().toPx() }
             val slideHeightPx = maxOf(sheetHeightPx.toFloat(), anchorSlidePx)
@@ -560,6 +670,8 @@ fun AppBottomSheetDialog(
                         alpha = if (dialogSpec.enterFadeIn) p else 1f
                     }
                     .onGloballyPositioned { sheetCoordinates = it }
+                    // 进出场动画期间内容不派生输入 (面板滑出途中点按钮不触发)
+                    .blockInputWhile(p < 1f)
                     // 非滚动内容面板的拖拽路径: 内部无滚动消费位移时赢得竖直 slop,
                     // 面板跟随手指; 内部 Compose 滚动消费了位移则本检测自动让位
                     // (awaitVerticalTouchSlopOrCancellation 遇已消费的位置变化返回 null),
@@ -631,9 +743,9 @@ fun AppBottomSheetDialog(
  * 需作为 Dialog 内容的根, 内容 fillMaxSize 让弹层覆盖整个容器。
  *
  * [fullScreen] 时 sheet 撑满窗口 (仍贴底对齐, 只是高度到顶), 不再受 [maxHeight] /
- * 0.7 锚点高约束。
+ * 0.8 锚点高约束。
  *
- * 全屏时补 [platformStatusBarPadding]: 常规弹层高度只有 0.7 锚点高、顶部到不了状态栏;
+ * 全屏时补 [platformStatusBarPadding]: 常规弹层高度只有 0.8 锚点高、顶部到不了状态栏;
  * 全屏后顶部会真的贴到窗口顶, 这层 padding 把前提补回来。它只消费"尚未被窗口消费"的 inset ——
  * decorFitsSystemWindows=true 的窗口已自行避让时为 0, 不会双重避让; 只有 Android 15+
  * 强制 edge-to-edge 的全屏窗口才真正生效。

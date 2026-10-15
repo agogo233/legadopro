@@ -16,22 +16,20 @@ import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.utils.ScreenInfoProviders
 
 /**
- * 对话框尺寸锚点 (px), 由各平台宿主注入对话框应参照的容器尺寸:
- * - 桌面端: 主窗口尺寸 (Main.kt 在 Window 组合内注入, 跟随 resize)
- * - 移动端: 不注入, 回落屏幕尺寸 (对齐原版 displayMetrics)
+ * 对话框尺寸锚点 (px) = 宿主窗口可用区, 由平台根经 [AppTheme] 的 anchor 参数注入
+ * (各端都注入; 未注入时回落屏幕尺寸兜底)。
  *
- * 不能用对话框内的 [androidx.compose.ui.platform.LocalWindowInfo]:
+ * 不能在对话框层读 [androidx.compose.ui.platform.LocalWindowInfo]:
  * 独立窗口/独立视图的对话框宿主 (Android/iOS/鸿蒙) 里它返回的是**对话框自身窗口**的
- * 尺寸, 与内容尺寸互为反馈 (内容高 = f(0.7×窗高), 窗高 = 内容高), 帧间持续漂移,
+ * 尺寸, 与内容尺寸互为反馈 (内容高 = f(0.8×窗高), 窗高 = 内容高), 帧间持续漂移,
  * 表现为滚动时对话框高度不断变高。
  */
 val LocalDialogAnchorSize = compositionLocalOf<IntSize?> { null }
 
 /**
  * 对话框尺寸: 宽 = 0.9 倍且上限 800dp, 全高模式高 = 0.8 锚点高。
- * app 端宿主 BaseComposeDialogFragment/ComposeDialog 已同步为 0.8, 两侧一致。
  *
- * 基准取 [LocalDialogAnchorSize] (桌面 = 主窗口, 移动端 = 屏幕)。
+ * 基准取 [LocalDialogAnchorSize] (由宿主根注入的窗口可用区; 未注入时回落屏幕尺寸)。
  * 不 remember: 两次乘法 + coerce 极轻, 每次重组重算才能跟随窗口 resize。
  */
 object AppDialogSizes {
@@ -89,8 +87,24 @@ object AppDialogSizes {
 }
 
 /**
- * 对话框统一尺寸: 宽 0.9 屏宽 (上限 800dp), 高按 fullHeight 固定 0.7 屏高或自适应封顶 0.7。
- * 需与 [AppDialogSizes.properties] 搭配使用, 否则被平台默认宽度覆盖。
+ * 对话框尺寸语义 (单一来源, 由宿主 [io.legado.app.ui.compose.component.AppDialog] 施加):
+ * - [Adaptive]: 非全高对话框语义 —— 宽 0.9 锚点 (上限 800dp), 高随内容收缩、封顶 0.8 锚点;
+ * - [Fixed]: 全高对话框语义 —— 宽同上, 高固定 0.8 锚点;
+ * - [Unconstrained]: 不做钳制 (满屏自管内容的窗口承载, 如点击区九宫格)。
+ */
+enum class AppDialogSizing { Adaptive, Fixed, Unconstrained }
+
+/** [AppDialogSizing] 对应的尺寸修饰符; [AppDialogSizing.Unconstrained] 原样返回。 */
+@Composable
+fun Modifier.appDialogSize(sizing: AppDialogSizing): Modifier = when (sizing) {
+    AppDialogSizing.Adaptive -> appDialogSize(fullHeight = false)
+    AppDialogSizing.Fixed -> appDialogSize(fullHeight = true)
+    AppDialogSizing.Unconstrained -> this
+}
+
+/**
+ * 对话框统一尺寸: 宽 0.9 屏宽 (上限 800dp), 高按 [fullHeight] 取固定 0.8 锚点或自适应封顶 0.8。
+ * 需与 [AppDialogSizes.properties] 搭配使用: 平台默认宽度已关闭, 尺寸只能来自宿主或内容。
  */
 @Composable
 fun Modifier.appDialogSize(fullHeight: Boolean = false, widthFraction: Float = 1f): Modifier {

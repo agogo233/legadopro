@@ -3,6 +3,7 @@
 package io.legado.app.service
 
 import android.annotation.SuppressLint
+import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -200,10 +201,14 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 系统杀进程后重启服务 (无启动意图) 时无播放书目: 直接退出, 不挂假"音频播放"通知
+        if (intent == null && AudioPlay.book == null) {
+            stopSelf()
+            return Service.START_NOT_STICKY
+        }
         intent?.action?.let { action ->
             when (action) {
                 IntentAction.play -> session.play()
-                IntentAction.playNew -> session.playNew()
                 IntentAction.loadPlayUrl -> session.loadPlayUrl()
                 IntentAction.stopPlay -> session.stopPlay()
                 IntentAction.pause -> pauseSession()
@@ -302,9 +307,11 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
         instance = null
         audioFocus.abandon()
         noisyReceiver.unregister(this)
+        // 先上报最终播放态再释放: 位置与 MediaSession 都还在, 置 STOPPED 才落得下去
+        // (引擎位置已由 AudioPlaySession.endSession 先存); 释放后写的是已释放对象, 等于没写
+        upMediaSessionPlaybackState(PlaybackStateCompat.STATE_STOPPED)
         exoPlayer.release()
         mediaSessionCompat?.release()
-        upMediaSessionPlaybackState(PlaybackStateCompat.STATE_STOPPED)
         upNotificationJob?.invokeOnCompletion {
             notificationManager.cancel(NotificationId.AudioPlayService)
         }
