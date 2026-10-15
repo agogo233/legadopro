@@ -25,6 +25,7 @@ data class AboutUiState(
     val appVersion: String = "",
     val contributorsUrl: String = "",
     val telegramGroupUrl: String = "",
+    val showCreateHeapDump: Boolean = false,
 )
 
 /**
