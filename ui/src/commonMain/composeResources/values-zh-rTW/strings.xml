@@ -440,6 +440,7 @@
     <string name="auto_change_source">自動換源</string>
     <string name="text_full_justify">文字兩端對齊</string>
     <string name="text_bottom_justify">文字底部對齊</string>
+    <string name="hang_first_punctuation">段首標點懸掛</string>
     <string name="auto_page_speed">自動翻頁速度</string>
     <string name="sort_by_url">地址排序</string>
     <string name="backup_summary">本機和 WebDav 一起備份</string>
@@ -599,7 +600,7 @@
     <string name="search_content_empty">搜尋內容為空，請檢查淨化/簡繁設定</string>
     <string name="book_tree_uri_t">書籍儲存位置</string>
     <string name="book_tree_uri_s">從其它應用程式打開的書籍儲存位置</string>
-    <string name="book_storage_help">由於安卓的儲存存取限制，閱讀需要設定公共目錄下的子目錄來實現書籍複製、下載，例如 Documents/Books、Download/Books。\n如不設定，將無法正常使用本地書籍、webDav 書籍的相關功能。</string>
+    <string name="book_storage_help">由於安卓的儲存存取限制，不能選擇內部儲存根目錄、SD 卡根目錄和 Download 目錄本身（要放在 Download 下請選 Download 內的子目錄，例如 Download/Books）。\n其它目錄都可以選，包括儲存根目錄下的子目錄（例如 /sdcard/books）。\n不設定書籍儲存位置，本地書籍與 webDav 書籍的複製、下載將無法使用。</string>
     <string name="select_book_folder">選擇儲存書籍的資料夾</string>
     <string name="user_agent">使用者代理</string>
     <string name="bg_alpha">背景透明度</string>
@@ -850,8 +851,6 @@
     <string name="manga_color_filter">濾鏡</string>
     <string name="hide_manga_title">隱藏漫畫列表標題</string>
     <string name="refresh_explore">重新整理發現</string>
-    <string name="system_media_control_compatibility_change">系統媒體控制項相容性更改</string>
-    <string name="system_media_control_compatibility_change_summary">當鎖屏不顯示系統媒體控制項時可以嘗試開啟，比如 OneUI7.0 或 vivo 等</string>
     <string name="read_aloud_pause_resume">朗讀暫停/繼續</string>
     <string name="contrast">對比度</string>
     <string name="enable_manga_gray">開啟圖片灰階</string>
@@ -1106,4 +1105,10 @@
     <string name="close_to_tray_prompt">是否縮小到托盤？縮小後程式與背景工作繼續執行，可從托盤圖示重新開啟。</string>
     <string name="close_to_tray">縮小到托盤</string>
     <string name="show_main_window">顯示主畫面</string>
+    <string name="dialog_preview">彈窗預覽</string>
+    <string name="dialog_preview_summary">逐個查看全部對話框與彈窗形制（除錯用，資料為副本）</string>
+    <string name="dialog_preview_group_alert">確認/提示框</string>
+    <string name="dialog_preview_group_dialog">對話框</string>
+    <string name="dialog_preview_group_sheet">底部彈層</string>
+    <string name="dialog_preview_group_base">基礎形制</string>
 </resources>

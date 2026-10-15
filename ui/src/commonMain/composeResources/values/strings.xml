@@ -63,6 +63,7 @@
     <string name="progress_bar_behavior">Progress bar behavior</string>
     <string name="text_full_justify">Text justified</string>
     <string name="text_bottom_justify">Text align bottom</string>
+    <string name="hang_first_punctuation">Hang punctuation at paragraph start</string>
     <string name="volume_key_page_on_play">Volume keys to turn page when reading</string>
     <string name="page_touch_slop_title">Sliding Page Threshold</string>
     <string name="auto_change_source">Change source automatically</string>
@@ -78,8 +79,6 @@
     <string name="pause_read_aloud_while_phone_calls_summary">Pause speech during calls, requires phone state permission</string>
     <string name="read_aloud_wake_lock">Read aloud service wake-up lock</string>
     <string name="read_aloud_wake_lock_summary">The wake-up lock is enabled when reading aloud is enabled, and the wake-up lock on some mobile phones will be killed in the background.</string>
-    <string name="system_media_control_compatibility_change">System Media Control Compatibility Change</string>
-    <string name="system_media_control_compatibility_change_summary">If system media controls do not appear on the lock screen, you can try enabling this, for example on OneUI 7.0 or Vivo devices.</string>
     <string name="pref_media_button_per_next">Media Buttons • Previous | Next</string>
     <string name="pref_media_button_per_next_summary">Previous Paragraph|Next Paragraph/Previous Chapter|Next Chapter</string>
     <string name="read_aloud_by_page">Speak by pages</string>
@@ -714,7 +713,6 @@
     <string name="time_format_seconds">%1$d seconds</string>
     <string name="book_source_tutorial">Book source tutorial</string>
     <string name="js_tutorial">JS tutorial</string>
-    <string name="regex_tutorial">Regex tutorial</string>
     <string name="debug_search_hint">Debug search&gt;&gt;input keyword, e.g.:</string>
     <string name="debug_explore_hint">Debug explore&gt;&gt;input explore URL, e.g.:</string>
     <string name="debug_book_info_hint">Debug detail&gt;&gt;input detail page URL, e.g.:</string>
@@ -1583,7 +1581,7 @@
     <string name="open_fun">open function</string>
     <string name="use_browser_open">Is it opened in an external browser?</string>
     <string name="open_sys_dir_picker_error">Error opening system folder selector, automatically open application folder selector</string>
-    <string name="book_storage_help">Due to Android storage access restrictions, Legado needs a subdirectory under a public directory (for example Documents/Books or Download/Books) to copy and download books.\nWithout it, local books and WebDAV books will not work properly.</string>
+    <string name="book_storage_help">Android restricts folder selection: the root of internal storage, the root of an SD card, and the Download folder itself cannot be picked (to use Download, pick a subfolder such as Download/Books).\nAny other folder works, including subfolders of the storage root (for example /sdcard/books).\nWithout a book storage location, copying and downloading local books and WebDAV books will not work.</string>
     <string name="select_book_folder">Select the folder where the books are saved</string>
     <string name="general">General</string>
     <string name="copy_all">Copy all</string>
@@ -1745,4 +1743,10 @@
     <string name="close_to_tray_prompt">Minimize to the tray? The app and its background tasks keep running, and you can reopen it from the tray icon.</string>
     <string name="close_to_tray">Minimize to tray</string>
     <string name="show_main_window">Show main window</string>
+    <string name="dialog_preview">Pop-up preview</string>
+    <string name="dialog_preview_summary">Browse every dialog and sheet style one by one (debug only; data is a copy)</string>
+    <string name="dialog_preview_group_alert">Confirm / message boxes</string>
+    <string name="dialog_preview_group_dialog">Dialogs</string>
+    <string name="dialog_preview_group_sheet">Bottom sheets</string>
+    <string name="dialog_preview_group_base">Base shells</string>
 </resources>

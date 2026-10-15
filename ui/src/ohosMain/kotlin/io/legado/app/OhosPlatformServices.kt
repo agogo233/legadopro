@@ -15,6 +15,7 @@ import io.legado.app.help.toast.Toasters
 import io.legado.app.help.writeBytesAtomically
 import io.legado.app.napi.OhosNativeBridge
 import io.legado.app.ui.OhosPlatformCapabilities
+import io.legado.app.ui.compose.platform.SharedThemeStoreProvider
 import io.legado.app.ui.percentDecode
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.BrowserService
@@ -32,6 +33,7 @@ import io.legado.app.ui.root.OrientationPolicy
 import io.legado.app.ui.root.PermissionService
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformServices
+import io.legado.app.ui.root.ReaderSystemBarAppearance
 import io.legado.app.ui.root.ShareService
 import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
@@ -40,7 +42,9 @@ import io.legado.app.ui.root.WindowController
 import io.legado.app.ui.video.VideoDirect
 import io.legado.app.utils.File
 import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.systemCurrentTimeMillis
+import androidx.compose.ui.graphics.toArgb
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
@@ -105,9 +109,15 @@ object OhosPlatformServices : PlatformServices {
     // 窗口策略经 OhosNativeBridge tsfn 桥 dispatch 到 ArkTS @ohos.window (无 NDK C 接口);
     // 桥未就绪时记一条降级日志 (兼容 napi 未接入阶段)
     override val window: WindowController = object : WindowController {
+        /**
+         * 沉浸式布局由 ArkTS 宿主在启动时恒开 (内容铺满整个窗口, 避让交 Compose insets),
+         * 与 Android 15+ 强制边到边、iOS 安全区同一模型; 路由策略不再翻转它 ——
+         * 转场期间翻转会让仍在屏上的上一页整页重排 (同 Android 端注释)。
+         */
+        override val appliesPolicyFullscreen: Boolean get() = false
+
         override fun setFullscreen(enabled: Boolean) {
-            // window.setWindowLayoutFullScreen: 布局延伸到状态栏区域 (对照 Android immersive)
-            OhosNativeBridge.setWindowFullScreenLayout(enabled)
+            // 布局模式由宿主启动时统一建立, 此处 no-op; 保留空实现对齐 WindowController 契约
         }
 
         override fun setKeepScreenOn(enabled: Boolean) {
@@ -129,12 +139,37 @@ object OhosPlatformServices : PlatformServices {
         }
 
         override fun setSystemBars(policy: SystemBarsPolicy) {
-            // window.setWindowSystemBarEnable 仅支持整体显隐 (鸿蒙 API 无分栏参数),
-            // 故单栏策略 (HiddenStatusBar / HiddenNavigationBar) 降级为整体隐藏 ——
-            // 与原版"隐藏指定栏"意图一致但会连带另一栏, 属平台 API 限制;
+            // 分栏显隐 (对照 Android WindowInsetsController 分栏 show/hide):
+            // setSpecificSystemBarEnabled 支持 status / navigation / navigationIndicator 单栏控制,
+            // 宿主侧 'navigation' 与 'navigationIndicator' 跟随同一份导航栏可见性。
             // 桥未注册 (EntryAbility 未 registerWindowCallback) 时丢弃命令。
-            val visible = policy == SystemBarsPolicy.Default || policy == SystemBarsPolicy.Visible
-            OhosNativeBridge.setWindowSystemBarEnable(visible)
+            val statusVisible = policy != SystemBarsPolicy.Hidden &&
+                policy != SystemBarsPolicy.Immersive &&
+                policy != SystemBarsPolicy.HiddenStatusBar
+            val navigationVisible = policy != SystemBarsPolicy.Hidden &&
+                policy != SystemBarsPolicy.Immersive &&
+                policy != SystemBarsPolicy.HiddenNavigationBar
+            OhosNativeBridge.setWindowSystemBarEnable(statusVisible, navigationVisible)
+        }
+
+        override fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {
+            if (appearance == null) {
+                // 离开阅读页: 图标内容色交还系统默认 (系统栏底色由系统与窗口决定, 本端不接管)
+                OhosNativeBridge.setWindowSystemBarProperties(DEFAULT_CONTENT_COLORS)
+                return
+            }
+            // 阅读页: 状态栏图标明暗按外观值; 导航栏区域由页面内容铺满 (沉浸式全屏布局),
+            // 按导航栏底色亮度定 (外观未指定底色时回到主题导航栏色)
+            val navigationBarColor = appearance.navigationBarColor
+                ?: SharedThemeStoreProvider().navigationBarColor.toArgb()
+            OhosNativeBridge.setWindowSystemBarProperties(
+                mapOf(
+                    "statusBarContentColor" to
+                        if (appearance.lightStatusBarIcons) ICON_DARK else ICON_LIGHT,
+                    "navigationBarContentColor" to
+                        if (ColorUtils.isColorLight(navigationBarColor)) ICON_DARK else ICON_LIGHT,
+                )
+            )
         }
     }
 
@@ -192,7 +227,8 @@ object OhosPlatformServices : PlatformServices {
         override fun handleLaunchRequest(request: LaunchRequest): Boolean = false
     }
 
-    // 崩溃日志: 只列崩溃现场 (logs/crash/ 下的 crash-*.log, 未捕获异常钩子 + 信号处理器落盘);
+    // 崩溃日志: 只列本应用自己落盘的异常现场 (logs/crash/ 下的 crash-*.log, 未捕获异常钩子与
+    // 系统崩溃事件, 两条都带调用栈)。系统事件的故障日志文件也写进同目录；
     // 运行日志 (logs/appLog-*.txt, recordLog 开启时落盘) 不再混入
     override val crashLogs: CrashLogProvider = object : CrashLogProvider {
         override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> =
@@ -509,3 +545,13 @@ private fun FileFilter.toUtis(): List<String> = when {
         }
     }.distinct().ifEmpty { listOf("public.data") }
 }
+
+/** 系统栏图标内容色: 深色图标 (浅色底色) / 浅色图标 (深色底色) */
+private const val ICON_DARK = "#FF000000"
+private const val ICON_LIGHT = "#FFFFFFFF"
+
+/** 图标内容色交还系统默认 (对照 @ohos.window SystemBarProperties 内容色默认值) */
+private val DEFAULT_CONTENT_COLORS = mapOf(
+    "statusBarContentColor" to "#E5FFFFFF",
+    "navigationBarContentColor" to "#E5FFFFFF",
+)

@@ -1148,13 +1148,6 @@ object OhosNativeBridge {
         dispatchTsfn(synchronized(lock) { windowTsfn }, commandJson, "ohos-window", commandJson)
     }
 
-    /** 切换窗口全屏布局 (对照 @ohos.window setWindowLayoutFullScreen)。 */
-    fun setWindowFullScreenLayout(enabled: Boolean) {
-        sendWindowCommand(
-            KS_JSON.encodeToString(WindowCommand(action = "setFullScreenLayout", enabled = enabled))
-        )
-    }
-
     /** 切换保持屏幕常亮 (对照 @ohos.window setWindowKeepScreenOn)。 */
     fun setWindowKeepScreenOn(enabled: Boolean) {
         sendWindowCommand(
@@ -1174,10 +1167,35 @@ object OhosNativeBridge {
         )
     }
 
-    /** 设置系统栏显隐 (对照 @ohos.window setWindowSystemBarEnable, enabled=true 显示 / false 隐藏)。 */
-    fun setWindowSystemBarEnable(enabled: Boolean) {
+    /**
+     * 设置系统栏显隐 (对照 @ohos.window setSpecificSystemBarEnabled, 分栏控制)。
+     * [statusBar]/[navigationBar] 分别为状态栏与导航栏 (含三键导航栏与手势导航条) 的可见性。
+     */
+    fun setWindowSystemBarEnable(statusBar: Boolean, navigationBar: Boolean) {
         sendWindowCommand(
-            KS_JSON.encodeToString(WindowCommand(action = "setSystemBarEnable", enabled = enabled))
+            KS_JSON.encodeToString(
+                WindowCommand(
+                    action = "setSystemBarEnable",
+                    statusBar = statusBar,
+                    navigationBar = navigationBar,
+                )
+            )
+        )
+    }
+
+    /**
+     * 设置系统栏属性 (对照 @ohos.window setWindowSystemBarProperties)。
+     * [properties] 只放本次要设的字段 (键名同 @ohos.window SystemBarProperties, 如
+     * statusBarContentColor), 未列出的字段保持原值; 未注册 window tsfn 时丢弃。
+     */
+    fun setWindowSystemBarProperties(properties: Map<String, String>) {
+        sendWindowCommand(
+            KS_JSON.encodeToString(
+                WindowCommand(
+                    action = "setSystemBarProperties",
+                    payload = KS_JSON.encodeToString(properties),
+                )
+            )
         )
     }
 
@@ -2067,6 +2085,9 @@ object OhosNativeBridge {
         val enabled: Boolean? = null,
         val orientation: Int? = null,
         val brightness: Float? = null,
+        // 单栏显隐 (setSystemBarEnable): 状态栏/导航栏各自的可见性
+        val statusBar: Boolean? = null,
+        val navigationBar: Boolean? = null,
         // 长文本/结构化命令的内层载荷 (如系统对话框桥的请求 JSON);
         // 与 ArkTS 侧 WindowCommand 的同名字段对应
         val payload: String? = null,

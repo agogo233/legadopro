@@ -77,6 +77,9 @@ object PreferKey {
     const val systemTypefaces = "system_typefaces"
     const val textFullJustify = "textFullJustify"
     const val textBottomJustify = "textBottomJustify"
+
+    /** 段首标点悬挂（CSS Text 4 §8.5.3 第三方案 hanging alignment / clreq 6.3.2 段首缩进条）。 */
+    const val hangFirstPunctuation = "hangFirstPunctuation"
     const val autoReadSpeed = "autoReadSpeed"
     const val barElevation = "barElevation"
     const val defaultCover = "defaultCover"
@@ -132,6 +135,15 @@ object PreferKey {
     const val readAloudWakeLock = "readAloudWakeLock"
     const val showLastUpdateTime = "showLastUpdateTime"
     const val showWaitUpCount = "showWaitUpCount"
+
+    /**
+     * 书源管理列表是否显示行首书源图标 (默认显示)。
+     *
+     * 与其它显示类开关 (showLastUpdateTime / enableReadRecord / hideMangaTitle 等) 同一份
+     * 默认偏好存储: 随配置备份走, 换机恢复后档位保持; 备份忽略清单 (主题/封面等按需忽略项)
+     * 不含本键。
+     */
+    const val showSourceIcon = "showSourceIcon"
     const val clearWebViewData = "clearWebViewData"
     const val onlyLatestBackup = "onlyLatestBackup"
     const val shrinkDatabase = "shrinkDatabase"

@@ -63,6 +63,7 @@
     <string name="progress_bar_behavior">进度条行为</string>
     <string name="text_full_justify">文字两端对齐</string>
     <string name="text_bottom_justify">文字底部对齐</string>
+    <string name="hang_first_punctuation">段首标点悬挂</string>
     <string name="volume_key_page_on_play">朗读时音量键翻页</string>
     <string name="page_touch_slop_title">滑动翻页阈值</string>
     <string name="auto_change_source">自动换源</string>
@@ -78,8 +79,6 @@
     <string name="pause_read_aloud_while_phone_calls_summary">在通话期间暂停朗读，需要读取手机状态权限</string>
     <string name="read_aloud_wake_lock">朗读服务唤醒锁</string>
     <string name="read_aloud_wake_lock_summary">开启朗读的时候启用唤醒锁,有些手机开启唤醒锁会被杀后台</string>
-    <string name="system_media_control_compatibility_change">系统媒体控件兼容性更改</string>
-    <string name="system_media_control_compatibility_change_summary">当锁屏不显示系统媒体控件时可以尝试开启，比如oneui7.0或vivo等</string>
     <string name="pref_media_button_per_next">媒体按钮•上一首|下一首</string>
     <string name="pref_media_button_per_next_summary">上一段|下一段/上一章|下一章</string>
     <string name="read_aloud_by_page">按页朗读</string>
@@ -714,7 +713,6 @@
     <string name="time_format_seconds">%1$d 秒</string>
     <string name="book_source_tutorial">书源教程</string>
     <string name="js_tutorial">JS 教程</string>
-    <string name="regex_tutorial">正则教程</string>
     <string name="debug_search_hint">调试搜索&gt;&gt;输入关键字，如：</string>
     <string name="debug_explore_hint">调试发现&gt;&gt;输入发现URL，如：</string>
     <string name="debug_book_info_hint">调试详情页&gt;&gt;输入详情页URL，如：</string>
@@ -1649,7 +1647,7 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="open_fun">打开方式</string>
     <string name="use_browser_open">是否使用外部浏览器打开？</string>
     <string name="open_sys_dir_picker_error">打开系统文件夹选择器出错，将自动打开应用文件夹选择器</string>
-    <string name="book_storage_help">由于安卓的存储访问限制，阅读需要设置公共目录下的子目录来实现书籍拷贝、下载，例如 Documents/Books、Download/Books。\n如不设置，将无法正常使用本地书籍、webDav 书籍的相关功能。</string>
+    <string name="book_storage_help">由于安卓的存储访问限制，不能选择内部存储根目录、SD 卡根目录和 Download 目录本身（要放在 Download 下请选 Download 内的子目录，例如 Download/Books）。\n其它目录都可以选，包括存储根目录下的子目录（例如 /sdcard/books）。\n不设置书籍保存位置，本地书籍与 webDav 书籍的拷贝、下载将无法使用。</string>
     <string name="select_book_folder">选择保存书籍的文件夹</string>
     <string name="general">全局</string>
     <string name="copy_all">拷贝所有</string>
@@ -1811,4 +1809,10 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="close_to_tray_prompt">是否缩小到托盘？缩小后程序与后台任务继续运行，可从托盘图标重新打开。</string>
     <string name="close_to_tray">缩小到托盘</string>
     <string name="show_main_window">显示主界面</string>
+    <string name="dialog_preview">弹窗预览</string>
+    <string name="dialog_preview_summary">逐个查看全部对话框与弹窗形制（调试用，数据为副本）</string>
+    <string name="dialog_preview_group_alert">确认/提示框</string>
+    <string name="dialog_preview_group_dialog">对话框</string>
+    <string name="dialog_preview_group_sheet">底部弹层</string>
+    <string name="dialog_preview_group_base">基础形制</string>
 </resources>

@@ -40,7 +40,7 @@ enum class AppStringKey {
     toc_updateing,
     error_load_toc,
 
-    // 直链上传 (对照 app 端 DirectLinkUpload.upLoad 的硬编码文案, key 与
+    // 上传相关 (对照原 DirectLinkUpload 上传流程的硬编码文案, key 与
     // composeResources 的 upload_url_not_configured / download_url_rule_not_configured /
     // upload_failed_with_body 一一对应)
     upload_url_not_configured,

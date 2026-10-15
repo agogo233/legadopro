@@ -138,6 +138,7 @@ import io.legado.app.ui.root.encodeSourceVariableOverlayPayload
 import io.legado.app.ui.root.ensureBookSaveDirSelected
 import io.legado.app.ui.root.toReadRoute
 import io.legado.app.ui.root.toRouteRef
+import io.legado.app.ui.widget.dialog.awaitWaitDialogDismissed
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
@@ -1011,6 +1012,10 @@ class AndroidPlatformCapabilities(
                     merged,
                     WebFileImportShared.bookSourceOf(merged),
                 )
+                // 先收加载框、等它确实离开界面, 再交成功回调 (回调里会发起页面跳转): 框与跳转
+                // 落在同一主线程消息时, 合成出的第一帧仍是框还在的画面, 整段转场都会带着它
+                // (原版是 "关框 → 打开页面" 的顺序)
+                awaitWaitDialogDismissed { activity.runOnUiThread { onWaitDialog(false) } }
                 activity.runOnUiThread { success?.invoke(merged) }
             } catch (e: Throwable) {
                 when (e) {
@@ -1039,6 +1044,7 @@ class AndroidPlatformCapabilities(
                 activity.runOnUiThread { onWaitDialog(true) }
                 // 平台无关段 (取源 / 下载保存) 已下沉 WebFileImportShared
                 val path = WebFileImportShared.downloadWebFile(book, webFile)
+                awaitWaitDialogDismissed { activity.runOnUiThread { onWaitDialog(false) } }
                 activity.runOnUiThread { success?.invoke(path) }
             } catch (e: Throwable) {
                 when (e) {
@@ -1089,6 +1095,7 @@ class AndroidPlatformCapabilities(
                     merged,
                     WebFileImportShared.bookSourceOf(merged),
                 )
+                awaitWaitDialogDismissed { activity.runOnUiThread { onWaitDialog(false) } }
                 activity.runOnUiThread { success?.invoke(merged) }
             } catch (e: Throwable) {
                 AppLog.put("importArchiveBook Error\n${e.localizedMessage}", e, true)
@@ -1140,9 +1147,6 @@ class AndroidPlatformCapabilities(
 
     // 对照原版 BaseReadBookActivity 的 isTv（阅读页首启引导的电视机型分支）
     override fun isTelevision(): Boolean = activity.isTv
-
-    // 对照原版 BaseActivity.isInMultiWindow: 多窗口下阅读页不避让状态栏、不进沉浸式布局
-    override val isInMultiWindow: Boolean get() = activity.isInMultiWindow
 
     // ===== 书架管理平台能力: 对照 BookshelfManageActivity 同名方法/状态 =====
 
@@ -1814,9 +1818,14 @@ class AndroidPlatformCapabilities(
      *
      * 只在进入页面时问一次 (对照原版该流程只在 onActivityCreated 执行); 用户此后主动选目录
      * 直接读所选目录, 不再经过本流程。
+     *
+     * 导入目录已设置时也不再弹: 说明框要的是"书籍保存位置", 与导入页所选目录是两个设置,
+     * 用户在主页面选过目录仍会被反复问同一条说明 —— 保存位置留给真正需要它的时刻
+     * (上架 / 导入压缩包) 由书籍保存位置选择器拉起。
      */
     private suspend fun ensureImportStorage() {
         if (!AppConfig.defaultBookTreeUri.isNullOrBlank()) return
+        if (!AppConfig.importBookPath.isNullOrBlank()) return
         val selected = CompletableDeferred<Boolean>()
         activity.alert(
             androidAppString("select_book_folder"),

@@ -19,7 +19,7 @@ import io.legado.app.help.AppVersionProviders
 import io.legado.app.help.versionNameToVersionCode
 import io.legado.app.help.AppWebDavShared
 import io.legado.app.ui.book.info.LocalBlurCoverBgSlot
-import io.legado.app.ui.book.info.SharedBlurCoverBgCoil
+import io.legado.app.ui.book.info.SharedBlurCoverBg
 import io.legado.app.ui.browser.IosWebViewSlot
 import io.legado.app.ui.browser.LocalWebViewSlot
 import io.legado.app.ui.IosPlatformCapabilities
@@ -107,8 +107,8 @@ fun MainViewController(): UIViewController {
         val navigator = remember { AppNavigator(AppRoute.Main()) }
         val screenModelStore = remember { ScreenModelStore() }
 
-        // 系统深色跟随 (themeMode="0"): 使用 Compose 标准 isSystemInDarkTheme() API,
-        // 在系统深浅色切换时触发 LaunchedEffect 回写业务层 NativeSystemTheme 缓存
+        // 系统深浅色变化入口 (themeMode="0" 跟随系统): Compose 侧读到的系统深色值回写业务层,
+        // 由业务层按新的日/夜重算并应用主题色 (初值走同一条链, 见注册期的 NativeSystemTheme.init)
         val isSystemDark = isSystemInDarkTheme()
         LaunchedEffect(isSystemDark) {
             NativeSystemTheme.update(isSystemDark)
@@ -124,7 +124,7 @@ fun MainViewController(): UIViewController {
             },
             // 注入 Coil3 模糊封面背景到 shared 详情页路由, 覆盖 LocalBlurCoverBgSlot 兜底
             LocalBlurCoverBgSlot provides { book, coverTick, inBookshelf, isEInkMode, modifier, land ->
-                SharedBlurCoverBgCoil(book, coverTick, inBookshelf, isEInkMode, modifier, land)
+                SharedBlurCoverBg(book, coverTick, inBookshelf, isEInkMode, modifier, land)
             },
         ) {
             // 字体缩放: 把"界面设置→字体大小"档位接到 LocalDensity (安卓由 AppContextWrapper.wrap
