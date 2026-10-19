@@ -67,7 +67,7 @@ import org.jetbrains.compose.resources.stringResource
  * @param onSelectDefault 默认字体回调（传入空串，对齐 app 端 selectFont("")）
  * @param onDismiss 关闭回调
  * @param widthFraction 对话框宽度占比（透传 AppAlertDialog；桌面端传 0.8f 避免占满）
-* @param topBarTrailing 顶部按钮行尾部槽（各端注入「其它目录」/「选择字体文件」按钮）
+ * @param topBarTrailing 顶部按钮行尾部槽（各端注入「其它目录」/「选择字体文件」按钮）
  * @param extraTopContent 顶部按钮行与列表之间的附加内容槽（桌面端注入扫描失败提示）
  * @param fontPreview 字体行预览槽（桌面端注入 FontFamily(Font(file)) 预览文本）
  */

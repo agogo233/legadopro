@@ -282,7 +282,7 @@ private fun ReadStyleContent(
                 actions.onPostConfig(listOf(ReadConfigChange.STYLE, ReadConfigChange.LOAD_CONTENT))
             },
             onDismiss = { showFontSelect = false },
-// 列表为空且扫描已完成 (未选目录 / 选目录后未扫到字体): 提示经「其它目录」选择字体文件夹
+            // 列表为空且扫描已完成 (未选目录 / 选目录后未扫到字体): 提示经「其它目录」选择字体文件夹
             extraTopContent = if (fontItemsScanned && fontItems.isEmpty()) {
                 {
                     Text(

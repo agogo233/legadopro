@@ -189,7 +189,7 @@ internal fun BookExportFormatDialogContent(overlay: AppOverlay.Dialog, navigator
 /**
  * 导出分发 Overlay (key="exportDispatch") + 导出成功 Overlay (key="exportSuccess")。
  *
-* 对照 app 端 `HandleFileContract.EXPORT → HandleFileDialog`: 导出前弹「保存到文件」,
+ * 对照 app 端 `HandleFileContract.EXPORT → HandleFileDialog`: 导出前弹「保存到文件」,
  * 落盘成功后 `showExportSuccess` (路径编辑 + 确定复制)。桌面端书源/书架导出与规则类导出
  * 经此统一; 安卓书源/书架 3 处仍走原版 HandleFileDialog, 本对话框不改变其行为。
  *
@@ -246,7 +246,7 @@ fun ExportDispatchDialog(
             ) {
                 if (busy) return@AppSelectorList
                 busy = true
-// 保存到文件: 平台自己弹保存入口并写盘 (各端保存目标不同, 写盘归平台实现)。
+                // 保存到文件: 平台自己弹保存入口并写盘 (各端保存目标不同, 写盘归平台实现)。
                 // 用 [Coroutine.async] 而不是 rememberCoroutineScope: 上面已 onDismiss(),
                 // 组合子树随即 dispose, 挂在组合上的 scope 会把「选目标 + 写盘」整段取消
                 // → 文件不落盘、成功框也不弹。async 自带进程级 scope, IO 执行、主线程回调。
@@ -291,7 +291,7 @@ internal fun ExportSuccessDialogContent(overlay: AppOverlay.Dialog, navigator: A
     AppAlertDialog(
         onDismissRequest = { navigator.dismissOverlay(overlay.key) },
         title = stringResource(Res.string.export_success),
-okButton = AlertButton(text = stringResource(Res.string.copy)) {
+        okButton = AlertButton(text = stringResource(Res.string.copy)) {
             PlatformCapabilityProviders.get().copyToClipboard(value)
         },
         cancelButton = AlertButton(text = stringResource(Res.string.cancel)),

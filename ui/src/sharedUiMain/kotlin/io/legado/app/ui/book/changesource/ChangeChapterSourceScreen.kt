@@ -202,7 +202,7 @@ fun ChangeChapterSourceScreen(
                         .weight(1f)
                         .fillMaxWidth(),
                 ) {
-itemsIndexed(state.sources, key = { index, _ -> sourceKeys[index] }) { _, book ->
+                    itemsIndexed(state.sources, key = { index, _ -> sourceKeys[index] }) { _, book ->
                         SearchBookItem(
                             book = book,
                             isCurSource = (state.book == null || book.origin == state.book.origin) && book.bookUrl == state.curBookUrl,

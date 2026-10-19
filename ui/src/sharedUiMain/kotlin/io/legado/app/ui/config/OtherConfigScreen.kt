@@ -203,7 +203,7 @@ fun OtherConfigScreen(
                 summary = summaryAutoRefresh,
                 defaultValue = false,
             )
-// 预测式返回: 只有 Android 有跟手通道; 开关即时生效 (下一页返回就按新规则走)
+            // 预测式返回: 只有 Android 有跟手通道; 开关即时生效 (下一页返回就按新规则走)
             if (showPredictiveBack) {
                 switchPreference(
                     prefKey = PreferKey.predictiveBack,

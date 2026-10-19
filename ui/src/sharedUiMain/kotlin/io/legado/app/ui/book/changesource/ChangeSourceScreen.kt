@@ -764,7 +764,7 @@ fun ChangeSourceScreen(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-itemsIndexed(state.sources, key = { index, _ -> sourceKeys[index] }) { _, searchBook ->
+            itemsIndexed(state.sources, key = { index, _ -> sourceKeys[index] }) { _, searchBook ->
                 // 对照 app 端 Dialog.Content 第 228-242 行 SearchBookItem 完整回调
                 SearchBookItem(
                     book = searchBook,
