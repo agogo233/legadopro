@@ -1,6 +1,7 @@
 package io.legado.app.ui.compose.component
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -51,6 +52,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -153,17 +155,24 @@ val LocalSheetExpandFraction = compositionLocalOf { 0f }
 val LocalSheetTopOverlap = compositionLocalOf { 0.dp }
 
 /**
- * 动画进行中屏蔽本节点子树的指针输入: Initial 阶段消费全部事件。
+ * 动画进行中屏蔽本节点子树的指针输入: Initial 阶段消费"按下/拖动/抬起"这类会触发动作的事件。
  *
  * 对话框/弹层滑入滑出与缩放淡出 (进度 < 1) 期间, 内容里的点击手势收不到未消费的 down
  * (down 被消费 awaitFirstDown 不成立, up 被消费即判手势取消), 动画途中的点击落在
  * 正在离场的旧按钮上不会触发。
+ *
+ * 悬停与滚轮不吃: 内嵌平台视图 (AndroidView / UIKitView) 的输入通道一旦看到"事件已被
+ * Compose 消费"就停止向该视图派发, 而复位只发生在"全部抬手"——悬停与滚轮永不产生抬手,
+ * 被吃一次即永久锁死 (表现为鼠标滚轮必须先点一下网页才能用)。这两类事件不触发动作,
+ * 放行不影响本拦截的目的。
  */
 internal fun Modifier.blockInputWhile(active: Boolean): Modifier = pointerInput(active) {
     if (!active) return@pointerInput
     awaitPointerEventScope {
         while (true) {
-            awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+            awaitPointerEvent(PointerEventPass.Initial).changes.forEach { change ->
+                if (change.pressed || change.changedToUpIgnoreConsumed()) change.consume()
+            }
         }
     }
 }
@@ -593,9 +602,6 @@ fun AppBottomSheetDialog(
     val dialogSpec = remember { PlatformCapabilityProviders.get().dialogTransitionSpec }
     Dialog(onDismissRequest = { dismissing = true }, properties = properties) {
         WithWindowTextMenu {
-            // 底层压暗走窗口/对话框层 (与居中对话框同一套): Android 补 0.6, skiko 三端用对话框
-            // 自带的 0.6 蒙层; E-Ink 分支在上方不补 (对齐原版 E-Ink 清 dim)
-            PlatformDialogDim()
             val progress = remember { Animatable(0f) }
             // 拖拽位移 (px): 双向 —— 负 = 上推 (面板高度放大, 见 heightPx), 正 = 下拉
             // (面板整体下移, translationY 相加; 触发关闭时退出动画从当前位置继续下滑,
@@ -604,6 +610,8 @@ fun AppBottomSheetDialog(
             // 指针手势进行中标记 (按下到全部抬起): 无 pointer down 的滚动输入 (滚轮/触控板平移)
             // 的位移只滚列表, 不改变面板高度 (它们不是"拖面板"的手势)
             val touchGesture = remember { mutableStateOf(false) }
+            // 本次手势是否拖拽/展开过面板: 两条手势路径共享, 每次按下时复位
+            val panelDraggedInGesture = remember { mutableStateOf(false) }
             // 默认锚点高 (px): 面板未展开时的实测高度 (内容 wrap 封顶 0.8 锚点高的自然高),
             // 由 onSizeChanged 在 dragOffset == 0 时同步; 展开拖拽期间保持初值作"缩回目标",
             // 回弹到默认锚点后恢复跟随 (桌面窗口 resize 时默认锚点自动更新)
@@ -629,8 +637,8 @@ fun AppBottomSheetDialog(
             // 关闭位移阈值 max(120dp, 面板高/4); 快速下拉 fling 速度阈值 800dp/s
             val minDismissDistancePx = with(density) { 120.dp.toPx() }
             val flingDismissVelocityPx = with(density) { 800.dp.toPx() }
-            // 上推展开 fling 速度阈值: 与下拉关闭同速反向 (快速上推直接吸附全屏)
-            val flingExpandVelocityPx = with(density) { 800.dp.toPx() }
+            // 上推展开 fling 速度阈值: 中低速轻拂直接吸附全屏
+            val flingExpandVelocityPx = with(density) { 450.dp.toPx() }
             // 展开上限 (px) = 锚点整窗高: 拉到底即面板顶到窗口顶 (底色铺到状态栏/控制条之下),
             // 顶部装饰带的避让由面板容器按实际进入量施加 (见 [LocalSheetTopOverlap])。
             // 手势闭包经 [fullAnchorState] 读最新值 (桌面窗口 resize / 状态栏显隐时跟随)
@@ -659,8 +667,18 @@ fun AppBottomSheetDialog(
                 val distance = expandDistance()
                 if (distance <= 0f) 0f else (-dragOffset / distance).coerceIn(0f, 1f)
             }
-            // 面板顶已进入装饰带的量 = 正文下移量 (面板铺到窗口顶时等于整条装饰带高)
-            val topOverlapPx = (topBandPx - (fullAnchorPx - sheetHeightPx)).coerceAtLeast(0)
+            // 拖拽态面板高 (px): 与传给骨架的高度同源同式。面板顶下移量与正文下移量必须
+            // 同源相消, 换成上一帧实测高就与同帧的位移高差一帧 —— 每帧正文相对面板多偏
+            // 一段等于该帧手指位移的距离 (全屏态轻微下拉时正文抖动)
+            val dragHeightPx = if (dragOffset != 0f) {
+                (defaultAnchorPx - dragOffset.coerceAtMost(0f)).roundToInt()
+            } else {
+                null
+            }
+            // 面板顶已进入装饰带的量 = 正文下移量 (面板铺到窗口顶时等于整条装饰带高):
+            // 静止态取实测高, 拖拽态取同帧位移高
+            val topOverlapPx =
+                (topBandPx - (fullAnchorPx - (dragHeightPx ?: sheetHeightPx))).coerceAtLeast(0)
             // 回弹/吸附动画: 从当前位移续播到目标锚点 (新拖拽开始时由 drag 路径取消 bounceJob)
             val animateDragTo: (Float) -> Unit = { target ->
                 bounceJob?.cancel()
@@ -668,15 +686,14 @@ fun AppBottomSheetDialog(
                     animate(
                         initialValue = dragOffset,
                         targetValue = target,
-                        animationSpec = spring(),
+                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                     ) { value, _ -> dragOffset = value }
                 }
             }
             // 松手/停止滚动后的归位判定 (pointer 拖拽路径与 nestedScroll 路径共用):
             // 拖拽位移现为双向 —— 负 = 上推 (面板高度放大), 正 = 下拉 (关闭方向)。
-            // 锚点吸附: 上推过半/快速上推 → 吸附视觉全屏; 下拉达阈值/快速下拉 (且已
-            // 越过默认锚点) → 走现有滑出动画关闭; 其余 → 弹簧回弹默认锚点。
-            // 全屏态下拉回弹到 0 = 缩回默认高度, 再下拉才关 (先缩回再关闭)
+            // 锚点吸附: 向上轻拂/慢推过半 → 吸附全屏; 展开态向下轻拂/下拉过半 → 缩回半屏;
+            // 越过半屏下拉达阈值/快速下拉 → 走滑出动画关闭; 其余 → 弹簧回弹默认锚点。
             val settleDrag: (Float) -> Unit = { velocityY ->
                 if (!dismissing) {
                     val dismissDistancePx = maxOf(minDismissDistancePx, sheetHeightPx * 0.25f)
@@ -687,7 +704,8 @@ fun AppBottomSheetDialog(
                             dismissing = true
 
                         velocityY <= -flingExpandVelocityPx -> animateDragTo(-expandDistancePx)
-                        dragOffset <= -expandDistancePx / 2f -> animateDragTo(-expandDistancePx)
+                        velocityY >= flingExpandVelocityPx && dragOffset < 0f -> animateDragTo(0f)
+                        dragOffset <= -expandDistancePx * 0.5f -> animateDragTo(-expandDistancePx)
                         dragOffset != 0f -> animateDragTo(0f)
                     }
                 }
@@ -701,12 +719,12 @@ fun AppBottomSheetDialog(
             val nestedScrollConnection = remember {
                 object : NestedScrollConnection {
                     /**
-                     * 当前静止锚点 (吸附目标, 判定与 settleDrag 同源): 已展开过半 =
-                     * 视觉全屏锚点 (负值), 否则默认锚点 0。
+                     * 当前静止锚点 (吸附目标, 判定与 settleDrag 同源): 展开超 50% 取
+                     * 视觉全屏锚点 (负值), 否则取默认锚点 0。
                      */
                     private fun restAnchor(): Float {
                         val expandDistancePx = expandDistance()
-                        return if (dragOffset <= -expandDistancePx / 2f) -expandDistancePx else 0f
+                        return if (dragOffset <= -expandDistancePx * 0.5f) -expandDistancePx else 0f
                     }
 
                     /**
@@ -717,13 +735,9 @@ fun AppBottomSheetDialog(
                     private var flingClaimed = false
 
                     override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                        // 向上位移 (available.y 负) 一律先由面板消费: 先把下拉偏离的面板拉回
-                        // 静止锚点, 继续向上则一路展开到视觉全屏, 到顶后余量放行给列表
-                        // (对照 M3 同名连接 onPreScroll 的向上位移在 pre 阶段展开; 少了这步,
-                        // 列表区内的上滑全归列表, 半屏面板再也顶不到全屏)
+                        // 向上位移 (available.y 负) 一律先由面板消费: 展开途中全额吸收,
+                        // 触顶当帧消化余量阻断泄露; 面板已在全屏时完全放行给列表
                         if (!touchGesture.value) {
-                            // 无指针按下的滚动输入 (滚轮/触控板平移), 或列表自身 fling/程序化滚动:
-                            // 面板不参与
                             return Offset.Zero
                         }
                         if (
@@ -736,19 +750,14 @@ fun AppBottomSheetDialog(
                         }
                         val expandDistancePx = expandDistance()
                         if (dragOffset <= -expandDistancePx) return Offset.Zero
+                        panelDraggedInGesture.value = true
                         // 新手势的位移开始: 撤销上一次 fling 的认领
                         flingClaimed = false
                         bounceJob?.cancel()
                         bounceJob = null
-                        val target =
-                            (dragOffset + available.y * DragResistance)
-                                .coerceAtLeast(-expandDistancePx)
-                        // 本连接吃掉的手指位移 = 面板位移变化量 / 阻力系数 (与累积同一换算);
-                        // coerceAtLeast 夹住乘除往返的浮点误差, 保证不消费超过 available
-                        val usedY = ((target - dragOffset) / DragResistance)
-                            .coerceAtLeast(available.y)
-                        dragOffset = target
-                        return Offset(0f, usedY)
+                        dragOffset = (dragOffset + available.y).coerceAtLeast(-expandDistancePx)
+                        // 展开途中 (含触顶当帧) 全额消费向上位移, 阻断余量流入列表
+                        return Offset(0f, available.y)
                     }
 
                     override fun onPostScroll(
@@ -777,24 +786,53 @@ fun AppBottomSheetDialog(
                         // 新的拖拽开始: 取消回弹动画, 从当前位移继续
                         bounceJob?.cancel()
                         bounceJob = null
-                        // 只向正方向累积, 无需再夹展开下限 (展开态起步时先缩回到 0 再下移)
-                        dragOffset += available.y * DragResistance
-                        return Offset.Zero
+                        val previousOffset = dragOffset
+                        // 全屏态缩回半屏区间 (dragOffset < 0): 完全跟手;
+                        // 越过半屏进入下拉关闭区间 (dragOffset >= 0): 施加 DragResistance 防误关
+                        val step = if (dragOffset < 0f) {
+                            val remainingToZero = -dragOffset
+                            if (available.y <= remainingToZero) {
+                                available.y
+                            } else {
+                                remainingToZero + (available.y - remainingToZero) * DragResistance
+                            }
+                        } else {
+                            available.y * DragResistance
+                        }
+                        dragOffset += step
+                        val usedY = if (previousOffset < 0f) {
+                            val remainingToZero = -previousOffset
+                            if (step <= remainingToZero) {
+                                step
+                            } else {
+                                remainingToZero + (step - remainingToZero) / DragResistance
+                            }
+                        } else {
+                            (step / DragResistance).coerceAtMost(available.y)
+                        }
+                        return Offset(0f, usedY)
                     }
 
                     override suspend fun onPreFling(available: Velocity): Velocity {
-                        // 向上 fling: 面板未到展开上限时按输入速度吸附 (对照 M3 同名连接:
-                        // 快速上滑直接吸附全屏并整份消费速度), 面板吃满位移后列表不再被
-                        // 同一份惯性带走; 向下 fling 不认 (滚到顶的惯性不关面板), 到顶后
-                        // 放行给列表自己 fling。
-                        // 面板停在静止锚点 = 没有需要吸附的位移 (无指针按下的滚动输入不推动面板,
-                        // 面板已到顶同理): 不认这份速度, 交还列表自己 fling
-                        if (!dragEnabled.value || dismissing || available.y >= 0f) {
+                        // 向上 fling (available.y < 0): 推动展开的手势全额吸收惯性用于吸附全屏,
+                        // 阻断余量砸向列表; 全屏列表纯滚动时放行给列表自由 fling。
+                        if (!dragEnabled.value || dismissing) {
                             return Velocity.Zero
                         }
-                        if (abs(dragOffset - restAnchor()) < 0.5f) return Velocity.Zero
+                        // 列表自身的滚动惯性不改变面板锚点: 向下 fling 一律放行,
+                        // 面板缩回/关闭只按手指拖拽累积的位移判定 (见 onPostFling)
+                        if (available.y > 0f) return Velocity.Zero
+                        // 面板已到全屏时列表可自由 fling; 只有本次手势拖拽过面板且它还有展开余量,
+                        // 才由面板吸收向上惯性完成吸附
+                        if (panelDraggedInGesture.value && dragOffset > -expandDistance() + 0.5f) {
+                            settleDrag(available.y)
+                            flingClaimed = true
+                            return available
+                        }
+                        val anchor = restAnchor()
+                        if (abs(dragOffset - anchor) < 0.5f) return Velocity.Zero
                         settleDrag(available.y)
-                        // 认领本次 fling: 吸附已交给 settleDrag, onPostFling 不得再按残留位移判定
+                        // 认领本次 fling: 吸附已交给 settleDrag, onPostFling 不再按残留位移判定
                         flingClaimed = true
                         return available
                     }
@@ -875,9 +913,7 @@ fun AppBottomSheetDialog(
                 // 拖拽中面板高度改由状态驱动: 上推变高 (dragOffset 负), 下拉保持默认
                 // 锚点高并整体下移 (dragOffset 正); 回到默认锚点 (dragOffset == 0) 恢复
                 // wrap 布局, 高度连续无跳变
-                heightPx = if (dragOffset != 0f) {
-                    (defaultAnchorPx - dragOffset.coerceAtMost(0f)).roundToInt()
-                } else null,
+                heightPx = dragHeightPx,
                 modifier = Modifier
                     .onSizeChanged {
                         sheetHeightPx = it.height
@@ -905,6 +941,7 @@ fun AppBottomSheetDialog(
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
                             touchGesture.value = true
+                            panelDraggedInGesture.value = false
                             try {
                                 // 等所有指针抬起 (不消费事件, 只跟踪)
                                 var event = awaitPointerEvent(PointerEventPass.Final)
@@ -944,17 +981,28 @@ fun AppBottomSheetDialog(
                                 dragExclusion.contains(it.localToWindow(down.position))
                             } == true
                             if (!dragEnabled.value || downInExclusion) return@awaitEachGesture
-                            var overSlop = 0f
                             val dragChange =
-                                awaitVerticalTouchSlopOrCancellation(down.id) { change, over ->
+                                awaitVerticalTouchSlopOrCancellation(down.id) { change, _ ->
                                     change.consume()
-                                    overSlop = over
                                 } ?: return@awaitEachGesture
+                            // 手指真正开始拖拽才接管归位动画: 纯点击/轻触不打断进行中的吸附动画
                             bounceJob?.cancel()
                             bounceJob = null
-                            // 首段位移含越过 slop 的 overshoot, 与后续 delta 连续;
-                            // 下限夹紧在视觉全屏展开量 (上推越位不越界)
-                            dragOffset = (dragOffset + overSlop * DragResistance)
+                            // 补偿包含防误触门槛在内的全额位移, 消除起步脱节与滞后感
+                            val initialDelta = dragChange.position.y - down.position.y
+                            val initialStep = if (initialDelta < 0f) {
+                                initialDelta
+                            } else if (dragOffset < 0f) {
+                                val remainingToZero = -dragOffset
+                                if (initialDelta <= remainingToZero) {
+                                    initialDelta
+                                } else {
+                                    remainingToZero + (initialDelta - remainingToZero) * DragResistance
+                                }
+                            } else {
+                                initialDelta * DragResistance
+                            }
+                            dragOffset = (dragOffset + initialStep)
                                 .coerceAtLeast(-expandDistance())
                             val velocityTracker = VelocityTracker()
                             velocityTracker.addPosition(down.uptimeMillis, down.position)
@@ -963,10 +1011,20 @@ fun AppBottomSheetDialog(
                                 val deltaY = change.positionChange().y
                                 change.consume()
                                 velocityTracker.addPosition(change.uptimeMillis, change.position)
-                                // 双向: 向下 (deltaY 正) → 位移正向累积 (下拉/关闭方向);
-                                // 向上 (deltaY 负) → 位移负向累积 → 面板高度放大,
-                                // 到视觉全屏后夹紧不越位
-                                dragOffset = (dragOffset + deltaY * DragResistance)
+                                // 双向: 上推完全跟手; 下拉在展开态完全跟手, 越过半屏关闭方向施加阻力
+                                val step = if (deltaY < 0f) {
+                                    deltaY
+                                } else if (dragOffset < 0f) {
+                                    val remainingToZero = -dragOffset
+                                    if (deltaY <= remainingToZero) {
+                                        deltaY
+                                    } else {
+                                        remainingToZero + (deltaY - remainingToZero) * DragResistance
+                                    }
+                                } else {
+                                    deltaY * DragResistance
+                                }
+                                dragOffset = (dragOffset + step)
                                     .coerceAtLeast(-expandDistance())
                             }
                             settleDrag(velocityTracker.calculateVelocity().y)
@@ -978,6 +1036,11 @@ fun AppBottomSheetDialog(
                     LocalSheetDismissRequest provides requestDismiss,
                 ) { content() }
             }
+            // 底层压暗走窗口/对话框层 (与居中对话框同一套): Android 补 0.6, skiko 三端用对话框
+            // 自带的 0.6 蒙层; E-Ink 分支在上方不补 (对齐原版 E-Ink 清 dim)。
+            // 必须排在骨架之后: 骨架里的贴边窗口样式先清掉主题自带暗化, 再由这里统一补 0.6,
+            // 顺序颠倒会把补上的 0.6 又清成 0
+            PlatformDialogDim()
         }
     }
 }
@@ -1039,7 +1102,8 @@ private fun BottomSheetScaffold(
     content: @Composable () -> Unit,
 ) {
     // 贴边窗口: 系统栏透明 + 清掉主题自带暗化 (面板底色才能铺到窗口顶; 暗度改由
-    // [PlatformDialogDim] 统一补 0.6)
+    // [PlatformDialogDim] 统一补 0.6 —— 那一次调用必须排在本骨架之后, 否则清在补后,
+    // 补上的 0.6 会被清成 0)
     PlatformSheetWindowStyle()
     // 系统栏图标明暗: 面板顶进入状态栏区域后状态栏那一条由面板底色接管, 按底色亮度定;
     // 导航栏那一条面板恒铺满 (面板贴底, 避让加在底色之内), 恒按底色亮度定
@@ -1088,7 +1152,6 @@ private fun BottomSheetScaffold(
 }
 
 /**
- * 面板拖拽手势: 手指位移 → 面板位移/高度的阻力系数 (0.5~0.7 区间, 更接近原生
- * BottomSheet 手感; 下拉关闭与上推展开共用)。
+ * 面板拖拽手势: 下拉关闭位移阻力系数 (0.5~0.7 区间, 贴合原生手感与防误关安全门槛)。
  */
 private const val DragResistance = 0.6f

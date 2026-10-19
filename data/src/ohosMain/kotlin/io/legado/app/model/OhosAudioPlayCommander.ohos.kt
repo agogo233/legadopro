@@ -18,12 +18,14 @@ import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.audio.AudioPlayAnalyzeRuleFactory
 import io.legado.app.model.audio.AudioPlayController
 import io.legado.app.model.audio.AudioPlayControllerListener
+import io.legado.app.model.audio.AudioEnergyMeter
 import io.legado.app.model.audio.AudioPlaySession
 import io.legado.app.model.audio.LyricPublisher
 import io.legado.app.model.audio.NowPlayingSessionHost
 import io.legado.app.napi.OhosNativeBridge
 import io.legado.app.utils.File
 import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.canonicalizeUri
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CancellationException
@@ -34,6 +36,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 
@@ -175,7 +179,7 @@ class OhosAudioPlayCommander : NowPlayingSessionHost() {
             } catch (e: Exception) {
                 AppLog.put("播放出错\n${e.message}", e)
                 toast("$mediaUrl ${e.message}")
-                session.endSession()
+                session.abortPlayback()
             }
         }
     }
@@ -187,6 +191,11 @@ class OhosAudioPlayCommander : NowPlayingSessionHost() {
         avController.release()
         deleteCacheFile()
         clearStreamingState()
+        SystemMediaControl.releaseAudio()
+    }
+
+    /** 起播失败: 释放这次起播占用的系统音频会话; 鸿蒙没有可停的宿主 (缓存等会话级资源不在此撤)。 */
+    override fun onHostStopRequest() {
         SystemMediaControl.releaseAudio()
     }
 
@@ -298,6 +307,13 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
     /** 已缓存时长 ms (ArkTS onCachedDuration 推送 = AVPlayer CACHED_DURATION 档) */
     @Volatile private var cachedBufferedMs = 0L
 
+    /**
+     * 音频能量: AVPlayer 定时上报的整体最大电平 (鸿蒙没有分频, 两段取同一值),
+     * 归一到 0~1 驱动值后供歌词辉光呼吸。电平是比值运算, 上报值的整体缩放不影响结果。
+     */
+    private val energyMeter = AudioEnergyMeter()
+    private var energyMark: TimeMark? = null
+
     @Volatile private var speed = 1f
 
     /** prepare 就绪后再应用的起播位置 (对应 app 端 setMediaItem 后的 seekTo(position)) */
@@ -401,7 +417,7 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
                 sendCommand(
                     MediaCommand(
                         action = "setSourceUrl",
-                        url = url,
+                        url = url.canonicalizeUri(),
                         headers = sourceHeaders.takeIf { it.isNotEmpty() },
                     )
                 )
@@ -463,6 +479,9 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
         cachedPosition = 0L
         bufferedPercent = 0
         cachedBufferedMs = 0L
+        energyMark = null
+        energyMeter.reset()
+        AudioPlayShared.audioEnergy.value = 0f
         state = AudioPlayController.STATE_IDLE
     }
 
@@ -507,6 +526,8 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
 
             "onCachedDuration" -> event.cachedDuration?.let { cachedBufferedMs = it }
 
+            "onAmplitude" -> event.amplitude?.let { onAmplitude(it) }
+
             "onPlaying" -> {
                 playing = true
             }
@@ -548,11 +569,36 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
         val duration: Long? = null,
         val cachedDuration: Long? = null,
         val position: Long? = null,
+        /** 仅 onAmplitude: AVPlayer 上报的各声道最大电平值 */
+        val amplitude: List<Double>? = null,
     )
+
+    /**
+     * 推送一次能量: 取最大声道电平推进自归一化驱动。
+     * 上报间隔由系统决定, 时间差按上报时刻实际间隔算 (与派发节奏解耦)。
+     */
+    private fun onAmplitude(values: List<Double>) {
+        val level = values.maxOrNull() ?: return
+        val dtMs = energyMark?.elapsedNow()?.inWholeMilliseconds?.toDouble()
+            ?: AMPLITUDE_DEFAULT_DT_MS
+        energyMark = TimeSource.Monotonic.markNow()
+        // 鸿蒙只给整体电平（线性幅度, 量纲待实机确认）: 换算成分贝后进统一响度模型
+        val linear = level.coerceAtLeast(0.0)
+        AudioPlayShared.audioEnergy.value = energyMeter.pushLevel(
+            dtMs.coerceIn(1.0, AMPLITUDE_MAX_DT_MS),
+            AudioEnergyMeter.linearToDb(linear),
+        )
+    }
 
     private companion object {
         /** 装载 await 兑底超时: 桥既不回 onReady 也不回 onError 时不能永久占住会话的起播 job */
         private const val PREPARE_TIMEOUT_MS = 30_000L
+
+        /** 首个能量上报的时间间隔 (ms): 没有上一次上报时刻时按它估 */
+        private const val AMPLITUDE_DEFAULT_DT_MS = 100.0
+
+        /** 能量上报的最大时间间隔 (ms): 上报稀疏时不让平滑系数算出异常值 */
+        private const val AMPLITUDE_MAX_DT_MS = 500.0
     }
 }
 

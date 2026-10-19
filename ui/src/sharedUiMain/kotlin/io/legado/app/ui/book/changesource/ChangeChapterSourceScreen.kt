@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
+import io.legado.app.ui.compose.component.occurrenceKeys
 import kotlinx.coroutines.launch
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.all_source
@@ -126,6 +127,10 @@ fun ChangeChapterSourceScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
+    // 同一书源可能把同一本书返回两次, 键按内容+出现序号: 只按内容作键会撞键闪退
+    val sourceKeys = remember(state.sources) {
+        occurrenceKeys(state.sources) { "${it.origin}|${it.bookUrl}" }
+    }
 
     // 对照 AdapterDataObserver：首条变化(插入/移动到 0)回滚到顶
     LaunchedEffect(state.sources.firstOrNull()?.let { "${it.origin}|${it.bookUrl}" }) {
@@ -197,10 +202,7 @@ fun ChangeChapterSourceScreen(
                         .weight(1f)
                         .fillMaxWidth(),
                 ) {
-                    // key 用 origin|bookUrl: 上游已按 bookUrl 去重, 拼 origin 是防御性兜底,
-                    // 避免漏网的同 bookUrl 不同源条目触发 LazyColumn 重复 key 崩溃
-                    // (分隔符与 SearchScreen 的 "${origin}|${bookUrl}" 保持一致)
-                    items(state.sources, key = { "${it.origin}|${it.bookUrl}" }) { book ->
+itemsIndexed(state.sources, key = { index, _ -> sourceKeys[index] }) { _, book ->
                         SearchBookItem(
                             book = book,
                             isCurSource = (state.book == null || book.origin == state.book.origin) && book.bookUrl == state.curBookUrl,

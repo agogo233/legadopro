@@ -231,6 +231,8 @@ interface MediaEventPayload {
   /** 仅 onVideoSizeChange: 视频解码分辨率 (px), 供画面缩放算平移边界 */
   width?: number;
   height?: number;
+  /** 仅 onAmplitude: AVPlayer 上报的各声道最大电平值 (供歌词辉光呼吸) */
+  amplitude?: Array<number>;
 }
 
 /** 尺寸 (px)。 */
@@ -518,13 +520,19 @@ function handlePause(id: string): void {
 // ===== stop =====
 function handleStop(id: string): void {
   const player = playerOf(id);
-  if (player != null) {
-    player.stop().catch((err: Error) => {
-      emitEvent(id, { event: 'onError', message: 'stop failed: ' + (err.message ?? String(err)) });
-    });
-  } else {
+  if (player == null) {
     console.warn('[MediaBridge] stop: avPlayer is null, id=' + id);
+    return;
   }
+  // stop 只在 prepared/playing/paused/completed 合法 (官方接口约束), 其余状态调用会以
+  // 5400102 被当播放错误上报; 已停止/未装载时停止本就是幂等空操作, 直接跳过
+  const state = player.state;
+  if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
+    return;
+  }
+  player.stop().catch((err: Error) => {
+    emitEvent(id, { event: 'onError', message: 'stop failed: ' + (err.message ?? String(err)) });
+  });
 }
 
 // ===== seekTo =====
@@ -771,6 +779,18 @@ function registerPlayerEvents(id: string, player: media.AVPlayer): void {
       const payload: AudioFocusChangeEvent = { type: 'audioFocusChange', change: change };
       emitPlatformEvent(payload);
     });
+  }
+
+  // 音频最大电平值定时上报 (API 13+) → 发 onAmplitude, Kotlin 侧据此驱动歌词辉光
+  // 只有音频书实例消费该事件; 低版本系统没有该事件, 订阅会抛错, 记一次日志即放弃 (不影响发声)
+  if (id === PLAYER_ID_AUDIO_BOOK) {
+    try {
+      player.on('amplitudeUpdate', (value: Array<number>) => {
+        emitEvent(id, { event: 'onAmplitude', amplitude: value });
+      });
+    } catch (e) {
+      console.warn('[MediaBridge] amplitudeUpdate 订阅失败(系统版本过低): ' + JSON.stringify(e));
+    }
   }
 
   // 状态变化 → 转换为 Kotlin 侧事件

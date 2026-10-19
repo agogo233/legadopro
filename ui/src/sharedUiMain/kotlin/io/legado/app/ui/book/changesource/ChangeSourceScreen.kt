@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.CircularProgressIndicator
@@ -56,6 +55,7 @@ import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
 import io.legado.app.ui.compose.component.OverflowMenu
+import io.legado.app.ui.compose.component.occurrenceKeys
 import io.legado.app.ui.compose.platform.rememberColor
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.platform.rememberString
@@ -685,6 +685,10 @@ fun ChangeSourceScreen(
     var screenKey by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // 同一书源可能把同一本书返回两次, 键按内容+出现序号: 只按内容作键会撞键闪退
+    val sourceKeys = remember(state.sources) {
+        occurrenceKeys(state.sources) { "${it.origin}|${it.bookUrl}" }
+    }
 
     Column(Modifier.fillMaxSize()) {
         ChangeSourceTitleBar(
@@ -760,10 +764,7 @@ fun ChangeSourceScreen(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            // key 用 origin|bookUrl: 上游已按 bookUrl 去重, 这里再拼 origin 是防御性兜底,
-            // 避免任何漏网的同 bookUrl 不同源条目触发 LazyColumn 重复 key 崩溃
-            // (分隔符与 SearchScreen 的 "${origin}|${bookUrl}" 保持一致)
-            items(state.sources, key = { "${it.origin}|${it.bookUrl}" }) { searchBook ->
+itemsIndexed(state.sources, key = { index, _ -> sourceKeys[index] }) { _, searchBook ->
                 // 对照 app 端 Dialog.Content 第 228-242 行 SearchBookItem 完整回调
                 SearchBookItem(
                     book = searchBook,

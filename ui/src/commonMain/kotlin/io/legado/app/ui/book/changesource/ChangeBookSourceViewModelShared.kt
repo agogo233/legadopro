@@ -287,7 +287,7 @@ class ChangeBookSourceViewModelShared(
             searchBooks.sortedWith(comparator)
         }.onFailure {
             AppLog.put("换源排序出错\n${it.message}", it)
-        }.getOrDefault(searchBooks).distinctBy { it.bookUrl }
+}.getOrElse { searchBooks.toList() }.distinctBy { it.bookUrl }
     }.flowOn(IoDispatcher)
 
     /**

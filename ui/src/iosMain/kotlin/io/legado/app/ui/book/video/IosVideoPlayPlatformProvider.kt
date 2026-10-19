@@ -24,6 +24,7 @@ import io.legado.app.ui.IosStatusBarHiddenNotification
 import io.legado.app.ui.appSupportedOrientationMask
 import io.legado.app.ui.landscapeMask
 import io.legado.app.ui.requestSceneOrientation
+import io.legado.app.utils.canonicalizeUri
 import io.legado.app.utils.hasPlayableScheme
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -289,8 +290,8 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
      * `UiState.isSystemFullScreen`, 页面按全屏重排而系统栏纹丝不动,
      * 观感上就是"进得去、画面没变、退不出去"。
      *
-     * 退全屏入口: iOS 无系统返回通道 (PlatformCapabilities.supportsSystemBack=false),
-     * 共享层据此在全屏期间常驻一个退出钮 (不随控制栏自动隐藏而消失),
+     * 退全屏入口: iOS 的边缘返回手势在播放器全屏内不可靠 (播放器自身吃横向拖动), 共享层按
+     * `supportsSystemBack=false` 在全屏期间常驻一个退出钮 (不随控制栏自动隐藏而消失),
      * 与本方法搭成完整闭环: 系统栏真的隐了, 也真的退得回来。
      */
     override fun applySystemFullScreen(enabled: Boolean) {
@@ -392,7 +393,7 @@ class IosVideoPlayerController(
         // 先卸上一件媒体 (保留 AVPlayer 本体: 渲染面绑的是实例引用, 换源不换实例可避开
         // 「新 player 已建但 avpvc 仍指旧实例」的黑屏窗口; 真的换实例只有首装与 release 两条路)
         unloadMedia()
-        val nsUrl = NSURL.URLWithString(url) ?: run {
+        val nsUrl = NSURL.URLWithString(url.canonicalizeUri()) ?: run {
             handlePlayError("视频地址不可用")
             return
         }
