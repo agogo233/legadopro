@@ -40,13 +40,6 @@ enum class AppStringKey {
     toc_updateing,
     error_load_toc,
 
-    // 上传相关 (对照原 DirectLinkUpload 上传流程的硬编码文案, key 与
-    // composeResources 的 upload_url_not_configured / download_url_rule_not_configured /
-    // upload_failed_with_body 一一对应)
-    upload_url_not_configured,
-    download_url_rule_not_configured,
-    upload_failed_with_body,
-
     // 直链上传打包单条目 zip 失败 (iOS/鸿蒙 NativeZipCodec): JVM/Android 端同一环节是
     // ZipUtils 抛 IOException, 文案由 JDK 给出, 不在此列
     upload_compress_failed_with_name,

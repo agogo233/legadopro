@@ -103,9 +103,6 @@ internal suspend fun buildOverlayEntries(): List<DialogPreviewEntry.Overlay> {
             webView = AppRoute.WebView(url = PREVIEW_WEB_URL, title = "半屏浏览器"),
         )
     }
-    dialog("direct_link_upload_config", nameText("直链上传配置"), "direct_link_upload_config") {
-        AppOverlay.Dialog(it)
-    }
     dialog("keyboard_assists", titleOf(Res.string.assists_key_config), "keyboardAssistsConfig") { AppOverlay.Dialog(it) }
     dialog("default_cover_gallery_day", titleOf(Res.string.default_cover), "default_cover_gallery") {
         AppOverlay.Dialog(it, payload = "0")
