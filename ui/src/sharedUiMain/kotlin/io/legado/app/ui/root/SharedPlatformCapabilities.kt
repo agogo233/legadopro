@@ -441,6 +441,22 @@ interface SharedPlatformCapabilities : PlatformCapabilities {
         AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("bottom_nav_config"))
     }
 
+    // ===== 其它设置: 书源校验设置 =====
+
+    /**
+     * 校验设置 Overlay (key="check_source_config") 由 shared OverlayContentHost 接管,
+     * dismiss 后回调 onDismiss (对照 app 端 CheckSourceConfig Fragment 的 dismiss 回调)。
+     * 对照 AndroidPlatformCapabilities 的实现, 三端共用同一套 showOverlay + 监听移除模式。
+     */
+    override fun showCheckSourceConfigDialog(onDismiss: () -> Unit) {
+        val navigator = AppNavigatorProviders.get()
+        navigator.showOverlay(AppOverlay.Dialog("check_source_config"))
+        capabilityScope.launch {
+            navigator.overlays.first { it.none { o -> o.key == "check_source_config" } }
+            withContext(mainDispatcher) { onDismiss() }
+        }
+    }
+
     // ===== 换封面源 =====
 
     /**
