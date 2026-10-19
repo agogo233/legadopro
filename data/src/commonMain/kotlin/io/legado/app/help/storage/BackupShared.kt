@@ -20,7 +20,6 @@ import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.book.bookSaveSubDir
 import io.legado.app.help.book.effectiveBookSaveDir
 import io.legado.app.help.book.requireBookSaveDir
-import io.legado.app.help.ruleFileName
 import io.legado.app.help.storage.BackupShared.backupLocked
 import io.legado.app.help.storage.BackupShared.backupPath
 import io.legado.app.help.storage.BackupShared.mutex
