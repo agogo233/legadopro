@@ -19,13 +19,14 @@ import kotlinx.coroutines.flow.asStateFlow
  * @param appVersion       版本号原文 (条目点击复制的内容; 取不到版本号时为空串)
  * @param contributorsUrl   贡献者页面 URL (平台各异: Android 读 R.string, 桌面端硬编码)
  * @param telegramGroupUrl  Telegram 群链接 (平台各异)
+ * @param showCreateHeapDump 是否显示"创建堆转储"入口 (无 JVM 堆的平台隐藏)
  */
 data class AboutUiState(
     val versionSummary: String = "",
     val appVersion: String = "",
     val contributorsUrl: String = "",
     val telegramGroupUrl: String = "",
-    val showCreateHeapDump: Boolean = false,
+    val showCreateHeapDump: Boolean = true,
 )
 
 /**
