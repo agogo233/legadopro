@@ -193,6 +193,7 @@ fun OtherConfigRoute(
             // 免得用户拨了一个完全无效的开关 (各 gate 的判定依据见 PlatformCapabilities)
             showCronet = platform.cronetSupported,
             showPredictiveBack = platform.predictiveBackSupported,
+            showCloseToTray = platform.closeToTraySupported,
             showLanguage = platform.languageSwitchSupported,
             onLanguageChange = { platform.applyAppLanguage() },
             showMediaButton = platform.mediaButtonSupported,

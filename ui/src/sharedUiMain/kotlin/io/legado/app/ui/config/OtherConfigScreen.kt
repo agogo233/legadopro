@@ -31,6 +31,8 @@ import legado.ui.generated.resources.language
 import legado.ui.generated.resources.language_value
 import legado.ui.generated.resources.media_button_on_exit_summary
 import legado.ui.generated.resources.media_button_on_exit_title
+import legado.ui.generated.resources.close_to_tray_summary
+import legado.ui.generated.resources.close_to_tray_title
 import legado.ui.generated.resources.pre_download
 import legado.ui.generated.resources.predictive_back_summary
 import legado.ui.generated.resources.predictive_back_title
@@ -112,6 +114,8 @@ fun OtherConfigScreen(
     onProcessTextChange: (Boolean) -> Unit = {},
     /** 记录堆转储开关是否显示 (仅 Android CrashHandler 消费) */
     showHeapDumpRecord: Boolean = false,
+    /** 关闭主窗口行为开关是否显示 (仅桌面端有系统托盘) */
+    showCloseToTray: Boolean = false,
     /** 语言变更后的平台收尾 (对照原版 appCtx.restart()) */
     onLanguageChange: () -> Unit = {},
 ) {
@@ -126,6 +130,8 @@ fun OtherConfigScreen(
     val summaryAutoRefresh = stringResource(Res.string.ps_auto_refresh)
     val titlePredictiveBack = stringResource(Res.string.predictive_back_title)
     val summaryPredictiveBack = stringResource(Res.string.predictive_back_summary)
+    val titleCloseToTray = stringResource(Res.string.close_to_tray_title)
+    val summaryCloseToTray = stringResource(Res.string.close_to_tray_summary)
     val titleDevFeat = stringResource(Res.string.click_book_open_read)
     val summaryDevFeat = stringResource(Res.string.click_book_open_read_summary)
     val titleLocalPassword = stringResource(Res.string.set_local_password)
