@@ -231,8 +231,8 @@
     <string name="audio_play_wake_lock">音频服务唤醒锁</string>
     <string name="publish_lyric">车载歌词</string>
     <string name="publish_lyric_summary">当前歌词行推到 now-playing 标题 (车机 / 蓝牙 / 锁屏), 会顶掉章节名</string>
-    <string name="audio_energy_glow_title">动态辉光</string>
-    <string name="audio_energy_glow_restart">重新起播后生效 (开启期间略微增加耗电)</string>
+    <string name="audio_energy_glow_title">动态文本辉光</string>
+    <string name="audio_edge_glow_title">边缘光效</string>
     <string name="all_source">全部书源</string>
     <string name="precision_search">精准搜索</string>
     <string name="screen">筛选</string>
@@ -309,7 +309,9 @@
     <string name="backup_config">备份设置</string>
     <string name="backup">备份</string>
     <string name="backup_restore">备份与恢复</string>
-    <string name="auto_backup_no_book_save_dir">未设置书籍保存位置，自动备份不会执行</string>
+    <string name="auto_backup_no_book_save_dir">未设置书籍保存位置：备份只上传 WebDav，本地不保留副本</string>
+    <string name="backup_no_destination">没有可用于保存备份的位置：请设置书籍保存位置，或检查 WebDav 网盘配置</string>
+    <string name="backup_dir_unwritable">书籍保存位置不可写：本次备份只上传 WebDav，本地不保留副本</string>
     <string name="backup_summary">本地和 WebDav 一起备份</string>
     <string name="auto_check_new_backup_s">打开软件时检查是否有新备份，有新备份时提示是否更新</string>
     <string name="auto_check_new_backup_t">自动检查新备份</string>

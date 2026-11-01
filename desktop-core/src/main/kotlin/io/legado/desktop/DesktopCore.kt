@@ -242,6 +242,8 @@ object DesktopCore {
         // 书架激活后首个书籍流发射即可能触发 autoUpdateGroup → 引擎 lazy 构造, 晚注册存在竞态。
         // iOS/鸿蒙端在 registerNativeUpdateBookCallback 注册, app 端在 App.kt 注册。
         UpdateBookCallbacks.registerDefault(DesktopUpdateBookCallback)
+        // 注册桌面端 AppFilesDir (~/.legado/files), 供 BackupShared/RestoreShared 与配置存储 (filesDir 文件) 共用; 早于配置注册 (首次读配置即解析该目录)
+        registerDesktopAppFilesDir()
         // 备份格式兼容性: 注册桌面端 config provider
         // - PreferenceProvider + AppConfigAccessor
         // - ReadBookConfigProviders + ThemeConfigProviders (备份格式兼容性补齐, 供 BackupShared 用)
@@ -262,8 +264,6 @@ object DesktopCore {
     fun registerRestProviders() {
         // 以下分段 timed 打点 (2026-09 启动归因): 阶段1 总耗时实测 277~299ms, 但不清楚钱具体
         // 在哪一步 (Room 开库/加载 sqliteJni? OkHttp+TLS? JS 引擎?), 不拆就没法判断该拿哪段开刀。
-        // 注册桌面端 AppFilesDir (~/.legado/files), 供 BackupShared/RestoreShared 用
-        registerDesktopAppFilesDir()
         // HTTP 层 (OkHttp + CookieJarBridge, 独立): 提前到阶段1, 与 JS 引擎同批就绪,
         // 消除"首次 JS eval 触发网络请求 → OkHttpClientProviders 未注册"的启动竞态
         // (registerDesktopJsEngines 在前, 书源 JS 里 java.ajax 依赖此层)

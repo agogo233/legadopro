@@ -37,7 +37,8 @@ import kotlin.concurrent.Volatile
  * 音频播放页 shared ScreenModel。
  *
  * 下沉自 app 端 [AudioPlayActivity] 的状态持有与命令派发:
- * - 播放状态 (title/subTitle/coverUrl/progressMs/durationMs/isPlaying/playMode 等) 由本类托管,
+ * - 播放状态 (title/subTitle/coverUrl/isPlaying/playMode 等) 由本类托管; 位置/缓冲/时长三项
+ *   单独走 [progress] (每秒都变, 进聚合状态会让整页逐秒重组),
  *   通过订阅 [FlowBus] sticky 事件更新 (对照 Activity.observeLiveBus)
  * - 播放命令 (togglePlay/prev/next/seek/setTimer/setSpeed/changePlayMode) 通过 [dispatch]
  *   派发到 [AudioPlayShared], 由其经 AudioPlayCommander 转发到平台 Service/Player
@@ -51,8 +52,9 @@ interface AudioPlayPlatformProvider {
     @Composable
     fun Content(
         state: AudioPlayUiState,
+        /** 位置/缓冲/时长子状态: 只有进度区订阅, 不进 [state] */
+        progress: StateFlow<AudioPlayProgress>,
         onBack: () -> Unit,
-        onOpenChangeSource: () -> Unit,
         /** 点顶栏标题进书籍详情 */
         onOpenBookInfo: () -> Unit,
         onOpenToc: () -> Unit,
@@ -88,12 +90,16 @@ data class AudioPlayOverflowActions(
     val onShowAppLog: () -> Unit,
     /** 是否显示登录项 (取自页面状态, 随书源就绪刷新) */
     val hasLogin: Boolean,
-    /** 动态辉光开关是否显示 (仅 Android: 与 DSP offload 互斥) */
+    /** 动态文本辉光开关是否显示 (仅 Android: 该开关会改解码通路, 其余端没有这个取舍) */
     val showGlowToggle: Boolean = false,
-    /** 动态辉光当前是否开启 */
+    /** 动态文本辉光当前是否开启 */
     val glowEnabled: Boolean = false,
-    /** 切换动态辉光 */
+    /** 切换动态文本辉光 */
     val onToggleGlow: () -> Unit = {},
+    /** 边缘光效当前是否开启 (四端都可控; 安卓端同样会占住 PCM, 与文本辉光同等) */
+    val edgeGlowEnabled: Boolean = true,
+    /** 切换边缘光效 */
+    val onToggleEdgeGlow: () -> Unit = {},
 )
 
 object AudioPlayPlatformProviders {
@@ -121,6 +127,9 @@ class AudioPlayScreenModel : ScreenModel {
 
     private val _state = MutableStateFlow(AudioPlayUiState())
     val state: StateFlow<AudioPlayUiState> = _state.asStateFlow()
+
+    private val _progress = MutableStateFlow(AudioPlayProgress())
+    val progress: StateFlow<AudioPlayProgress> = _progress.asStateFlow()
 
     init {
         observeAudioEvents()
@@ -155,19 +164,19 @@ class AudioPlayScreenModel : ScreenModel {
         // 总时长
         scope.launch {
             FlowBus.withSticky(EventBus.AUDIO_SIZE).collect { value ->
-                if (value is Int) _state.update { it.copy(durationMs = value) }
+                if (value is Int) _progress.update { it.copy(durationMs = value) }
             }
         }
         // 播放进度
         scope.launch {
             FlowBus.withSticky(EventBus.AUDIO_PROGRESS).collect { value ->
-                if (value is Int) _state.update { it.copy(progressMs = value) }
+                if (value is Int) _progress.update { it.copy(progressMs = value) }
             }
         }
         // 缓冲进度
         scope.launch {
             FlowBus.withSticky(EventBus.AUDIO_BUFFER_PROGRESS).collect { value ->
-                if (value is Int) _state.update { it.copy(bufferMs = value) }
+                if (value is Int) _progress.update { it.copy(bufferMs = value) }
             }
         }
         // 播放速率
@@ -416,8 +425,20 @@ class AudioPlayScreenModel : ScreenModel {
  * 音频播放页 UI 状态 (对照 [AudioPlayScreenContent] 同名参数)。
  *
  * 歌词只托管数据 ([lrc]); 当前高亮行由 [rememberLrcIndex] 自适应精准延时派生, 配色由
- * [rememberLrcColors] 从封面取色, 都不进本状态。
+ * [rememberAudioCoverPalette] 从封面取色, 都不进本状态。
  */
+/**
+ * 播放进度子状态: 位置、缓冲、时长三项。
+ *
+ * 三项都是"进度区"这一一个使用域的量, 单独成流后只有进度区订阅,
+ * 标题/菜单/背景等不再随播放心跳重新经过整页组装。
+ */
+data class AudioPlayProgress(
+    val progressMs: Int = 0,
+    val bufferMs: Int = 0,
+    val durationMs: Int = 0,
+)
+
 data class AudioPlayUiState(
     val title: String = "",
     val subTitle: String = "",
@@ -425,9 +446,6 @@ data class AudioPlayUiState(
     val coverVisible: Boolean = true,
     val timerMinute: Int = 0,
     val speed: Float = 1f,
-    val progressMs: Int = 0,
-    val durationMs: Int = 0,
-    val bufferMs: Int = 0,
     val isPlaying: Boolean = false,
     val loading: Boolean = false,
     val playMode: AudioPlayShared.PlayMode = AudioPlayShared.PlayMode.LIST_END_STOP,

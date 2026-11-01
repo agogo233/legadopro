@@ -16,7 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -26,17 +26,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -52,29 +52,27 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.constant.Status
-import io.legado.app.help.image.BookImageLoaders
 import io.legado.app.model.AudioPlayCommanders
 import io.legado.app.model.AudioPlayShared
 import io.legado.app.model.Lrc
 import io.legado.app.model.LrcLine
 import io.legado.app.model.LrcWord
 import io.legado.app.ui.compose.theme.LocalEInk
-import io.legado.app.utils.ColorUtils
+import io.legado.app.ui.root.rememberRouteVisibleState
 import kotlin.math.abs
+import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.sin
-import kotlin.math.exp
-import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.floor
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * 全端共享歌词控件: 逐项复刻原版 LrcView
@@ -95,7 +93,7 @@ import kotlinx.coroutines.withContext
  * | 绘制 lineY = centerY + (line.offset - scrollYOffset) | lineY = centerY + (offset + 行高差累加 - scrollY) |
  * | updateProgress: lastIndex/currentIndex/colorProgress=0 | 同 |
  * | 首次 (lastIndex==-1) 无动画直接定位 | 同 |
- * | 切行滚动 startScroll(600ms, DecelerateInterpolator) | 同有切行滚动: 2.5D=400ms 的 Settle 曲线 (不复刻 600ms 减速) |
+ * | 切行滚动 startScroll(600ms, DecelerateInterpolator) | 同有切行滚动: 自定时长 (基准 500ms, 按距离加时, 封顶 900ms) + 缓出三次曲线 |
  * | colorProgress 每帧 +0.1 (帧数驱动, 时长随刷新率变) | 统一切行时间轴: 点亮 1.25D / 退场 1D, 刻意不复刻 |
  * | 透明度: 上下 0.35h 边界线性 255→40, 与景深相乘 | 同 (calculateAlpha) |
  * | 点击: touchY=scrollYOffset+y-h/2, 定位命中的行, 回调 time | 同 (touchSlop 判定 tap/drag; 行高不恒定时按显示行高逐行定位) |
@@ -120,10 +118,19 @@ fun LrcViewShared(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = AudioPlayShared.status == Status.PLAY,
     playSpeed: Float = AudioPlayShared.playSpeed,
+    /**
+     * 动态文字辉光开关 (与边缘光效各自独立)。
+     *
+     * 关闭后辉光不再随音频能量起伏, 但保留一层固定半径与基础不透明度的静态辉光 ——
+     * 文字仍有发光层次, 只是不"呼吸"。
+     */
+    textGlowEnabled: Boolean = true,
 ) {
-    // 排版缓存: 当前行与淡出行的字号/颜色每帧连续变化, 每次都是新文本 (必然重测);
-    // 大缓存留给基础排版, 避免被动画帧冲掉后重测
+    // 排版缓存分工: 字号每帧连续变化的排版必然 miss, 用无缓存 measurer
+    // (cacheSize=0 才不写缓存; skipCache 只跳过读取, 结果仍会写入并挤掉有用条目)。
+    // 带缓存的这份只留给基础排版与字号停在定档值的单字测量
     val textMeasurer = rememberTextMeasurer(cacheSize = 128)
+    val animatedTextMeasurer = rememberTextMeasurer(cacheSize = 0)
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     // 墨水屏不挂能量驱动: 辉光是逐帧重栅格化的模糊阴影, 墨水屏既消耗电也拖影
@@ -138,40 +145,55 @@ fun LrcViewShared(
     // 单实例运行态 (对齐原版 LrcView 的字段模型): 不随数据换实例, 复位走显式 reset。
     // 以换实例代替复位会让所有持旧引用的 effect/手势断供 (行表空 → 点击/拖动静默失效)
     val lrc = remember { LrcRuntime() }
+    // 本页不可见 (被压栈/退后台) 时视觉侧整条停摆: 不收能量采样、不请求帧、不跑切行动画;
+    // 播放状态、当前行索引与后台播放/锁屏歌词都不受影响
+    val routeVisible = rememberRouteVisibleState().value
     // 逐字填充的跳转目标追踪器: 与高亮调度同一口径 (跳转当帧按目标定位), 独立一份纪元记忆
     val fillSeekTracker = remember { AudioPlayShared.SeekTargetTracker() }
 
     // 观察底层真实物理音频 PCM 能量 (只写入 lrc.energy, 杜绝根层重组闪烁)
-    LaunchedEffect(isPlaying, eInk) {
-        if (!isPlaying || eInk) {
+    LaunchedEffect(isPlaying, eInk, routeVisible) {
+        if (!isPlaying || eInk || !routeVisible) {
             lrc.energy = 0f
             return@LaunchedEffect
         }
-        AudioPlayShared.audioEnergy.collect {
+        // drop(1): 订阅一开始状态流会回放缓存帧 (暂停前那一帧), 它不是新样本 —— 当成新样本会把
+        // 采样时刻打成当下, 恢复播放瞬间辉光直接跳到暂停前水平, 而不是随新音频淡入。
+        AudioPlayShared.audioVisual.drop(1).collect { frame ->
             // 记下派发时刻: 绘制期据此判断音频管道是否还在供数 (断供才衰减)
-            lrc.energy = it
-            lrc.energyAtMs = positionNowMs()
+            lrc.energy = frame.energy
+            lrc.energyAtMs = positionNowMs().toLong()
         }
     }
 
     // 能量帧循环: 绘制期只有平滑后的能量一个输入 (见 [LrcRuntime.smoothEnergy])。
     // 逐字歌词本来就有帧驱动, 但整行高亮 (无字标签) 的普通歌词平时一帧都不刷 ——
     // 不挂这个循环, 能量就只会在每次 PCM 派发那一帧跳一格 (既不连续又会闪)。
-    LaunchedEffect(isPlaying, eInk) {
-        if (!isPlaying || eInk) return@LaunchedEffect
+    LaunchedEffect(isPlaying, eInk, textGlowEnabled, routeVisible) {
+        // 关闭文本辉光后能量不参与绘制, 不刷帧
+        if (eInk || !textGlowEnabled || !routeVisible) {
+            lrc.resetEnergyEnvelope()
+            return@LaunchedEffect
+        }
         var lastFrameNs = 0L
         while (isActive) {
-            if (lrc.energy <= ENERGY_SILENT_THRESHOLD && lrc.smoothEnergy <= ENERGY_SILENT_THRESHOLD) {
-                // 静音段: 平滑值已经落到地板, 低频推进即可 (省电)
+            // 暂停时目标恒为 0: 显示包络自行收干净, 不依赖播放侧清零
+            val target = if (isPlaying) lrc.decayedEnergy(positionNowMs().toLong()) else 0f
+            if (target <= AudioEnergyEnvelope.SILENT_THRESHOLD &&
+                lrc.smoothEnergy <= AudioEnergyEnvelope.SILENT_THRESHOLD
+            ) {
                 lrc.resetEnergyEnvelope()
-                delay(ENERGY_IDLE_POLL_MS)
+                // 暂停且已收干净: 停帧等 isPlaying 重启; 播放中的静音段低频轮询 (省电)
+                if (!isPlaying) return@LaunchedEffect
+                lastFrameNs = 0L
+                delay(AudioEnergyEnvelope.IDLE_POLL_MS)
                 continue
             }
             withFrameNanos { frameNs ->
                 val dtMs = if (lastFrameNs == 0L) 16f
                 else ((frameNs - lastFrameNs) / 1_000_000f).coerceIn(1f, 100f)
                 lastFrameNs = frameNs
-                lrc.advanceEnergy(dtMs, lrc.decayedEnergy(positionNowMs()))
+                lrc.advanceEnergy(dtMs, target)
             }
         }
     }
@@ -215,7 +237,7 @@ fun LrcViewShared(
     }
 
     // 切行 (复刻 updateProgress)。lines 也当 key: 首次测出行高那帧要把 lrcProgress 重放一遍
-    LaunchedEffect(lrcProgress, lines) {
+    LaunchedEffect(lrcProgress, lines, routeVisible) {
         lrc.lines = lines
         if (lrcProgress !in lines.indices || lrcProgress == lrc.currentIndex) {
             return@LaunchedEffect
@@ -237,20 +259,27 @@ fun LrcViewShared(
             lrc.scrollJob?.cancel()
             lrc.scrollY = lrc.centerOf(lrcProgress)
             lrc.applySwitchTimeline(SWITCH_TOTAL_MS)
+        } else if (!routeVisible) {
+            // 不可见期间不跑逐帧滚动: 直接就位并点亮到位, 回到前台看到静止的当前行
+            lrc.scrollJob?.cancel()
+            lrc.scrollY = lrc.centerOf(lrcProgress)
+            lrc.applySwitchTimeline(SWITCH_TOTAL_MS)
         } else {
             // 非首次: 滚动、点亮、退场由同一条切行时间轴驱动
             lrc.scrollJob?.cancel()
             val fromScroll = lrc.scrollY
             val toScroll = lrc.centerOf(lrcProgress)
+            // 跨度按行数折算: 相邻行只有一行距离, 跨章/拖动回中可能十几行
+            val scrollMs = lrc.scrollDurationFor(fromScroll, toScroll, lineMarginPx)
             val start = TimeSource.Monotonic.markNow()
             lrc.colorJob = scope.launch {
                 while (isActive) {
                     val elapsedMs = start.elapsedNow().inWholeMilliseconds
-                    val scrollProgress = (elapsedMs.toFloat() / SCROLL_MS).coerceIn(0f, 1f)
+                    val scrollProgress = (elapsedMs.toFloat() / scrollMs).coerceIn(0f, 1f)
                     lrc.scrollY = fromScroll +
-                        (toScroll - fromScroll) * MOTION_SETTLE.transform(scrollProgress)
+                        (toScroll - fromScroll) * MOTION_SCROLL_OUT.transform(scrollProgress)
                     lrc.applySwitchTimeline(elapsedMs)
-                    if (elapsedMs >= SWITCH_TOTAL_MS) break
+                    if (elapsedMs >= scrollMs) break
                     withFrameNanos { }
                 }
             }
@@ -264,7 +293,7 @@ fun LrcViewShared(
     // 4. 整句唱完后固定 100% 填满并挂起停帧, 避免等待下一行期间持续无效重绘;
     // 5. 仅在真正的唱词区间以 withFrameNanos 高刷驱动平滑变色;
     // 6. 跳转信号联动: 句内 seek 立即打断睡眠/停帧, 并按信号里的目标位置重定位。
-    LaunchedEffect(lines, isPlaying, playSpeed) {
+    LaunchedEffect(lines, isPlaying, playSpeed, routeVisible) {
         // 输入 = 当前行 (快照状态) + 跳转信号 (StateFlow): 任一变化都重启本轮填充
         combine(
             snapshotFlow { lrc.currentIndex },
@@ -284,8 +313,8 @@ fun LrcViewShared(
                 pendingSeekMs = null
                 lrc.fillClockMs = now - Lrc.OFFSET_MS
 
-                if (!isPlaying) {
-                    // 暂停/缓冲: 采样一次固定在当前变色进度, 随后挂起休眠
+                if (!isPlaying || !routeVisible) {
+                    // 暂停/缓冲/本页不可见: 采样一次固定在当前变色进度, 随后挂起休眠
                     // (调试模式例外: 位置由滑条给, 暂停也要跟着刷新)
                     break
                 }
@@ -337,12 +366,22 @@ fun LrcViewShared(
     // 平台默认惯性曲线 (spline 衰减; Android 与 OverScroller 同源物理, 密度经 LocalDensity 解析)
     val flingBehavior = ScrollableDefaults.flingBehavior()
 
+    // 读屏用: 歌词是 Canvas 直接绘制的, 不挂语义节点读屏读不到任何内容。
+    // 只暴露当前行 (与 flutter_lyric 维护 activeIndex 语义的做法一致), 不把整篇歌词塞进去。
+    // 在组合期读值: 语义配置构建期读快照状态拿不到失效通知, 文本会停在旧行;
+    // derivedStateOf 只在"当前行文本"真的变了才通知, 不会因滚动/动画帧反复重组
+    val spokenLine = remember(lrc) {
+        derivedStateOf { lrc.lines.getOrNull(lrc.currentIndex)?.text }
+    }.value
     Canvas(
         modifier
             // 裁到自身边界: 当前行之上的歌词行会画到负 Y (原版 LrcView 是 View, 天然裁剪),
             // 不裁就会画到控件上方压住圆形封面。左右留白在控件内 (见 [H_PADDING]), 放大后的字
             // 由排版自己折行, 不会溢出到留白之外
             .clipToBounds()
+            .semantics {
+                spokenLine?.let { contentDescription = it }
+            }
             // 只有测量要重排才需要宽度进组合; 高度/命中判定直接用手势与绘制作用域自带的 size
             .onSizeChanged { viewportW = it.width }
             // 点击/拖动/fling (复刻 GestureDetector: onScroll/onFling/onSingleTapUp);
@@ -464,9 +503,10 @@ fun LrcViewShared(
         val lastIndex = lrc.lastIndex
         val colorProgress = lrc.colorProgress
         val lastProgress = lrc.lastProgress
+        val entryBounce = lrc.entryBounce
         val fillClockMs = lrc.fillClockMs
         // 沉浸模式的辉光能量: 已平滑的真实 PCM 电平 (绘制期只读这一个值)
-        val energy = if (eInk) 0f else lrc.smoothEnergy.coerceIn(0f, 1f)
+        val energy = if (eInk || !textGlowEnabled) 0f else lrc.smoothEnergy.coerceIn(0f, 1f)
         // 高亮色: 跟主色(封面取色) 的明暗取极值——主色亮(深色封面) 用白,
         // 主色暗(浅色封面) 用黑。这样歌词在两种背景下都有层次。
         val immersiveHighlight = if (primaryColor.luminance() > 0.5f) Color.White else Color.Black
@@ -478,13 +518,17 @@ fun LrcViewShared(
         }.inv()
 
         val marginPxInt = lineMarginPx.roundToInt()
-        // 切行期间辉光整体收一下 (Enter 曲线 0.75D 收回), 与"新行变亮"形成明暗对比
-        val glowDip = 1f - GLOW_DIP_AMOUNT * (1f - MOTION_ENTER.transform(
-            (colorProgress.coerceIn(0f, 1f) * LIT_IN_MS / GLOW_DIP_MS.toFloat()).coerceIn(0f, 1f)
-        ))
+        // 切行期间辉光整体收一下, 与"新行变亮"形成明暗对比; 入场时再随回弹冲一下
+        // (colorProgress 已经是 Enter 曲线值, 这里不再套第二层缓动)
+        val glowDip = 1f - GLOW_DIP_AMOUNT * (1f -
+            (colorProgress.coerceIn(0f, 1f) * LIT_IN_MS / GLOW_DIP_MS.toFloat()).coerceIn(0f, 1f))
+        // 回弹峰值约 1.1: 辉光半径在入场时短暂胀一下再收回来 (上限 1.25 防尖尖)
+        val bounceGain = entryBounce.coerceIn(0f, 1.25f)
         val dipEnergy = (energy * glowDip).coerceIn(0f, 1f)
         val glowRadiusPx =
-            glowRadiusMinPx + (glowRadiusMaxPx - glowRadiusMinPx) * dipEnergy.pow(GLOW_RADIUS_CURVE)
+            (glowRadiusMinPx + (glowRadiusMaxPx - glowRadiusMinPx) * dipEnergy.pow(GLOW_RADIUS_CURVE)) *
+                bounceGain
+        // 关闭动态文字辉光时能量恒为 0, 阴影退化为固定半径与基础不透明度 —— 静态辉光仍在
         fun glowAt(lit: Float, color: Color): Shadow? = if (lit > GLOW_VISIBLE_MIN) {
             Shadow(
                 color = color.copy(alpha = (GLOW_ALPHA_BASE + GLOW_ALPHA_ENERGY * energy) * lit),
@@ -518,7 +562,7 @@ fun LrcViewShared(
             if (curHasWords) {
                 val curTop = centerY + (curLine.offset - scrollY)
                 measureStyledLrc(
-                    curLine, textMeasurer, LRC_TEXT_STYLE, availableW,
+                    curLine, animatedTextMeasurer, LRC_TEXT_STYLE, availableW,
                     bodyColor = secondaryColor,
                     litColor = curColor,
                     litChars = curLit,
@@ -528,7 +572,7 @@ fun LrcViewShared(
                 )
             } else {
                 measureUniformLrc(
-                    curLine, textMeasurer, LRC_TEXT_STYLE, availableW,
+                    curLine, animatedTextMeasurer, LRC_TEXT_STYLE, availableW,
                     // 切行进度本身已经是 Enter 曲线 (见 applySwitchTimeline), 这里直接用,
                     // 再套一次缓动会让字号在开场几十毫秒内就长完, 看起来像瞬间到位
                     scale = 1f + CHAR_GROW_GAIN * curProgress,
@@ -591,7 +635,7 @@ fun LrcViewShared(
                 // 唱完到变成普通已唱行: 字号随切行进度连续回落到原字号
                 isLast && hasWords -> {
                     displayLayout = measureStyledLrc(
-                        line, textMeasurer, LRC_TEXT_STYLE, availableW,
+                        line, animatedTextMeasurer, LRC_TEXT_STYLE, availableW,
                         bodyColor = secondaryColor,
                         litColor = litColor,
                         litChars = litChars,
@@ -609,7 +653,7 @@ fun LrcViewShared(
                 isLast -> {
                     val sung = 1f + CHAR_GROW_GAIN
                     displayLayout = measureUniformLrc(
-                        line, textMeasurer, LRC_TEXT_STYLE, availableW,
+                        line, animatedTextMeasurer, LRC_TEXT_STYLE, availableW,
                         scale = sung + (PAST_FONT_SCALE - sung) * lastProgress.coerceIn(0f, 1f),
                     )
                     mode = LrcLineMode.WholeLine
@@ -632,11 +676,18 @@ fun LrcViewShared(
                 }
             }
 
-            val displayHeight = displayLayout.size.height + marginPxInt
+            // 逐字行: 行高 = 当前行数 × 放大后的单行高。
+            // 这样字号变化引起行内重排时行高不变 (下面的行不被逐帧推着走), 也不预留空行 ——
+            // 只有真的多折出一行时, 行数变了才跳一次。
+            val displayHeight = if (isCurrent && hasWords) {
+                displayLayout.lineCount.coerceAtLeast(1) * line.grownRowHeight + marginPxInt
+            } else {
+                displayLayout.size.height + marginPxInt
+            }
             // 折行过渡: 当前行与淡出中的上一行都要跟踪 (行数变多或变少都算)
             val trackWrap = isCurrent || isLast
             val wrapPositions = if (trackWrap) {
-                FloatArray(line.text.length * 3).also { pos ->
+                lrc.positionsBuffer(i, line.text.length).also { pos ->
                     for (index in line.text.indices) {
                         val row = displayLayout.getLineForOffset(index)
                         // 笔位 + 行基线: 笔位定横向, 基线定纵向
@@ -672,41 +723,45 @@ fun LrcViewShared(
                 shadow = glowShadow,
                 mode = mode,
             )
-            if (charRuns != null) {
-                drawSlideChars(
-                    line = line,
-                    drawn = charRuns,
-                    topLeft = topLeft,
-                    bodyColor = secondaryColor,
-                    litColor = litColor,
-                    litChars = litChars,
-                    perChar = hasWords,
-                    sizeScaleAt = when {
-                        // 淡出中的上一行: 字号按"唱完 → 已唱"回落, 与它自己的排版一致
-                        isLast && hasWords -> { t ->
-                            val sung = 1f + CHAR_GROW_GAIN * t
-                            sung + (PAST_FONT_SCALE - sung) * lastProgress.coerceIn(0f, 1f)
-                        }
+            val drawBody: DrawScope.() -> Unit = {
+                if (charRuns != null) {
+                    drawSlideChars(
+                        line = line,
+                        drawn = charRuns,
+                        topLeft = topLeft,
+                        bodyColor = secondaryColor,
+                        litColor = litColor,
+                        litChars = litChars,
+                        perChar = hasWords,
+                        sizeScaleAt = when {
+                            // 淡出中的上一行: 字号按"唱完 → 已唱"回落, 与它自己的排版一致
+                            isLast && hasWords -> { t ->
+                                val sung = 1f + CHAR_GROW_GAIN * t
+                                sung + (PAST_FONT_SCALE - sung) * lastProgress.coerceIn(0f, 1f)
+                            }
 
-                        isLast -> { _ ->
-                            val sung = 1f + CHAR_GROW_GAIN
-                            sung + (PAST_FONT_SCALE - sung) * lastProgress.coerceIn(0f, 1f)
-                        }
+                            isLast -> { _ ->
+                                val sung = 1f + CHAR_GROW_GAIN
+                                sung + (PAST_FONT_SCALE - sung) * lastProgress.coerceIn(0f, 1f)
+                            }
 
-                        // 当前行的逐字行: 每个字按自己的进度
-                        hasWords -> { t -> 1f + CHAR_GROW_GAIN * MOTION_ENTER.transform(t) }
+                            // 当前行的逐字行: 每个字按自己的进度
+                            hasWords -> { t -> 1f + CHAR_GROW_GAIN * MOTION_ENTER.transform(t) }
 
-                        // 当前行的非逐字行: 整行统一字号 (取该行排版所用的那个值)
-                        // 整行统一字号: progress 已是 Enter 曲线, 不再二次缓动
-                        else -> { _ -> 1f + CHAR_GROW_GAIN * progress }
-                    },
-                    alpha = alpha,
-                    glow = glowShadow,
-                    textMeasurer = textMeasurer,
-                )
-            } else {
-                drawLrcLine(displayLayout, topLeft, style)
+                            // 当前行的非逐字行: 整行统一字号 (取该行排版所用的那个值)
+                            // 整行统一字号: progress 已是 Enter 曲线, 不再二次缓动
+                            else -> { _ -> 1f + CHAR_GROW_GAIN * progress }
+                        },
+                        alpha = alpha,
+                        glow = glowShadow,
+                        textMeasurer = textMeasurer,
+                        animatedTextMeasurer = animatedTextMeasurer,
+                    )
+                } else {
+                    drawLrcLine(displayLayout, topLeft, style)
+                }
             }
+            drawBody()
             line.displayHeight = displayHeight
             // 折行过渡期间下方各行跟着平滑下推, 而不是一步到位
             val wrapFromHeight = lrc.wrapFromHeightOf(i)
@@ -818,11 +873,26 @@ private val LRC_TEXT_STYLE = TextStyle(
 /** 基础单位 (ms) */
 private const val D = 160
 
-/** 行滚动 (2.5D): 落位带轻微回弹 */
-private const val SCROLL_MS = (2.5 * D).toInt()        // 400
+/**
+ * 行滚动基准时长。
+ *
+ * 数值与 Material 3 的 `DurationLong2` 相同 (500ms), 但那张 token 表在 material3 依赖里,
+ * 本模块只依赖 material (M2), 所以这里是**拷过来的字面量**, 不是引用。
+ */
+private const val SCROLL_MS = 500
 
 /**
- * 新行点亮 (1.25D, 缓出) 与旧行退场 (1D, 线性): 退场对齐原版"立刻开始、匀速退完"的节奏。
+ * 按行数分段的滚动时长: 跨度越大给越久, 避免一次跨很多行时在固定时长里被“甩”过去。
+ *
+ * 每多一行加 [SCROLL_PER_LINE_MS], 上限 [SCROLL_MAX_MS]。
+ * 这两个数与基准 500ms 都是**本仓自定参数**, 不引自任何外部库。
+ */
+private const val SCROLL_PER_LINE_MS = 120
+private const val SCROLL_MAX_MS = 900
+
+/**
+ * 新行点亮 = Material 3 `DurationShort4` (200ms);
+ * 旧行退场固定 160ms (1D), 曲线线性; 不跟随滚动跨度。
  */
 private const val LIT_IN_MS = (1.25 * D).toInt()       // 200
 private const val LIT_OUT_DELAY_MS = 0
@@ -842,13 +912,35 @@ private const val GLOW_DIP_AMOUNT = 0.18f
  */
 private val MOTION_ENTER = CubicBezierEasing(0.33f, 1.00f, 0.68f, 1.00f)
 
-/** 退出: 线性 (对齐原版 colorProgress 每帧匀速推进, 无缓动) */
+/**
+ * 入场回弹: 冲过 1 再落回 (峰值约 1.1)。
+ *
+ * 只给辉光半径这类纯绘制量用。字号不能用它: 缩放进 span 就是真重排, 过冲期间
+ * 行宽会短暂超出, 在临界宽度上多折出一行再退回去。
+ */
+private val MOTION_ENTER_BOUNCE = CubicBezierEasing(0.34f, 1.50f, 0.64f, 1.00f)
+
+
+/**
+ * 行滚动落位: 缓出三次曲线 (Flutter 的 `Curves.easeOutCubic` 即 (0.215, 0.61, 0.355, 1),
+ * 前快后慢、末端速度为 0)。
+ *
+ * 曲线取自该曲线定义本身; 时长 (500ms 基准 + 按行加时) 是本仓自定参数, 没有外部基准。
+ * 不带过冲, 逐行跟读时不会每行回弹 (手动滚动后的自动回中用 [MOTION_SETTLE])。
+ */
+private val MOTION_SCROLL_OUT = CubicBezierEasing(0.215f, 0.61f, 0.355f, 1.00f)
+
+/**
+ * 旧行退场: 线性匀速 (对齐原版 colorProgress 每帧匀速推进, 无缓动)。
+ *
+ * 时长仍跟随本次滚动总时长, 所以新旧行的起止时刻一致, 只是退场本身匀速推进。
+ */
 private val MOTION_EXIT = CubicBezierEasing(0.00f, 0.00f, 1.00f, 1.00f)
 
 /** 标准: 折行位移等中性运动 */
 private val MOTION_STANDARD = CubicBezierEasing(0.22f, 0.61f, 0.36f, 1.00f)
 
-/** 落位回弹: 约 4% 过冲后落稳 (行滚动) */
+/** 落位回弹: 约 4% 过冲后落稳 (手动滚动后的自动回中) */
 private val MOTION_SETTLE = CubicBezierEasing(0.34f, 1.20f, 0.64f, 1.00f)
 
 // 字号缩放一律用单调曲线: 过冲曲线会让字号先超过目标再回落,
@@ -917,34 +1009,13 @@ private const val WRAP_JUMP_BOW_PX = 48f
 /** 判定"被重排到别处"的水平位移阈值 (px): 小于它只做纵向位移, 不加横向弧线 */
 private const val WRAP_JUMP_MIN_DX_PX = 24f
 
-
-// ---- 能量显示平滑 ----
-//
-// 自归一化 (快包络 / 慢均值) 已经在 PCM 侧完成, 这里绝不能再做第二遍窗口归一化 ——
-// 两层自适应会互相拉扯: 同一首歌的副歌与主歌会得到不同亮度, 且还要等窗口重新收敛。
-// 这里只做一层显示平滑, 把逐缓冲的驱动值化成连续呼吸。
-
-/** 显示平滑时间常数 (ms): 上升快于下降, 拍子能看出来但不抽搽 */
-private const val ENERGY_DISPLAY_ATTACK_MS = 60f
-private const val ENERGY_DISPLAY_RELEASE_MS = 180f
-
-/** 音频管道静默超过此间隔后才开始衰减 (ms): 正常派发间隔远小于它, 不会把阶梯锯成锯齿 */
-private const val ENERGY_HOLD_MS = 120
-
-/** 断供 (暂停/缓冲/跳转) 后的衰减时间常数 (ms) */
-private const val ENERGY_DECAY_TAU_MS = 200f
-
-/** 低于这个能量视为静音, 帧循环降为低频轮询 (省电) */
-private const val ENERGY_SILENT_THRESHOLD = 0.01f
-
-/** 静音段的时钟推进间隔 (ms) */
-private const val ENERGY_IDLE_POLL_MS = 100L
-
 /** 测量后的行 (复刻原版 LrcView.LrcLine); [words] 是逐字采样, 空表示这行整行高亮。 */
 private class MeasuredLrcLine(
     val time: Int,
     val text: String,
     val layout: TextLayoutResult,
+    /** 逐字行: 每个字都长到最终字号时的单行高度 (行高按"当前行数 × 它"预留) */
+    val grownRowHeight: Int,
     val height: Int,
     val offset: Float,
     val words: List<LrcWord>,
@@ -959,38 +1030,49 @@ private class MeasuredLrcLine(
 private fun LrcLine.bodyChars(): Int = text.indexOf('\n').let { if (it < 0) text.length else it }
 
 /**
- * 逐字采样 + 一个收尾采样: Enhanced LRC 只标每个字的起点, 末字没有终点, 用下一行的时间戳补上。
+ * 逐字采样 + 一个收尾采样。
+ *
+ * 末字没有终点的数据源 (Enhanced LRC 只标每个字的起点) 用下一行的时间戳补上;
+ * 数据源给了本段结束时刻的 (QRC 逐字带时长), 直接用它, 不把尾部静默段算进填充。
  * 终点是 [bodyChars] (正文末尾), 译文不参与填充。
- * 末行无下一行时间戳时，根据本行字符节奏预估终点时间，确保播放完毕时末尾字符能被点亮。
+ * 末行既无下一行时间戳、也无字时长时, 根据本行字符节奏预估终点, 确保播放完毕时末尾字符能被点亮。
  */
 private fun LrcLine.fillSamples(nextTimeMs: Int?): List<LrcWord> {
     if (words.isEmpty()) return emptyList()
     val end = bodyChars()
     val lastWord = words.last()
     if (lastWord.charIndex >= end) return words
-    val closingTimeMs = if (nextTimeMs != null) {
-        nextTimeMs.coerceAtLeast(lastWord.timeMs)
-    } else {
-        val remainingChars = end - lastWord.charIndex
-        val charSpan = if (words.size > 1) {
-            val charDistance = (lastWord.charIndex - words.first().charIndex).coerceAtLeast(1)
-            ((lastWord.timeMs - words.first().timeMs) / charDistance).coerceIn(200, 2000)
-        } else {
-            500
+    val closingTimeMs = when {
+        lastWord.endMs > lastWord.timeMs -> lastWord.endMs
+        nextTimeMs != null -> nextTimeMs.coerceAtLeast(lastWord.timeMs)
+        else -> {
+            val remainingChars = end - lastWord.charIndex
+            val charSpan = if (words.size > 1) {
+                val charDistance = (lastWord.charIndex - words.first().charIndex).coerceAtLeast(1)
+                ((lastWord.timeMs - words.first().timeMs) / charDistance).coerceIn(200, 2000)
+            } else {
+                500
+            }
+            lastWord.timeMs + remainingChars * charSpan
         }
-        lastWord.timeMs + remainingChars * charSpan
     }
-    return words + LrcWord(closingTimeMs, end)
+    return words + LrcWord(closingTimeMs, end, closingTimeMs)
 }
 
-/** [positionMs] 处已唱到第几个字符 (含小数); 还没到首个采样时 0。 */
+/**
+ * [positionMs] 处已唱到第几个字符 (含小数); 还没到首个采样时 0。
+ *
+ * 填充区间是当前采样自己的 [LrcWord.endMs] (字有明确结束时刻); 没有这个数据时才填到下一采样点。
+ * 填满后到下一字开唱之前保持不动 —— 字间停顿不该继续往前推。
+ */
 private fun MeasuredLrcLine.charProgressAt(positionMs: Int): Float {
     var i = -1
     while (i + 1 <= words.lastIndex && words[i + 1].timeMs <= positionMs) i++
     if (i < 0) return 0f
     val from = words[i]
     val to = words.getOrNull(i + 1) ?: return from.charIndex.toFloat()
-    val span = to.timeMs - from.timeMs
+    val fillEnd = if (from.endMs > from.timeMs) from.endMs else to.timeMs
+    val span = fillEnd - from.timeMs
     if (span <= 0) return to.charIndex.toFloat()
     val t = ((positionMs - from.timeMs).toFloat() / span).coerceIn(0f, 1f)
     return from.charIndex + (to.charIndex - from.charIndex) * t
@@ -1046,6 +1128,7 @@ private fun DrawScope.drawSlideChars(
     alpha: Float,
     glow: Shadow?,
     textMeasurer: TextMeasurer,
+    animatedTextMeasurer: TextMeasurer,
 ) {
     val text = line.text
     val bodyEnd = minOf(line.bodyChars, text.length)
@@ -1060,7 +1143,11 @@ private fun DrawScope.drawSlideChars(
         val charAlpha = alpha
         if (charAlpha <= 0f) continue
         val scale = sizeScaleAt(t)
-        val charLayout = textMeasurer.measure(
+        // 字号停在两端 (未唱 1 倍 / 唱满 1+增益) 的单字每帧输入相同 → 走带缓存的 measurer;
+        // 中间连续值必然 miss → 走无缓存的, 不把有用条目挤掉
+        val measurer =
+            if (scale == 1f || scale == 1f + CHAR_GROW_GAIN) textMeasurer else animatedTextMeasurer
+        val charLayout = measurer.measure(
             ch.toString(),
             style = LRC_TEXT_STYLE.copy(fontSize = (baseSize * scale).sp),
             constraints = Constraints(),
@@ -1073,7 +1160,7 @@ private fun DrawScope.drawSlideChars(
             if (perChar) lerp(bodyColor, litColor, t) else litColor,
             Offset(topLeft.x + baseX, topLeft.y + baseY - charAscent),
             alpha = charAlpha,
-            shadow = if (!perChar || t > 0f) glow ?: NO_SHADOW else NO_SHADOW,
+            shadow = if (!perChar || t > 0f) glow ?: Shadow.None else Shadow.None,
         )
     }
 }
@@ -1085,17 +1172,17 @@ private fun DrawScope.drawLrcLine(
 ) {
     when (style.mode) {
         LrcLineMode.Plain -> drawText(
-            layout, style.bodyColor, topLeft, alpha = style.alpha, shadow = NO_SHADOW,
+            layout, style.bodyColor, topLeft, alpha = style.alpha, shadow = Shadow.None,
         )
 
         LrcLineMode.WholeLine -> drawText(
             layout, style.litColor, topLeft, alpha = style.alpha,
-            shadow = style.shadow ?: NO_SHADOW,
+            shadow = style.shadow ?: Shadow.None,
         )
 
         // 颜色与辉光都在字符 span 里 (透明度也已包在里面), 画笔层只负责把残留阴影顶掉
         LrcLineMode.Styled -> drawText(
-            layout, Color.Unspecified, topLeft, shadow = NO_SHADOW,
+            layout, Color.Unspecified, topLeft, shadow = Shadow.None,
         )
     }
 }
@@ -1130,8 +1217,7 @@ private fun measureStyledLrc(
     val baseSize = textStyle.fontSize.value
     val spanAlpha = alpha.coerceIn(0f, 1f)
 
-    fun styleAt(i: Int): SpanStyle {
-        val raw = if (i < bodyEnd) (litChars - i).coerceIn(0f, 1f) else 0f
+    fun styleFor(raw: Float): SpanStyle {
         // 颜色走"进入"曲线: 字被点亮时起步快、收尾慢; 字号由调用方按"弹出"曲线给
         val t = MOTION_ENTER.transform(raw)
         val color = lerp(bodyColor, litColor, t).copy(alpha = spanAlpha)
@@ -1147,19 +1233,21 @@ private fun measureStyledLrc(
         )
     }
 
+    // 每个字的已唱比例只有 1、一个小数、0 三种取值 → 整行最多三段样式,
+    // 直接按区间生成 (逐字生成样式再合并是每行 N 份 SpanStyle)
+    val lit = litChars.coerceIn(0f, bodyEnd.toFloat())
+    val fullEnd = floor(lit).toInt().coerceAtMost(bodyEnd)
+    val midIndex = if (lit > fullEnd && fullEnd < bodyEnd) fullEnd else -1
     val annotated = buildAnnotatedString {
         append(text)
-        var runStart = 0
-        var runStyle = styleAt(0)
-        for (i in 1 until text.length) {
-            val style = styleAt(i)
-            if (style != runStyle) {
-                addStyle(runStyle, runStart, i)
-                runStart = i
-                runStyle = style
-            }
+        if (fullEnd > 0) addStyle(styleFor(1f), 0, fullEnd)
+        val dimFrom = if (midIndex >= 0) {
+            addStyle(styleFor(lit - midIndex), midIndex, midIndex + 1)
+            midIndex + 1
+        } else {
+            fullEnd
         }
-        addStyle(runStyle, runStart, text.length)
+        if (dimFrom < text.length) addStyle(styleFor(0f), dimFrom, text.length)
     }
     return measurer.measure(annotated, textStyle, constraints = Constraints(maxWidth = maxWidth))
 }
@@ -1197,6 +1285,15 @@ private class LrcRuntime {
     /** 新行点亮进度 (0→1, Enter 曲线) */
     var colorProgress by mutableFloatStateOf(1f)
 
+    /**
+     * 入场回弹进度: 冲过 1 再落回 (峰值约 1.1)。
+     *
+     * 只给辉光这类不影响排版与颜色的量用 —— 字号一旦过冲, 排版行数可能瞬间
+     * 多出一行 (见 MOTION_ENTER_BOUNCE 注释)。
+     */
+    var entryBounce by mutableFloatStateOf(1f)
+
+
     /** 上一行退场进度 (0→1, Exit 曲线, 相对切行错峰开始) */
     var lastProgress by mutableFloatStateOf(1f)
 
@@ -1212,9 +1309,12 @@ private class LrcRuntime {
      */
     fun applySwitchTimeline(elapsedMs: Long) {
         val elapsed = elapsedMs.toFloat()
-        colorProgress = MOTION_ENTER.transform((elapsed / LIT_IN_MS).coerceIn(0f, 1f))
+        val litLinear = (elapsed / LIT_IN_MS).coerceIn(0f, 1f)
+        colorProgress = MOTION_ENTER.transform(litLinear)
+        entryBounce = MOTION_ENTER_BOUNCE.transform(litLinear)
+        // 退场用自己的固定时长: 滚动跨度大时不会把旧行拖成长时间半亮
         lastProgress = MOTION_EXIT.transform(
-            ((elapsed - LIT_OUT_DELAY_MS) / LIT_OUT_MS).coerceIn(0f, 1f),
+            ((elapsed - LIT_OUT_DELAY_MS) / LIT_OUT_MS.toFloat()).coerceIn(0f, 1f),
         )
     }
     /** 逐字填充用的时钟采样; 只有当前行带字标签时才逐帧刷新, 其余时候是陈旧值且无人读 */
@@ -1240,6 +1340,15 @@ private class LrcRuntime {
         var rowCounts: IntArray? = null
         /** 每行一条挤压时间轴 (行内被挤开的字共用一个进度) */
         var rowSlides: MutableList<RowSlide> = ArrayList()
+        /** 本帧字位缓冲 (x, 基线 y, 行号 交替): 每帧全量覆写, 字数变了才重建 */
+        var positions: FloatArray = FloatArray(0)
+        /** 逐帧复用的暂存 (内容每帧全量覆写, 容量不足才重建) */
+        var rows: IntArray = IntArray(0)
+        var reflowed: BooleanArray = BooleanArray(0)
+        /** 与 [rowCounts] 双缓冲交替存放"本帧各行字数", 不每帧新建 */
+        var scratchCounts: IntArray? = null
+        /** 返回给绘制期的落点缓冲 (x,y 交替) */
+        var drawn: FloatArray = FloatArray(0)
     }
 
     /**
@@ -1275,6 +1384,14 @@ private class LrcRuntime {
 
     private val wrapSlides = HashMap<Int, WrapSlide>()
 
+    /** 取该行的字位缓冲: 字数变了整体重建, 调用方每帧全量覆写 */
+    fun positionsBuffer(index: Int, chars: Int): FloatArray {
+        val slide = wrapSlides.getOrPut(index) { WrapSlide() }
+        val need = chars * 3
+        if (slide.positions.size != need) slide.positions = FloatArray(need)
+        return slide.positions
+    }
+
     /**
      * 更新该行每个字的落点并返回"当前该画在哪" (x,y 交替, 纵向是行基线)。
      *
@@ -1305,18 +1422,30 @@ private class LrcRuntime {
         }
         // 这一帧哪些行发生过重排: 某行的字数与上一帧不同, 说明有字进出该行 ——
         // 该行原有的字会被新字挤开/让位, 必须和飞进来的字走同一条时间轴, 否则是瞬移
-        val rows = IntArray(count) { positions[it * 3 + 2].toInt().coerceAtLeast(0) }
-        val rowTotal = (rows.maxOrNull() ?: 0) + 1
-        val counts = IntArray(rowTotal)
-        for (row in rows) counts[row]++
+        if (slide.rows.size < count) slide.rows = IntArray(count)
+        val rows = slide.rows
+        var maxRow = 0
+        for (k in 0 until count) {
+            val row = positions[k * 3 + 2].toInt().coerceAtLeast(0)
+            rows[k] = row
+            if (row > maxRow) maxRow = row
+        }
+        val rowTotal = maxRow + 1
         val prevCounts = slide.rowCounts
-        val reflowed = BooleanArray(rowTotal)
+        var counts = slide.scratchCounts
+        if (counts == null || counts.size < rowTotal) counts = IntArray(rowTotal)
+        counts.fill(0, 0, rowTotal)
+        for (k in 0 until count) counts[rows[k]]++
+        if (slide.reflowed.size < rowTotal) slide.reflowed = BooleanArray(rowTotal)
+        val reflowed = slide.reflowed
         for (row in 0 until rowTotal) {
             // 行数本身变了 (多折/少折一行) 时整行都算重排
             reflowed[row] = prevCounts == null || row >= prevCounts.size ||
                 prevCounts[row] != counts[row]
         }
+        // 本帧分布交给下一帧比较, 换下来的数组当暂存
         slide.rowCounts = counts
+        slide.scratchCounts = prevCounts
 
         val now = TimeSource.Monotonic.markNow()
         // 重排的行各起一条时间轴, 并记下每个被挤字这一趟要走的位移 (只捕获一次)
@@ -1398,12 +1527,13 @@ private class LrcRuntime {
             run.drawnY = ty
         }
         if (!flying) return null
-        val out = FloatArray(count * 2)
+        if (slide.drawn.size < count * 2) slide.drawn = FloatArray(count * 2)
+        val out = slide.drawn
         for (k in 0 until count) {
             val run = slide.runs[k]
             // 横向弧线: 起点在左、目标在右时向右鼓, 全程 y 单调, 不与上下行文字重叠
             out[k * 2] = run.drawnX + if (run.start != null && run.jumped) {
-                sin(Math.PI.toFloat() * runProgress(run)) * WRAP_JUMP_BOW_PX
+                sin(PI.toFloat() * runProgress(run)) * WRAP_JUMP_BOW_PX
             } else {
                 0f
             }
@@ -1421,15 +1551,23 @@ private class LrcRuntime {
 
     /** 取该行过渡起点的行高 */
     fun wrapFromHeightOf(index: Int): Float = wrapSlides[index]?.fromHeight ?: 0f
-    /** 音频物理能量平滑值 (直接存内部运行态, 绝不触发视图重组) */
-    var energy by mutableFloatStateOf(0f)
-    /** [energy] 的采样时刻 (播放位置 ms), 供绘制期判断管道是否断供 */
-    var energyAtMs by mutableIntStateOf(0)
     /**
-     * 最终展示的能量 (0~1)。
-     * 绘制期只读这一个值: 它变化 -> 只失效重绘。
+     * 能量显示包络 (与页面边缘光效共用同一套平滑): 字段存内部运行态, 绝不触发视图重组。
+     * 采样时刻用播放位置, 绘制期据此判断能量管道是否还在供数。
      */
-    var smoothEnergy by mutableFloatStateOf(0f)
+    private val energyEnvelope = AudioEnergyEnvelope()
+    var energy: Float
+        get() = energyEnvelope.energy
+        set(value) {
+            energyEnvelope.energy = value
+        }
+    var energyAtMs: Long
+        get() = energyEnvelope.energyAtMs
+        set(value) {
+            energyEnvelope.energyAtMs = value
+        }
+    /** 最终展示的能量 (0~1): 绘制期只读这一个值, 它变化只失效重绘 */
+    val smoothEnergy: Float get() = energyEnvelope.smoothEnergy
     var scrollY by mutableFloatStateOf(0f)
     // 手动滚动计时信号 (每次 +1 重启 5s 回中; 复刻 removeCallbacks+postDelayed)
     var manualTick by mutableIntStateOf(0)
@@ -1439,31 +1577,14 @@ private class LrcRuntime {
     var scrollJob: Job? = null
     var colorJob: Job? = null
 
-    /**
-     * 绘制期取用当前驱动值: 正常播放时 PCM 处理器每 10~40ms 派发一次, 直接用最新值;
-     * 只有静默超过 [ENERGY_HOLD_MS] (暂停/缓冲/跳转断供) 才开始指数衰减到 0,
-     * 不会把逐次派发的阶梯锯成锯齿。
-     */
-    fun decayedEnergy(nowMs: Int): Float {
-        val base = energy
-        if (base <= 0f) return 0f
-        val idleMs = nowMs - energyAtMs - ENERGY_HOLD_MS
-        return if (idleMs <= 0) base else base * exp(-idleMs / ENERGY_DECAY_TAU_MS)
-    }
+    /** 绘制期取用当前驱动值 (断供衰减见 [AudioEnergyEnvelope.decayedEnergy]) */
+    fun decayedEnergy(nowMs: Long): Float = energyEnvelope.decayedEnergy(nowMs)
 
     /** 静音/暂停: 显示值归零, 避免恢复播放瞬间从陈旧的亮度跳下来 */
-    fun resetEnergyEnvelope() {
-        smoothEnergy = 0f
-    }
+    fun resetEnergyEnvelope() = energyEnvelope.resetDisplay()
 
-    /**
-     * 帧循环逐帧推进显示平滑: 只一层非对称一阶平滑 (上升 90ms / 下降 380ms)。
-     * 自归一化与拍点包络已经在 PCM 侧完成, 这里绝不能再做窗口归一化。
-     */
-    fun advanceEnergy(dtMs: Float, target: Float) {
-        val tau = if (target > smoothEnergy) ENERGY_DISPLAY_ATTACK_MS else ENERGY_DISPLAY_RELEASE_MS
-        smoothEnergy += (target - smoothEnergy) * (1f - exp(-dtMs / tau))
-    }
+    /** 帧循环逐帧推进显示平滑 (曲线见 [AudioEnergyEnvelope.advance]) */
+    fun advanceEnergy(dtMs: Float, target: Float) = energyEnvelope.advance(dtMs, target)
 
     private fun resetWrapSlide() {
         wrapSlides.clear()
@@ -1507,6 +1628,22 @@ private class LrcRuntime {
      * 放大只向下长, 所以用基础行高算中心: 唱到一半时不会因为行变高而产生漂移。
      */
     fun centerOf(index: Int): Float = lines[index].let { it.offset + it.height / 2f }
+
+    /**
+     * 本次滚动该用多久: 以 [SCROLL_MS] 为一行距离的基准, 每多一行加
+     * [SCROLL_PER_LINE_MS], 封顶 [SCROLL_MAX_MS]。
+     *
+     * 目的: 相邻行切换保持原本的节奏, 跨章/拖动回中这种大跨度不被固定时长甩过去。
+     */
+    fun scrollDurationFor(fromScroll: Float, toScroll: Float, lineMarginPx: Float): Int {
+        if (lines.size < 2) return SCROLL_MS
+        // 相邻两行的中心距 = 行高 + 行间距, 用它把像素距离折算成行数
+        val linePitch = lines[0].height + lineMarginPx
+        if (linePitch <= 0f) return SCROLL_MS
+        val lineCount = abs(toScroll - fromScroll) / linePitch
+        val extra = ((lineCount - 1f).coerceAtLeast(0f) * SCROLL_PER_LINE_MS).toInt()
+        return (SCROLL_MS + extra).coerceAtMost(SCROLL_MAX_MS)
+    }
 
     /**
      * 内容坐标 y 落在哪一行: 放大会改变行高, 所以按各行的实际高度逐行累加定位。
@@ -1553,6 +1690,7 @@ private class LrcRuntime {
         scrollJob?.cancel()
         colorJob?.cancel()
         colorProgress = 1f
+        entryBounce = 1f
         lastProgress = 1f
     }
 
@@ -1568,14 +1706,13 @@ private class LrcRuntime {
         currentIndex = -1
         lastIndex = -1
         colorProgress = 1f
+        entryBounce = 1f
         lastProgress = 1f
         fillClockMs = 0
         maxSungProgress = 0f
         prevSungProgress = 0f
         resetWrapSlide()
-        energy = 0f
-        energyAtMs = 0
-        smoothEnergy = 0f
+        energyEnvelope.reset()
         scrollY = 0f
         manualTick = 0
         autoScroll = true
@@ -1598,18 +1735,31 @@ private fun measureLrcLines(
     val src = data?.lines
     if (availableW <= 0 || src.isNullOrEmpty()) return emptyList()
     var offset = 0f
+    // 逐字行的"字全部长大"字号: 只用于算预留行高
+    val grownStyle = style.copy(
+        fontSize = (style.fontSize.value * (1f + CHAR_GROW_GAIN)).sp
+    )
     return src.mapIndexed { i, line ->
         val layout = measurer.measure(
             line.text, style, constraints = Constraints(maxWidth = availableW)
         )
+        val words = line.fillSamples(src.getOrNull(i + 1)?.timeMs)
         MeasuredLrcLine(
-            line.timeMs,
-            line.text,
-            layout,
-            layout.size.height + marginPx.roundToInt(),
-            offset,
-            line.fillSamples(src.getOrNull(i + 1)?.timeMs),
-            line.bodyChars(),
+            time = line.timeMs,
+            text = line.text,
+            layout = layout,
+            grownRowHeight = if (words.isEmpty()) {
+                layout.size.height
+            } else {
+                val grown = measurer.measure(
+                    line.text, grownStyle, constraints = Constraints(maxWidth = availableW)
+                )
+                (grown.size.height / grown.lineCount.coerceAtLeast(1))
+            },
+            height = layout.size.height + marginPx.roundToInt(),
+            offset = offset,
+            words = words,
+            bodyChars = line.bodyChars(),
         ).also { offset += it.height }
     }
 }
@@ -1626,101 +1776,3 @@ private fun calculateAlpha(lineCenterY: Float, viewportHeight: Float): Float {
         else -> 1f
     }
 }
-
-// ==================== 封面取色 (复刻原版 getRepresentativeColor + updateLrcColor) ====================
-
-/**
- * 复刻原版 `Bitmap.getRepresentativeColor` (BitmapUtils.kt):
- * - 缩放到 64px 最长边 (加载时已按 64px 请求, 这里的采样步长兜住更大的图)
- * - 过滤: alpha < 128 跳过; HSL 饱和度 <0.1 或 亮度 <0.1 或 >0.9 跳过
- * - 平均 RGB; 无有效像素时返回中心像素
- *
- * 一次性整块读回 (逐行 readPixels 在安卓端对 HARDWARE 位图每次都要整图拷贝), 通道走位运算,
- * HSL 复用同一个 FloatArray —— 与原版逐行等价且采样过程零分配。
- */
-private fun ImageBitmap.representativeColor(): Color {
-    val pixels = IntArray(width * height)
-    readPixels(pixels)
-    val step = max(1, (max(width, height) / 64f).roundToInt())
-    val hsl = FloatArray(3)
-    var rSum = 0L
-    var gSum = 0L
-    var bSum = 0L
-    var count = 0
-    var y = 0
-    while (y < height) {
-        val rowStart = y * width
-        var x = 0
-        while (x < width) {
-            val pixel = pixels[rowStart + x]
-            if ((pixel ushr 24) >= 128) { // 原版 (pixel shr 24) and 0xFF >= 128
-                val r = ColorUtils.red(pixel)
-                val g = ColorUtils.green(pixel)
-                val b = ColorUtils.blue(pixel)
-                ColorUtils.RGBToHSL(r, g, b, hsl)
-                if (hsl[1] >= 0.1f && hsl[2] >= 0.1f && hsl[2] <= 0.9f) {
-                    rSum += r
-                    gSum += g
-                    bSum += b
-                    count++
-                }
-            }
-            x += step
-        }
-        y += step
-    }
-    // 全是黑白/透明时取中心像素 (复刻原版 pixels[size / 2])
-    if (count == 0) return Color(pixels[pixels.size / 2])
-    return Color(
-        ColorUtils.argb((rSum / count).toInt(), (gSum / count).toInt(), (bSum / count).toInt())
-    )
-}
-
-/**
- * 复刻原版 `AudioPlayActivity.updateLrcColor`:
- * - meanColor → HSL; isLight = L > 0.6
- * - secondary: light → L-0.45 (下限 0.3); dark → L+0.45 (上限 0.7)
- * - primary: 基于 secondary 的 L 再 ±0.35 (下限 0.2 / 上限 0.8)
- * - 输出不透明色 (HSLToColor), 供歌词 setColors + SeekBar tint
- */
-private fun adjustLrcColors(meanColor: Color): Pair<Color, Color> {
-    val hsl = FloatArray(3)
-    ColorUtils.colorToHSL(meanColor.toArgb(), hsl)
-    val l = hsl[2]
-    val isLight = l > 0.6f
-    val secondaryL = if (isLight) (l - 0.45f).coerceAtLeast(0.3f)
-    else (l + 0.45f).coerceAtMost(0.7f)
-    hsl[2] = secondaryL
-    val secondary = Color(ColorUtils.HSLToColor(hsl))
-    hsl[2] = if (isLight) (secondaryL - 0.35f).coerceAtLeast(0.2f)
-    else (secondaryL + 0.35f).coerceAtMost(0.8f)
-    val primary = Color(ColorUtils.HSLToColor(hsl))
-    return primary to secondary
-}
-
-/** 封面 → 歌词/SeekBar 配色 (原版 updateLrcColor 的完整链路, 全端共享)。 */
-private fun ImageBitmap.representativeLrcColors(): Pair<Color, Color> =
-    adjustLrcColors(representativeColor())
-
-/**
- * 封面取色状态 (全端共享): 封面 URL 变化时经 [BookImageLoaders] 加载封面, 计算
- * [representativeLrcColors]; 未注册 loader / 加载失败 / 无封面 → null (用原版默认色)。
- * 对照原版 AudioPlayActivity.updateCover → updateLrcColor 链路。
- *
- * keep-previous: 加载期间保留旧配色, 新色算出才换 (原版 updateLrcColor 无中间态, 不会先闪回默认色);
- * 但换到无封面/加载失败的书要回落默认色, 不能沿用上一本的配色 (同 SharedAudioCoverSlot 的语义)。
- */
-@Composable
-fun rememberLrcColors(coverUrl: String?, sourceOrigin: String? = null): Pair<Color, Color>? {
-    var colors by remember { mutableStateOf<Pair<Color, Color>?>(null) }
-    LaunchedEffect(coverUrl, sourceOrigin) {
-        // 取色只要 64px 级别的小图 (原版 getRepresentativeColor 也是先缩到 64px 最长边):
-        // 按原图请求会让像素读回整图搬一遍 (安卓端 Coil3 默认给 HARDWARE 位图, 读回还要先整图拷贝),
-        // 而采样实际只用到几千个像素。磁盘缓存键只按 url, 不会多下载一次
-        val bitmap = if (coverUrl.isNullOrBlank()) null else BookImageLoaders.getOrNull()
-            ?.loadCoverOrNull(coverUrl, sourceOrigin, widthPx = 64, heightPx = 64)
-        colors = bitmap?.let { withContext(Dispatchers.Default) { it.representativeLrcColors() } }
-    }
-    return colors
-}
-
