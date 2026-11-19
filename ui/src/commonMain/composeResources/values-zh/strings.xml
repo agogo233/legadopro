@@ -1698,6 +1698,7 @@ Windows: winget install shinchiro.mpv 或 scoop install mpv,
     <string name="sys_image_picker">系统图片选择器</string>
     <string name="source_filter_rule_filtered_count">筛除 %1$d 本</string>
     <string name="explore_style_normal">普通</string>
+    <string name="explore_option_invalidated">选项已变化，请刷新或重新选择</string>
     <string name="home_source_invalid">书源无效</string>
     <string name="bottom_nav_items_order">底栏项目顺序</string>
     <string name="debug_error">调试错误</string>

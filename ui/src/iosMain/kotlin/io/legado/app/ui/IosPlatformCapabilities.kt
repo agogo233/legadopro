@@ -20,7 +20,6 @@ import io.legado.app.help.tts.IosReadAloudHost
 import io.legado.app.service.defaultTtsEngineConfig
 import io.legado.app.help.book.bookshelfJson
 import io.legado.app.help.config.PreferenceProviders
-import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.file.pickDirectory as pickDirectoryDocument
 import io.legado.app.help.openURL
 import io.legado.app.help.openURLIfPossible
