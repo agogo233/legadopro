@@ -69,6 +69,8 @@ import io.legado.app.ui.book.read.HeadlessReadAloud
 import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.ReadConfigChange
 import io.legado.app.ui.book.read.readerAutoPageActive
+import io.legado.app.ui.book.read.readerMenuLayoutVisible
+import io.legado.app.ui.bookshelf.CoverSlotRatio
 import io.legado.app.ui.bookshelf.LocalBookCoverSlot
 import io.legado.app.ui.bookshelf.toCoverBook
 import io.legado.app.ui.browser.WebViewSheetContent
@@ -121,6 +123,8 @@ fun LegadoApp(
     screenModelStore: ScreenModelStore = remember { ScreenModelStore() },
     capabilities: PlatformCapabilities = PlatformCapabilityProviders.get(),
     initialRequest: LaunchRequest? = null,
+    // false = store 生命周期由外部持有 (安卓由真实 ViewModelStore 清理), 组合销毁不清。
+    clearScreenModelStoreOnDispose: Boolean = true,
 ) {
     CompositionLocalProvider(
         LocalAppNavigator provides navigator,
@@ -215,7 +219,7 @@ fun LegadoApp(
         val windowPolicy = currentRoute?.let { route ->
             if (route is AppRoute.Reader) {
                 WindowPolicies.Reader.copy(
-                    systemBars = readerSystemBarsPolicy(menuVisible = false),
+                    systemBars = readerSystemBarsPolicy(menuVisible = readerMenuLayoutVisible),
                     orientation = readerOrientationPolicy(),
                     // Android 阅读页不直接作用（MainActivity.applyWindowKeepScreenOn 改走
                     // keepLight 计时管理），桌面/移动端按 keepLight 直接驱动平台常亮
@@ -252,7 +256,7 @@ fun LegadoApp(
             val route = currentRouteState.value
             val policy = if (route is AppRoute.Reader) {
                 WindowPolicies.Reader.copy(
-                    systemBars = readerSystemBarsPolicy(menuVisible = false),
+                    systemBars = readerSystemBarsPolicy(menuVisible = readerMenuLayoutVisible),
                     orientation = readerOrientationPolicy(),
                     keepScreenOn = readerKeepScreenOnPolicy() || readerAutoPageActive,
                 )
@@ -282,8 +286,8 @@ fun LegadoApp(
                 .collect { applyCurrentPolicy() }
         }
 
-        DisposableEffect(screenModelStore) {
-            onDispose { screenModelStore.clear() }
+        DisposableEffect(screenModelStore, clearScreenModelStoreOnDispose) {
+            onDispose { if (clearScreenModelStoreOnDispose) screenModelStore.clear() }
         }
 
         // Overlay 栈状态: BackHandler 与渲染共用
@@ -918,14 +922,6 @@ private fun DialogOverlayContent(overlay: AppOverlay.Dialog, navigator: AppNavig
         // 辅助按键配置 (对照 app 端 KeyboardAssistsConfig)
         "keyboardAssistsConfig" -> KeyboardAssistsConfigOverlayContent(overlay, navigator)
 
-        // 6 个 Import 对话框 (对照 app 端 Import*Dialog Fragment; payload=IntentData key 携带 source 文本)
-        "*Import:BOOK_SOURCE" -> ImportSourceOverlayContent(overlay, navigator, DeepLinkImportType.BOOK_SOURCE)
-        "*Import:REPLACE_RULE" -> ImportSourceOverlayContent(overlay, navigator, DeepLinkImportType.REPLACE_RULE)
-        "*Import:TXT_TOC_RULE" -> ImportSourceOverlayContent(overlay, navigator, DeepLinkImportType.TXT_TOC_RULE)
-        "*Import:HTTP_TTS" -> ImportSourceOverlayContent(overlay, navigator, DeepLinkImportType.HTTP_TTS)
-        "*Import:DICT_RULE" -> ImportSourceOverlayContent(overlay, navigator, DeepLinkImportType.DICT_RULE)
-        "*Import:THEME" -> ImportSourceOverlayContent(overlay, navigator, DeepLinkImportType.THEME)
-
         // 按文件名导入 js 编辑框 (对照 app 端 alertImportFileName, 鸿蒙命令式文本输入宿主缺失时经此弹窗)
         "import_file_name" -> ImportFileNameOverlayDialogContent(overlay, navigator)
         "book_export_format" -> BookExportFormatDialogContent(overlay, navigator)
@@ -1137,7 +1133,7 @@ private fun ChangeCoverDialogContent(overlay: AppOverlay.Dialog, navigator: AppN
         coverSlot = { searchBook, modifier ->
             // SearchBook → Book 适配 LocalBookCoverSlot 签名; 候选封面恒走临时缓存区
             // (对照原版 CoverAdapter 的 ivCover.load(..) 默认 inBookshelf = false)
-            bookCoverSlot(searchBook.toCoverBook(), modifier, false, 0)
+            bookCoverSlot(searchBook.toCoverBook(), modifier, CoverSlotRatio.NOVEL, 0)
         },
     )
 }
